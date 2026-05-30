@@ -32,6 +32,19 @@ export interface JournalEntry {
   result: unknown;
 }
 
+/**
+ * Global resources shared across a run and any workflow() nested inside it, so
+ * the 16-concurrent / 1000-total caps and the token budget hold across nesting
+ * instead of each level getting its own limiter and counters.
+ */
+export interface SharedRuntime {
+  limiter: <T>(fn: () => Promise<T>) => Promise<T>;
+  agentCount: number;
+  spent: number;
+  tokenUsage: { input: number; output: number; total: number; cost: number };
+  depth: number;
+}
+
 export interface WorkflowRunOptions extends WorkflowAgentOptions {
   args?: unknown;
   agent?: Pick<WorkflowAgent, "run">;
@@ -52,6 +65,10 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   resumeFromRunId?: string;
   /** Called after each live agent completes so the caller can persist the journal. */
   onAgentJournal?: (entry: JournalEntry) => void;
+  /** Internal: shared runtime inherited by a nested workflow() call. */
+  sharedRuntime?: SharedRuntime;
+  /** Resolve a saved-workflow name to its script, enabling `workflow('name', args)`. */
+  loadSavedWorkflow?: (name: string) => string | undefined;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string }) => void;
@@ -90,16 +107,8 @@ interface RuntimeState {
   currentPhase?: string;
   logs: string[];
   phases: string[];
-  agentCount: number;
   /** Monotonic, assigned at lexical agent() call time — the stable resume key. */
   callSeq: number;
-  spent: number;
-  tokenUsage: {
-    input: number;
-    output: number;
-    total: number;
-    cost: number;
-  };
 }
 
 type AnyNode = Node & { [key: string]: any; start: number; end: number };
@@ -130,10 +139,7 @@ export async function runWorkflow<T = unknown>(
   const state: RuntimeState = {
     logs: [],
     phases: [],
-    agentCount: 0,
     callSeq: 0,
-    spent: 0,
-    tokenUsage: { input: 0, output: 0, total: 0, cost: 0 },
   };
 
   const agentRunner = options.agent ?? new WorkflowAgent(options);
@@ -141,7 +147,15 @@ export async function runWorkflow<T = unknown>(
     1,
     Math.min(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2), MAX_CONCURRENCY),
   );
-  const limiter = createLimiter(concurrency);
+  // Global caps + budget are shared with any nested workflow() so they hold across nesting.
+  const shared: SharedRuntime = options.sharedRuntime ?? {
+    limiter: createLimiter(concurrency),
+    agentCount: 0,
+    spent: 0,
+    tokenUsage: { input: 0, output: 0, total: 0, cost: 0 },
+    depth: 0,
+  };
+  const limiter = shared.limiter;
 
   const log = (message: string) => {
     const text = String(message);
@@ -157,8 +171,8 @@ export async function runWorkflow<T = unknown>(
 
   const budget = Object.freeze({
     total: options.tokenBudget ?? null,
-    spent: () => state.spent,
-    remaining: () => (options.tokenBudget == null ? Infinity : Math.max(0, options.tokenBudget - state.spent)),
+    spent: () => shared.spent,
+    remaining: () => (options.tokenBudget == null ? Infinity : Math.max(0, options.tokenBudget - shared.spent)),
   });
 
   const throwIfAborted = () => {
@@ -171,7 +185,7 @@ export async function runWorkflow<T = unknown>(
     throwIfAborted();
 
     // Check agent limit
-    if (state.agentCount >= maxAgents) {
+    if (shared.agentCount >= maxAgents) {
       throw new WorkflowError(
         `Agent limit exceeded (${maxAgents}). Use maxAgents option to increase the limit.`,
         WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
@@ -199,16 +213,16 @@ export async function runWorkflow<T = unknown>(
     // consuming a concurrency slot, tokens, or a real subagent run.
     const cached = options.resumeJournal?.get(callIndex);
     if (cached && cached.hash === callHash) {
-      state.agentCount++;
-      const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
+      shared.agentCount++;
+      const label = requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount);
       options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: modelSpec });
       options.onAgentEnd?.({ label, phase: assignedPhase, result: cached.result, tokens: 0 });
       return cached.result;
     }
 
     return limiter(async () => {
-      state.agentCount++;
-      const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
+      shared.agentCount++;
+      const label = requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount);
       const timeout = agentOptions.timeoutMs ?? agentTimeoutMs;
 
       options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: modelSpec });
@@ -227,12 +241,12 @@ export async function runWorkflow<T = unknown>(
       const recordTokens = (result: unknown): number => {
         const tokens = usage && usage.total > 0 ? usage.total : estimateTokens(result) + estimateTokens(prompt);
         if (usage) {
-          state.tokenUsage.input += usage.input;
-          state.tokenUsage.output += usage.output;
-          state.tokenUsage.cost += usage.cost;
+          shared.tokenUsage.input += usage.input;
+          shared.tokenUsage.output += usage.output;
+          shared.tokenUsage.cost += usage.cost;
         }
-        state.tokenUsage.total += tokens;
-        state.spent += tokens;
+        shared.tokenUsage.total += tokens;
+        shared.spent += tokens;
         return tokens;
       };
 
@@ -331,10 +345,40 @@ export async function runWorkflow<T = unknown>(
     );
   };
 
+  // Nested workflow(): run a saved workflow (or a raw script) inline, sharing this
+  // run's limiter/counters/budget so the global caps hold. One level deep only.
+  const workflowFn = async (nameOrScript: string, childArgs?: unknown) => {
+    throwIfAborted();
+    if (shared.depth >= 1) {
+      throw new WorkflowError("workflow() can nest only one level deep", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+        recoverable: false,
+      });
+    }
+    const resolved = options.loadSavedWorkflow?.(String(nameOrScript));
+    const childScript = resolved ?? String(nameOrScript);
+    shared.depth++;
+    try {
+      const child = await runWorkflow(childScript, {
+        ...options,
+        args: childArgs,
+        sharedRuntime: shared,
+        // A nested run is its own script; never reuse the parent's resume journal.
+        resumeJournal: undefined,
+        resumeFromRunId: undefined,
+        runId: `${runId}-nested${shared.depth}`,
+        persistLogs: false,
+      });
+      return child.result;
+    } finally {
+      shared.depth--;
+    }
+  };
+
   const context = vm.createContext({
     agent,
     parallel,
     pipeline,
+    workflow: workflowFn,
     log,
     phase,
     args: options.args,
@@ -369,17 +413,17 @@ export async function runWorkflow<T = unknown>(
   }
 
   // Emit final token usage
-  options.onTokenUsage?.(state.tokenUsage);
+  options.onTokenUsage?.(shared.tokenUsage);
 
   return {
     meta,
     result: result as T,
     logs: state.logs,
     phases: state.phases,
-    agentCount: state.agentCount,
+    agentCount: shared.agentCount,
     durationMs: Date.now() - started,
     runId,
-    tokenUsage: state.tokenUsage,
+    tokenUsage: shared.tokenUsage,
   };
 }
 

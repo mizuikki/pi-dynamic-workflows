@@ -61,8 +61,9 @@ export interface WorkflowToolOptions {
 }
 
 export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefinition<typeof workflowToolSchema, any> {
+  const storage = options.storage ?? createWorkflowStorage(options.cwd ?? process.cwd());
   const manager = options.manager ?? new WorkflowManager({ cwd: options.cwd, concurrency: options.concurrency });
-  const _storage = options.storage ?? createWorkflowStorage(options.cwd ?? process.cwd());
+  const loadSavedWorkflow = (name: string) => storage.load(name)?.script;
 
   return defineTool({
     name: "workflow",
@@ -88,6 +89,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors.",
       "For workflow, do not assume the parent assistant has repository code context inside subagents; include enough task context and relevant paths in each agent prompt.",
       "For workflow, set background: true to run asynchronously. The workflow will return immediately with a run ID that can be used to check status later.",
+      "For workflow, you may call `await workflow('saved-name', argsObject)` to run a saved workflow inline and use its result; nesting is one level deep only, and the global 16-concurrent / 1000-total caps hold across the nesting.",
     ],
     parameters: workflowToolSchema,
     prepareArguments(args) {
@@ -140,6 +142,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           concurrency: options.concurrency,
           maxAgents: params.maxAgents,
           agentTimeoutMs: params.agentTimeoutMs,
+          loadSavedWorkflow,
           onLog(message) {
             snapshot.logs.push(message);
             update();

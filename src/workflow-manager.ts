@@ -32,6 +32,8 @@ export interface ManagedRun {
 export interface WorkflowManagerOptions {
   cwd?: string;
   concurrency?: number;
+  /** Resolve a saved-workflow name to its script, enabling nested `workflow('name')`. */
+  loadSavedWorkflow?: (name: string) => string | undefined;
 }
 
 export class WorkflowManager extends EventEmitter {
@@ -39,11 +41,13 @@ export class WorkflowManager extends EventEmitter {
   private persistence: RunPersistence;
   private cwd: string;
   private concurrency: number;
+  private loadSavedWorkflow?: (name: string) => string | undefined;
 
   constructor(options: WorkflowManagerOptions = {}) {
     super();
     this.cwd = options.cwd ?? process.cwd();
     this.concurrency = options.concurrency ?? 8;
+    this.loadSavedWorkflow = options.loadSavedWorkflow;
     this.persistence = createRunPersistence(this.cwd);
   }
 
@@ -144,6 +148,7 @@ export class WorkflowManager extends EventEmitter {
         args,
         signal: managed.controller.signal,
         concurrency: this.concurrency,
+        loadSavedWorkflow: this.loadSavedWorkflow,
         resumeJournal,
         resumeFromRunId: resumeJournal ? managed.runId : undefined,
         onAgentJournal: (entry) => {

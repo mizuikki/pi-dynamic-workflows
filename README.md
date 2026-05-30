@@ -98,6 +98,7 @@ return { inventory, summary }
 | `parallel(thunks)` | Run an array of `() => agent(...)` thunks concurrently. Results returned in input order. |
 | `pipeline(items, ...stages)` | Fan items out through sequential stages. Each stage receives `(prev, original, index)`. |
 | `phase(title)` | Mark the current phase for the live progress view. |
+| `workflow(name, args)` | Run a saved workflow inline and return its result (one level deep; shares the global caps). |
 | `log(message)` | Append a workflow-level log line. |
 | `args` | Optional JSON value passed via the tool's `args` parameter. |
 | `budget` | `{ total, spent(), remaining() }` token-budget tracker. |
@@ -149,17 +150,12 @@ Scripts run inside a Node `vm` sandbox. Intentionally unavailable: `Date.now()`,
 - **`/workflows` command** — list, inspect, stop, pause, **resume**, and remove background runs; runs started with `background: true` are reachable from the command
 - **Bundled `/deep-research` & `/adversarial-review`** — `/deep-research` runs real web searches (via built-in `web_search` / `web_fetch` tools), extracts claims, cross-checks them across sources, and reports only what survived; `/adversarial-review` investigates a task then has independent skeptics try to refute each finding, keeping only those that clear an agreement threshold
 - **Saved workflows as `/<name>`** — save a run's script with `/workflows save <name>` and it becomes a reusable slash command; arguments are parsed (`key=value` and positionals) and passed through as `args`
+- **Nested `workflow()`** — call `await workflow('saved-name', args)` inside a script to run a saved workflow inline; nesting is one level deep and shares the parent's concurrency limiter, agent counter, and token budget so the global caps hold
 - **Resume** — each agent result is journaled by a deterministic call index; resuming replays the unchanged prefix from cache (no re-run, no tokens) and runs only new or edited calls live
 - **Worktree isolation** — `isolation: "worktree"` runs an agent in its own git worktree on a throwaway branch, so parallel agents can edit the same files without conflict; the worktree is torn down after (results are not auto-merged), and it falls back to a logged no-op outside a git repo
 - **Safety limits** — 1000-agent cap (`maxAgents`), per-agent timeout (`agentTimeoutMs`), recoverable-vs-fatal error classification
 - **Live progress + token/cost display**, `Esc` to abort
 - **Log persistence** to `.pi/workflows/runs/`
-
-## Roadmap
-
-Tracked toward closer parity with Claude Code dynamic workflows:
-
-- **Nested `workflow()`** to compose saved workflows inline
 
 ## How it works
 

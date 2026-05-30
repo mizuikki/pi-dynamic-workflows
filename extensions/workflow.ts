@@ -12,8 +12,8 @@ export default function extension(pi: ExtensionAPI) {
   // Single manager/storage shared by the workflow tool and the /workflows command,
   // so background runs started by the tool are reachable from the command.
   const cwd = process.cwd();
-  const manager = new WorkflowManager({ cwd });
   const storage = createWorkflowStorage(cwd);
+  const manager = new WorkflowManager({ cwd, loadSavedWorkflow: (name) => storage.load(name)?.script });
 
   const workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);

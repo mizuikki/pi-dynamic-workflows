@@ -161,6 +161,48 @@ test("callSeq is deterministic under parallel()", async () => {
   );
 });
 
+test("workflow() runs a nested saved workflow and shares the global agent counter", async () => {
+  const child = `export const meta = { name: 'child', description: 'c' }
+const r = await agent('child task', { label: 'c' })
+return { child: r }`;
+  const parent = `export const meta = { name: 'parent', description: 'p' }
+const a = await agent('parent task', { label: 'p' })
+const nested = await workflow('child', { foo: 1 })
+return { a, nested }`;
+
+  const result = await runWorkflow<{ a: string; nested: { child: string } }>(parent, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
+  });
+
+  // Parent agent + child agent both counted on the shared counter.
+  assert.equal(result.agentCount, 2);
+  assert.equal(result.result.nested.child, "ran:child task");
+});
+
+test("workflow() nesting is one level deep (second level throws)", async () => {
+  const map: Record<string, string> = {
+    gc: `export const meta = { name: 'gc', description: 'g' }
+await agent('gc', { label: 'g' })
+return 1`,
+    child: `export const meta = { name: 'child', description: 'c' }
+await workflow('gc')
+return 2`,
+  };
+  const parent = `export const meta = { name: 'parent', description: 'p' }
+let err = null
+try { await workflow('child') } catch (e) { err = String(e && e.message || e) }
+return { err }`;
+
+  const result = await runWorkflow<{ err: string }>(parent, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+    loadSavedWorkflow: (name) => map[name],
+  });
+  assert.match(result.result.err, /one level deep/);
+});
+
 test("runWorkflow budget gates on accumulated tokens", async () => {
   // Each agent reports 100 tokens; a 100 budget allows one then exhausts
   // (the next agent sees remaining() === 0 at start and throws).
