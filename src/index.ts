@@ -41,6 +41,7 @@ export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./str
 export { createStructuredOutputTool } from "./structured-output.js";
 export type {
   AgentOptions,
+  JournalEntry,
   WorkflowMeta,
   WorkflowMetaPhase,
   WorkflowRunOptions,
@@ -54,3 +55,5 @@ export type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 export { createWorkflowStorage } from "./workflow-saved.js";
 export type { WorkflowToolInput, WorkflowToolOptions } from "./workflow-tool.js";
 export { createWorkflowTool } from "./workflow-tool.js";
+export type { Worktree } from "./worktree.js";
+export { createWorktree, removeWorktree } from "./worktree.js";

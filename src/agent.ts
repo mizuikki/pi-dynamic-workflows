@@ -54,6 +54,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   model?: string;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
+  /** Run this agent in a different working directory (e.g. an isolated worktree). */
+  cwd?: string;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -105,7 +107,11 @@ export class WorkflowAgent {
     options: AgentRunOptions<TSchemaDef> = {},
   ): Promise<AgentRunResult<TSchemaDef>> {
     const capture: StructuredOutputCapture<any> = { called: false, value: undefined };
-    const customTools: ToolDefinition[] = [...this.baseTools, ...(options.tools ?? [])];
+    // Per-call cwd (e.g. a worktree) needs coding tools bound to that directory,
+    // since tools capture their cwd at construction and can't be relocated.
+    const runCwd = options.cwd ?? this.cwd;
+    const baseTools = runCwd === this.cwd ? this.baseTools : createCodingTools(runCwd);
+    const customTools: ToolDefinition[] = [...baseTools, ...(options.tools ?? [])];
 
     if (options.schema) {
       customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
@@ -125,7 +131,7 @@ export class WorkflowAgent {
 
     const agentDir = getAgentDir();
     const { session } = await createAgentSession({
-      cwd: this.cwd,
+      cwd: runCwd,
       agentDir,
       sessionManager: SessionManager.inMemory(),
       // Use real SettingsManager to inherit user's default provider/model settings.

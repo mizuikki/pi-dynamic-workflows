@@ -99,6 +99,7 @@ return { inventory, summary }
 | `phase` | string | Override the current phase for this agent |
 | `schema` | object | JSON Schema for structured output |
 | `model` | string | Run this agent on a specific model — `provider/modelId` or a bare `modelId` |
+| `isolation` | `"worktree"` | Run this agent in its own throwaway git worktree (parallel edits without conflict) |
 | `timeoutMs` | number | Override the default 5-minute agent timeout |
 
 Models can also be set per phase via `meta.phases[].model`. Precedence is `opts.model` > phase model > session default; an unknown model logs a warning and falls back to the default.
@@ -135,6 +136,7 @@ Scripts run inside a Node `vm` sandbox. Intentionally unavailable: `Date.now()`,
 - **Real per-agent / per-phase model routing** — `opts.model` and `meta.phases[].model` actually select the model (resolved against your authed model registry), with graceful fallback
 - **`/workflows` command** — list, inspect, stop, pause, **resume**, and remove background runs; runs started with `background: true` are reachable from the command
 - **Resume** — each agent result is journaled by a deterministic call index; resuming replays the unchanged prefix from cache (no re-run, no tokens) and runs only new or edited calls live
+- **Worktree isolation** — `isolation: "worktree"` runs an agent in its own git worktree on a throwaway branch, so parallel agents can edit the same files without conflict; the worktree is torn down after (results are not auto-merged), and it falls back to a logged no-op outside a git repo
 - **Safety limits** — 1000-agent cap (`maxAgents`), per-agent timeout (`agentTimeoutMs`), recoverable-vs-fatal error classification
 - **Live progress + token/cost display**, `Esc` to abort
 - **Log persistence** to `.pi/workflows/runs/`
@@ -143,8 +145,9 @@ Scripts run inside a Node `vm` sandbox. Intentionally unavailable: `Date.now()`,
 
 Tracked toward closer parity with Claude Code dynamic workflows:
 
-- **Worktree isolation** for parallel edits, and **bundled `/deep-research`**
+- **Bundled `/deep-research`** and `/adversarial-review` workflows
 - **Saved workflows** as `/<name>` slash commands
+- **Nested `workflow()`** to compose saved workflows inline
 
 ## How it works
 

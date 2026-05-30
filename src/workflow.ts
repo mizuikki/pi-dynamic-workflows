@@ -9,6 +9,7 @@ import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from ".
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
   title: string;
@@ -54,7 +55,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string }) => void;
-  onAgentEnd?: (event: { label: string; phase?: string; result: unknown; tokens?: number }) => void;
+  onAgentEnd?: (event: { label: string; phase?: string; result: unknown; tokens?: number; worktree?: string }) => void;
   onTokenUsage?: (usage: { input: number; output: number; total: number; cost: number }) => void;
 }
 
@@ -116,6 +117,7 @@ export async function runWorkflow<T = unknown>(
   const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
   const agentTimeoutMs = options.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
   const runId = options.runId ?? `run-${started.toString(36)}`;
+  const baseCwd = options.cwd ?? process.cwd();
 
   // Initialize logger
   const logger = createWorkflowLogger({
@@ -211,6 +213,14 @@ export async function runWorkflow<T = unknown>(
 
       options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: modelSpec });
 
+      // Optional per-agent worktree isolation (deterministic name -> stable resume keys).
+      let worktree: Worktree | undefined;
+      if (agentOptions.isolation === "worktree") {
+        worktree = await createWorktree(baseCwd, `${runId}-${callIndex}-${label}`);
+        if (!worktree.isolated) log(`isolation ignored for "${label}" (${worktree.reason})`);
+      }
+      const runCwd = worktree?.isolated ? worktree.cwd : undefined;
+
       // Captured from the subagent's real session usage; falls back to an
       // estimate when the provider reports no usage (total === 0).
       let usage: AgentUsage | undefined;
@@ -237,6 +247,7 @@ export async function runWorkflow<T = unknown>(
             signal: options.signal,
             instructions: buildAgentInstructions(assignedPhase, agentOptions),
             model: modelSpec,
+            cwd: runCwd,
             onUsage: (u: AgentUsage) => {
               usage = u;
             },
@@ -249,7 +260,7 @@ export async function runWorkflow<T = unknown>(
 
         const tokens = recordTokens(result);
         options.onAgentJournal?.({ index: callIndex, hash: callHash, result });
-        options.onAgentEnd?.({ label, phase: assignedPhase, result, tokens });
+        options.onAgentEnd?.({ label, phase: assignedPhase, result, tokens, worktree: runCwd });
         return result;
       } catch (error) {
         if (options.signal?.aborted) throw error;
@@ -257,13 +268,16 @@ export async function runWorkflow<T = unknown>(
         const workflowError = wrapError(error, { agentLabel: label });
         logger.error(`agent ${label} failed: ${workflowError.message}`);
         const tokens = recordTokens(null);
-        options.onAgentEnd?.({ label, phase: assignedPhase, result: null, tokens });
+        options.onAgentEnd?.({ label, phase: assignedPhase, result: null, tokens, worktree: runCwd });
 
         // Return null for recoverable errors
         if (workflowError.recoverable) {
           return null;
         }
         throw workflowError;
+      } finally {
+        // Always tear down the worktree, even on timeout/abort.
+        if (worktree?.isolated) await removeWorktree(worktree);
       }
     });
   };
