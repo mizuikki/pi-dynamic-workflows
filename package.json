@@ -1,7 +1,7 @@
 {
   "name": "@quintinshaw/pi-dynamic-workflows",
-  "version": "1.9.0",
-  "description": "Claude-Code-style dynamic workflow orchestration for Pi.",
+  "version": "1.9.1",
+  "description": "Claude-Code-style dynamic workflows for Pi — fan a task out across 100s of subagents with real model routing, token/cost accounting, resume, git-worktree isolation, an interactive /workflows TUI, and a real /deep-research.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -33,8 +33,21 @@
   "keywords": [
     "pi-package",
     "pi",
+    "pi-coding-agent",
     "workflow",
-    "agents"
+    "workflows",
+    "dynamic-workflows",
+    "orchestration",
+    "subagents",
+    "multi-agent",
+    "agents",
+    "ai-agents",
+    "parallel",
+    "fan-out",
+    "claude-code",
+    "deep-research",
+    "code-review",
+    "llm"
   ],
   "pi": {
     "extensions": [
