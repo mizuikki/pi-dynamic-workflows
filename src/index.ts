@@ -45,6 +45,7 @@ export {
 } from "./saved-commands.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
+export { installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
 export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
   AgentOptions,
@@ -63,5 +64,14 @@ export type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 export { createWorkflowStorage } from "./workflow-saved.js";
 export type { WorkflowToolInput, WorkflowToolOptions } from "./workflow-tool.js";
 export { createWorkflowTool } from "./workflow-tool.js";
+export {
+  keyToAction,
+  type NavAction,
+  NavigatorModel,
+  NavigatorState,
+  openWorkflowNavigator,
+  renderNavigator,
+  type ViewKind,
+} from "./workflow-ui.js";
 export type { Worktree } from "./worktree.js";
 export { createWorktree, removeWorktree } from "./worktree.js";

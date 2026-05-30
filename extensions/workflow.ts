@@ -1,7 +1,9 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   createWorkflowStorage,
   createWorkflowTool,
+  installResultDelivery,
+  installTaskPanel,
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
   registerWorkflowCommands,
@@ -20,11 +22,15 @@ export default function extension(pi: ExtensionAPI) {
   registerWorkflowCommands(pi, manager, { storage, cwd });
   registerBuiltinWorkflows(pi, { cwd });
   registerAllSavedWorkflows(pi, cwd, storage);
+  // Deliver a background run's result into the conversation when it finishes.
+  installResultDelivery(pi, manager);
 
-  pi.on("session_start", () => {
+  pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
     const active = pi.getActiveTools();
     if (!active.includes(workflowTool.name)) {
       pi.setActiveTools([...active, workflowTool.name]);
     }
+    // Live "workflows running" panel below the input (focus + enter to open).
+    installTaskPanel(pi, manager, ctx.ui, { storage, cwd });
   });
 }

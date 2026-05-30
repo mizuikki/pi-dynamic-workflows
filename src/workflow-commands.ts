@@ -9,6 +9,7 @@ import type { PersistedRunState } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
+import { openWorkflowNavigator } from "./workflow-ui.js";
 
 const STATUS_ICON: Record<string, string> = {
   pending: "·",
@@ -126,7 +127,18 @@ export function registerWorkflowCommands(
       const print = (text: string) => pi.sendMessage({ customType: "workflows", content: text, display: true });
 
       switch (sub) {
+        case "ui":
         case "list": {
+          // Interactive navigator when a UI is available; plain text otherwise
+          // (print/RPC mode) or when the user explicitly asks for `list`.
+          if (sub !== "list" && ctx.hasUI) {
+            await openWorkflowNavigator(pi, manager, ctx.ui, { storage: opts.storage, cwd: opts.cwd });
+            return;
+          }
+          if (parts.length === 0 && ctx.hasUI) {
+            await openWorkflowNavigator(pi, manager, ctx.ui, { storage: opts.storage, cwd: opts.cwd });
+            return;
+          }
           const runs = manager.listRuns();
           if (!runs.length) {
             await print("No workflow runs yet. Start one with a background workflow (background: true).");

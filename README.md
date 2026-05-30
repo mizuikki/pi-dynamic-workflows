@@ -51,7 +51,8 @@ Press `Esc` to cancel a running run; active subagents are aborted and surfaced a
 Ask for a background workflow (the model passes `background: true`) and it runs without blocking your session. Manage it with the `/workflows` command:
 
 ```text
-/workflows                 # list runs (default)
+/workflows                 # open the interactive navigator (plain list in print mode)
+/workflows list            # force the plain-text list
 /workflows status <id>     # watch a running run live (status bar), prints result when done
 /workflows stop <id>       # abort a running run
 /workflows pause <id>      # pause a running run
@@ -147,7 +148,8 @@ Scripts run inside a Node `vm` sandbox. Intentionally unavailable: `Date.now()`,
 - **Structured output** — JSON-Schema-validated subagent results
 - **Real token & cost accounting** — read from each subagent's SDK session (input / output / total / cost), with a character estimate only as fallback when a provider reports no usage; `budget` gates on the real total
 - **Real per-agent / per-phase model routing** — `opts.model` and `meta.phases[].model` actually select the model (resolved against your authed model registry), with graceful fallback
-- **`/workflows` command** — list, inspect, stop, pause, **resume**, and remove background runs; runs started with `background: true` are reachable from the command
+- **`/workflows` interactive navigator** — `/workflows` opens a focused TUI you drill through with the keyboard (runs → phases → agents → agent detail): `↑/↓` (or `j/k`) select, `enter`/`→` open, `esc`/`←` back, `j/k` scroll detail, `p` pause/resume, `x` stop, `s` save, `q` quit. In print/RPC mode it falls back to plain text
+- **Live task panel + background delivery** — while a `background: true` run is going, a "Workflows running" panel sits below the input (focus it and press `enter` to open the navigator); when the run finishes, its result is delivered back into the conversation so your paused task continues
 - **Bundled `/deep-research` & `/adversarial-review`** — `/deep-research` runs real web searches (via built-in `web_search` / `web_fetch` tools), extracts claims, cross-checks them across sources, and reports only what survived; `/adversarial-review` investigates a task then has independent skeptics try to refute each finding, keeping only those that clear an agreement threshold
 - **Saved workflows as `/<name>`** — save a run's script with `/workflows save <name>` and it becomes a reusable slash command; arguments are parsed (`key=value` and positionals) and passed through as `args`
 - **Nested `workflow()`** — call `await workflow('saved-name', args)` inside a script to run a saved workflow inline; nesting is one level deep and shares the parent's concurrency limiter, agent counter, and token budget so the global caps hold
