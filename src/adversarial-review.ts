@@ -12,61 +12,64 @@ export interface AdversarialReviewConfig {
   agreementThreshold: number;
 }
 
-const DEFAULT_CONFIG: AdversarialReviewConfig = {
-  reviewerCount: 2,
-  filterContested: true,
-  agreementThreshold: 0.5,
-};
-
 /**
- * Generate an adversarial review workflow script.
+ * Generate an adversarial-review workflow. The script is static and reads its
+ * inputs from `args` (task/reviewers/threshold) — no string interpolation.
+ *
+ * Each finding is judged independently by N reviewers who are told to REFUTE it;
+ * a finding survives only when the share of reviewers calling it real meets the
+ * agreement threshold.
  */
-export function generateAdversarialReviewWorkflow(
-  taskDescription: string,
-  config: Partial<AdversarialReviewConfig> = {},
-): string {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
-
+export function generateAdversarialReviewWorkflow(): string {
   return `export const meta = {
   name: 'adversarial_review',
-  description: 'Adversarial review with ${cfg.reviewerCount} independent reviewers',
+  description: 'Adversarial review: findings cross-checked by independent skeptics',
   phases: [
-    { title: 'Initial Investigation' },
-    { title: 'Independent Review' },
-    { title: 'Cross-Check' },
+    { title: 'Investigate' },
+    { title: 'Refute' },
     { title: 'Consensus' },
   ],
-};
+}
 
-phase('Initial Investigation');
-const findings = await agent(
-  'Investigate and document findings for: ${taskDescription.replace(/'/g, "\\'").slice(0, 80)}',
-  { label: 'investigator' }
-);
+const task = (args && args.task) || ''
+const reviewers = (args && args.reviewers) || 2
+const threshold = (args && args.threshold) || 0.5
 
-phase('Independent Review');
-const reviews = await parallel(Array.from({ length: ${cfg.reviewerCount} }, (_, i) => () =>
-  agent(
-    'Independently review these findings. Agree or disagree with each point, and explain why:\\n\\n' + findings,
-    { label: 'reviewer-' + (i + 1) }
-  )
-));
+phase('Investigate')
+const investigation = await agent(
+  'Investigate the following and list concrete, individually-checkable findings:\\n' + task,
+  { label: 'investigate', schema: { type: 'object', properties: { findings: { type: 'array', items: { type: 'string' } } }, required: ['findings'] } }
+)
+const findings = investigation.findings || []
 
-phase('Cross-Check');
-const crossCheck = await agent(
-  'Compare these independent reviews and identify points of agreement and disagreement:\\n' +
-  'Reviews: ' + JSON.stringify(reviews) + '\\n' +
-  'Original findings: ' + findings,
-  { label: 'cross-checker' }
-);
+phase('Refute')
+const judged = await parallel(findings.map((f, i) => () =>
+  parallel(Array.from({ length: reviewers }, (_, r) => () =>
+    agent(
+      'You are a skeptical reviewer. Try to REFUTE this finding for the task below. ' +
+      'Default to real=false when uncertain. Investigate with the available tools if needed.\\n\\n' +
+      'TASK: ' + task + '\\nFINDING: ' + f,
+      { label: 'refute ' + (i + 1) + '.' + (r + 1), schema: { type: 'object', properties: { real: { type: 'boolean' }, reason: { type: 'string' } }, required: ['real'] } }
+    )
+  )).then((votes) => {
+    const valid = votes.filter(Boolean)
+    const realCount = valid.filter((v) => v && v.real).length
+    const ratio = valid.length ? realCount / valid.length : 0
+    return { finding: f, realVotes: realCount, totalVotes: valid.length, survives: ratio >= threshold }
+  })
+))
 
-phase('Consensus');
-const consensus = await agent(
-  'Based on the cross-check, produce a final verified report. Only include findings that survived independent review:\\n' + crossCheck,
-  { label: 'consensus-builder' }
-);
+const survivors = judged.filter((j) => j && j.survives)
 
-return { findings, reviews, crossCheck, consensus };`;
+phase('Consensus')
+const report = await agent(
+  'Write a final review report. Include ONLY the findings that survived adversarial review (listed below), ' +
+  'each with a short justification. Note how many were discarded.\\n\\n' +
+  'SURVIVING FINDINGS JSON:\\n' + JSON.stringify(survivors),
+  { label: 'consensus' }
+)
+
+return { total: findings.length, survivors, report }`;
 }
 
 /**

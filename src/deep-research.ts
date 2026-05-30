@@ -4,80 +4,72 @@
  */
 
 export interface DeepResearchConfig {
-  /** Number of search angles to explore. */
-  searchAngles: number;
-  /** Number of sources to fetch per angle. */
-  sourcesPerAngle: number;
-  /** Whether to cross-check claims across sources. */
-  crossCheck: boolean;
-  /** Maximum number of agents to use. */
-  maxAgents: number;
+  /** Number of distinct search angles/queries to explore. */
+  angles: number;
+  /** Minimum distinct sources required for a claim to survive cross-checking. */
+  minSupport: number;
 }
 
-const DEFAULT_CONFIG: DeepResearchConfig = {
-  searchAngles: 4,
-  sourcesPerAngle: 3,
-  crossCheck: true,
-  maxAgents: 20,
-};
-
 /**
- * Generate a deep research workflow script.
+ * Generate a deep-research workflow that uses the real web_search/web_fetch tools.
+ *
+ * The script is static and reads its inputs from `args` (question/angles/minSupport),
+ * so the question is never string-interpolated into source — no escaping hazards.
+ * Inject the web tools at run time via the agent's `tools` option.
  */
-export function generateDeepResearchWorkflow(question: string, config: Partial<DeepResearchConfig> = {}): string {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
-  const escapedQuestion = question.replace(/'/g, "\\'").slice(0, 80);
-
-  const crossCheckPhase = cfg.crossCheck
-    ? `phase('Cross-Check');
-const crossCheck = await agent(
-  'Cross-check these research findings. Identify claims that are supported by multiple sources vs. claims that appear in only one source:\\n' +
-  'Sources: ' + JSON.stringify(sources),
-  { label: 'cross-checker' }
-);`
-    : "";
-
-  const crossCheckRef = cfg.crossCheck ? "'Cross-check: ' + crossCheck + '\\n' + " : "";
-  const crossCheckReturn = cfg.crossCheck ? "crossCheck, " : "";
-
+export function generateDeepResearchWorkflow(): string {
   return `export const meta = {
   name: 'deep_research',
-  description: 'Deep research: ${escapedQuestion}',
+  description: 'Deep research with real web search and cross-checked claims',
   phases: [
-    { title: 'Search Planning' },
-    { title: 'Source Gathering' },
-    { title: 'Cross-Check' },
+    { title: 'Queries' },
+    { title: 'Gather' },
+    { title: 'Verify' },
     { title: 'Report' },
   ],
-};
+}
 
-phase('Search Planning');
-const question = '${escapedQuestion}';
-const searchPlan = await agent(
-  'Plan ${cfg.searchAngles} different search angles to research this question comprehensively: ' + question,
-  { label: 'search-planner' }
-);
+const question = (args && args.question) || ''
+const angles = (args && args.angles) || 4
+const minSupport = (args && args.minSupport) || 2
 
-phase('Source Gathering');
-const sources = await parallel(Array.from({ length: ${cfg.searchAngles} }, (_, i) => () =>
+phase('Queries')
+const plan = await agent(
+  'You are planning web research for this question:\\n' + question +
+  '\\n\\nProduce ' + angles + ' diverse, specific search queries that together cover the question from different angles.',
+  { label: 'plan queries', schema: { type: 'object', properties: { queries: { type: 'array', items: { type: 'string' } } }, required: ['queries'] } }
+)
+const queries = (plan.queries || []).slice(0, angles)
+
+phase('Gather')
+const gathered = await parallel(queries.map((q, i) => () =>
   agent(
-    'Research angle ' + (i + 1) + ' for this question: ' + question + '\\n\\nPlan: ' + searchPlan + '\\n\\nFind and summarize ${cfg.sourcesPerAngle} relevant sources.',
-    { label: 'researcher-' + (i + 1) }
+    'Research this query using the web_search and web_fetch tools.\\nQuery: ' + q +
+    '\\n\\nSteps: (1) call web_search with the query; (2) web_fetch the 2 most relevant result URLs; ' +
+    '(3) extract concrete, verifiable factual claims, each tagged with the exact source URL it came from. ' +
+    'Do NOT invent sources or claims — report only what the fetched pages actually say.',
+    { label: 'research ' + (i + 1), schema: { type: 'object', properties: { sources: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' }, claims: { type: 'array', items: { type: 'string' } } }, required: ['url', 'claims'] } } }, required: ['sources'] } }
   )
-));
+))
+const allSources = gathered.filter(Boolean).flatMap((g) => (g && g.sources) || [])
 
-${crossCheckPhase}
+phase('Verify')
+const verdict = await agent(
+  'Cross-check these research sources. Group claims that assert the same fact across different source URLs. ' +
+  'Keep a claim only if it is supported by at least ' + minSupport + ' distinct source URLs OR by one clearly authoritative source. ' +
+  'Discard claims found in a single weak source or that conflict with others.\\n\\nSOURCES JSON:\\n' + JSON.stringify(allSources),
+  { label: 'cross-check', schema: { type: 'object', properties: { supported: { type: 'array', items: { type: 'object', properties: { claim: { type: 'string' }, sources: { type: 'array', items: { type: 'string' } } }, required: ['claim', 'sources'] } }, discarded: { type: 'array', items: { type: 'string' } } }, required: ['supported'] } }
+)
 
-phase('Report');
+phase('Report')
 const report = await agent(
-  'Synthesize a comprehensive research report from these findings:\\n' +
-  'Question: ' + question + '\\n' +
-  'Sources: ' + JSON.stringify(sources) + '\\n' +
-  ${crossCheckRef}'\\n\\nProduce a well-structured report with citations and confidence levels.',
-  { label: 'report-writer' }
-);
+  'Write a concise, well-structured research report that answers the question using ONLY the supported claims below. ' +
+  'Cite source URLs inline next to each claim. If the evidence is thin, say so explicitly.\\n\\n' +
+  'QUESTION: ' + question + '\\n\\nSUPPORTED CLAIMS JSON:\\n' + JSON.stringify((verdict && verdict.supported) || []),
+  { label: 'write report' }
+)
 
-return { searchPlan, sources, ${crossCheckReturn}report };`;
+return { question, queries, supported: (verdict && verdict.supported) || [], report }`;
 }
 
 /**

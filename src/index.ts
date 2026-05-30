@@ -4,6 +4,7 @@ export type { AgentRunOptions, AgentRunResult, WorkflowAgentOptions } from "./ag
 export { WorkflowAgent } from "./agent.js";
 export type { AutoWorkflowConfig } from "./auto-workflow.js";
 export { shouldUseWorkflow, suggestWorkflowScript } from "./auto-workflow.js";
+export { registerBuiltinWorkflows } from "./builtin-commands.js";
 export * from "./config.js";
 export type { DeepResearchConfig } from "./deep-research.js";
 export { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
@@ -39,6 +40,7 @@ export type { PersistedRunState, RunPersistence, RunStatus } from "./run-persist
 export { createRunPersistence, generateRunId } from "./run-persistence.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
+export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
   AgentOptions,
   JournalEntry,
