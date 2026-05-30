@@ -52,6 +52,31 @@ test("runWorkflow falls back to an estimate when provider reports total === 0", 
   assert.equal(result.tokenUsage?.cost, 0);
 });
 
+test("runWorkflow routes models: explicit opts.model > phase model > default", async () => {
+  const seen: Array<string | undefined> = [];
+  const capturingAgent = {
+    async run(_prompt: string, options: { model?: string; onUsage?: (u: AgentUsage) => void }) {
+      seen.push(options.model);
+      return "ok";
+    },
+  };
+
+  const script = `export const meta = {
+    name: 'routing', description: 'model routing',
+    phases: [{ title: 'A', model: 'phase-a-model' }, { title: 'B' }]
+  }
+  phase('A')
+  await agent('explicit wins', { label: 'e', model: 'explicit-model' })
+  await agent('phase routed', { label: 'p' })
+  phase('B')
+  await agent('no model -> default', { label: 'n' })
+  return {}`;
+
+  await runWorkflow(script, { agent: capturingAgent, persistLogs: false });
+
+  assert.deepEqual(seen, ["explicit-model", "phase-a-model", undefined]);
+});
+
 test("runWorkflow budget gates on accumulated tokens", async () => {
   // Each agent reports 100 tokens; a 100 budget allows one then exhausts
   // (the next agent sees remaining() === 0 at start and throws).

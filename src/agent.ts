@@ -1,9 +1,12 @@
-import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
+import { join } from "node:path";
+import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import {
+  AuthStorage,
   type CreateAgentSessionOptions,
   createAgentSession,
   createCodingTools,
   getAgentDir,
+  ModelRegistry,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
@@ -43,6 +46,14 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * usage is never lost. `total === 0` means the provider reported no usage.
    */
   onUsage?: (usage: AgentUsage) => void;
+  /**
+   * Model spec for this subagent: either `provider/modelId` (unambiguous) or a
+   * bare `modelId`. When it can't be resolved, the session default is used and
+   * a warning is logged. When omitted, the session default applies.
+   */
+  model?: string;
+  /** Called with the resolved model id once known (for display/telemetry). */
+  onModelResolved?: (modelId: string) => void;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -54,12 +65,39 @@ export class WorkflowAgent {
   private readonly baseTools: ToolDefinition[];
   private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
   private readonly instructions?: string;
+  /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
+  private registry?: ModelRegistry;
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
     this.baseTools = options.tools ?? createCodingTools(this.cwd);
     this.sessionOptions = options.session ?? {};
     this.instructions = options.instructions;
+  }
+
+  private getRegistry(): ModelRegistry {
+    if (!this.registry) {
+      const dir = getAgentDir();
+      // Same agentDir/auth files createAgentSession uses by default, so a model
+      // resolved here carries valid credentials.
+      const auth = AuthStorage.create(join(dir, "auth.json"));
+      this.registry = ModelRegistry.create(auth, join(dir, "models.json"));
+    }
+    return this.registry;
+  }
+
+  /**
+   * Resolve a model spec to a Model. Accepts `provider/modelId` (unambiguous)
+   * or a bare `modelId` (prefers auth-configured models, then any known model).
+   * Returns undefined when nothing matches.
+   */
+  private resolveModel(spec: string): Model<any> | undefined {
+    const registry = this.getRegistry();
+    const slash = spec.indexOf("/");
+    if (slash > 0) {
+      return registry.find(spec.slice(0, slash), spec.slice(slash + 1));
+    }
+    return registry.getAvailable().find((m) => m.id === spec) ?? registry.getAll().find((m) => m.id === spec);
   }
 
   async run<TSchemaDef extends TSchema | undefined = undefined>(
@@ -71,6 +109,18 @@ export class WorkflowAgent {
 
     if (options.schema) {
       customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
+    }
+
+    // Resolve a requested model spec to a Model object. A given-but-unresolved
+    // spec falls back to the session default (with a warning) rather than failing.
+    let resolvedModel: Model<any> | undefined;
+    if (options.model) {
+      resolvedModel = this.resolveModel(options.model);
+      if (resolvedModel) {
+        options.onModelResolved?.(`${resolvedModel.provider}/${resolvedModel.id}`);
+      } else {
+        console.warn(`[workflow] model "${options.model}" not found; using session default`);
+      }
     }
 
     const agentDir = getAgentDir();
@@ -85,6 +135,8 @@ export class WorkflowAgent {
       settingsManager: SettingsManager.create(this.cwd, agentDir),
       customTools,
       ...this.sessionOptions,
+      // Per-call model wins over any sessionOptions.model.
+      ...(resolvedModel ? { model: resolvedModel } : {}),
     });
 
     let removeAbortListener: (() => void) | undefined;

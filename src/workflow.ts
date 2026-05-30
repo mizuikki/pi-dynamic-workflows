@@ -7,6 +7,7 @@ import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
+import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 
 export interface WorkflowMetaPhase {
   title: string;
@@ -37,7 +38,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   runId?: string;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  onAgentStart?: (event: { label: string; phase?: string; prompt: string }) => void;
+  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string }) => void;
   onAgentEnd?: (event: { label: string; phase?: string; result: unknown; tokens?: number }) => void;
   onTokenUsage?: (usage: { input: number; output: number; total: number; cost: number }) => void;
 }
@@ -93,6 +94,8 @@ export async function runWorkflow<T = unknown>(
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now();
   const { meta, body } = parseWorkflowScript(script);
+  // Per-phase model routing from meta.phases[].model (empty when none declared).
+  const routingConfig = parseModelRoutingFromMeta(meta.phases);
   const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
   const agentTimeoutMs = options.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
   const runId = options.runId ?? `run-${started.toString(36)}`;
@@ -164,13 +167,15 @@ export async function runWorkflow<T = unknown>(
 
     const assignedPhase = agentOptions.phase ?? state.currentPhase;
     const requestedLabel = agentOptions.label?.trim();
+    // Precedence: explicit agentOptions.model > phase model (meta.phases[].model).
+    const modelSpec = agentOptions.model ?? resolveModelForPhase(assignedPhase, routingConfig);
 
     return limiter(async () => {
       state.agentCount++;
       const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
       const timeout = agentOptions.timeoutMs ?? agentTimeoutMs;
 
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt });
+      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: modelSpec });
 
       // Captured from the subagent's real session usage; falls back to an
       // estimate when the provider reports no usage (total === 0).
@@ -197,6 +202,7 @@ export async function runWorkflow<T = unknown>(
             schema: agentOptions.schema,
             signal: options.signal,
             instructions: buildAgentInstructions(assignedPhase, agentOptions),
+            model: modelSpec,
             onUsage: (u: AgentUsage) => {
               usage = u;
             },
@@ -480,7 +486,7 @@ function buildAgentInstructions(phase: string | undefined, options: AgentOptions
   if (phase) lines.push(`Workflow phase: ${phase}`);
   if (options.agentType) lines.push(`Act as workflow subagent type: ${options.agentType}`);
   if (options.isolation) lines.push(`Requested isolation: ${options.isolation}`);
-  if (options.model) lines.push(`Requested model: ${options.model}`);
+  // Note: options.model is applied for real via the session, not injected as prose.
   return lines.length ? lines.join("\n") : undefined;
 }
 
