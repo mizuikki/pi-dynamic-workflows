@@ -61,7 +61,7 @@ test("installResultDelivery reports failures (background only)", () => {
   assert.match(sent[0], /run-9 failed: boom/);
 });
 
-test("installTaskPanel shows running runs and opens the navigator on enter", () => {
+test("installTaskPanel shows running runs and points to /workflows (no input)", () => {
   const manager = fakeManager();
   manager.runs.set("run-1", {
     runId: "run-1",
@@ -79,18 +79,13 @@ test("installTaskPanel shows running runs and opens the navigator on enter", () 
       : undefined;
 
   let widgetFactory: any;
-  let customOpened = false;
   const ui: any = {
     setWidget: (_key: string, factory: any) => {
       widgetFactory = factory;
     },
-    custom: async () => {
-      customOpened = true;
-    },
   };
-  const pi: any = {};
 
-  installTaskPanel(pi, manager, ui, {});
+  installTaskPanel({} as any, manager, ui, {});
   assert.equal(typeof widgetFactory, "function");
 
   const tui: any = { requestRender: () => {} };
@@ -98,10 +93,9 @@ test("installTaskPanel shows running runs and opens the navigator on enter", () 
   const lines = comp.render(80).join("\n");
   assert.match(lines, /Workflows running \(1\)/);
   assert.match(lines, /◆ audit\s+1\/2 agents · Scan/);
-
-  // Enter opens the navigator.
-  comp.handleInput("\r");
-  assert.equal(customOpened, true);
+  assert.match(lines, /run \/workflows to open/);
+  // The panel is informational and takes no keyboard input.
+  assert.equal(comp.handleInput, undefined);
 });
 
 test("installTaskPanel renders nothing when no runs are active", () => {

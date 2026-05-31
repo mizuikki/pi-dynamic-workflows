@@ -1,17 +1,15 @@
 /**
  * Background-run UX, mirroring Claude Code:
  *  - A live task panel below the input lists in-progress runs while you keep working.
- *    Focus it (↓) and press enter to open the full navigator.
+ *    It is informational; run /workflows to open the full navigator.
  *  - When a background run finishes, its result is delivered back into the
  *    conversation so the paused task continues with the outcome.
  */
 
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { parseKey } from "@earendil-works/pi-tui";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
-import { openWorkflowNavigator } from "./workflow-ui.js";
 
 const RUN_EVENTS = ["agentStart", "agentEnd", "phase", "log", "complete", "error", "stopped", "paused", "resumed"];
 
@@ -54,7 +52,7 @@ export function installResultDelivery(pi: ExtensionAPI, manager: WorkflowManager
   });
 }
 
-function renderPanel(manager: WorkflowManager, theme: Theme, focused: boolean): string[] {
+function renderPanel(manager: WorkflowManager, theme: Theme): string[] {
   const active = manager.listRuns().filter((r) => r.status === "running" || r.status === "paused");
   if (!active.length) return [];
   const rows = active.map((r) => {
@@ -65,36 +63,30 @@ function renderPanel(manager: WorkflowManager, theme: Theme, focused: boolean): 
     const phase = live?.snapshot.currentPhase ? ` · ${live.snapshot.currentPhase}` : "";
     return `  ${icon} ${r.workflowName}  ${done}/${agents.length} agents${phase}`;
   });
-  const hint = focused
-    ? theme.fg("accent", "  enter: open · esc: back")
-    : theme.fg("dim", "  ↓ then enter, or /workflows, to open");
+  const hint = theme.fg("dim", "  run /workflows to open");
   return [theme.bold(`Workflows running (${active.length}):`), ...rows, hint];
 }
 
 /**
  * Install the live "workflows running" panel below the editor. Re-rendered on
- * every manager event; focus + enter opens the navigator.
+ * every manager event. Informational only — the user opens the navigator with
+ * /workflows. (`_pi`/`_opts` are kept for signature stability.)
  */
 export function installTaskPanel(
-  pi: ExtensionAPI,
+  _pi: ExtensionAPI,
   manager: WorkflowManager,
   ui: ExtensionUIContext,
-  opts: TaskPanelOptions = {},
+  _opts: TaskPanelOptions = {},
 ): void {
   ui.setWidget(
     "workflow-tasks",
     (tui: TUI, theme: Theme) => {
       const onEvent = () => tui.requestRender();
       for (const ev of RUN_EVENTS) manager.on(ev, onEvent);
-      const comp: Component & { focused?: boolean; dispose?(): void } = {
-        focused: false,
-        render: () => renderPanel(manager, theme, comp.focused ?? false),
-        handleInput: (data: string) => {
-          const key = parseKey(data);
-          if (key === "enter" || key === "return" || key === "right") {
-            void openWorkflowNavigator(pi, manager, ui, opts);
-          }
-        },
+      // Purely informational: it lists running runs and re-renders on events. To
+      // open the navigator, the user runs /workflows (the panel takes no input).
+      const comp: Component & { dispose?(): void } = {
+        render: () => renderPanel(manager, theme),
         invalidate: () => {},
         dispose: () => {
           for (const ev of RUN_EVENTS) manager.off(ev, onEvent);

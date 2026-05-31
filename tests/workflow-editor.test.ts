@@ -31,6 +31,26 @@ test("endsWithTrigger detects a trigger immediately before the cursor", () => {
   assert.equal(endsWithTrigger("work"), false);
 });
 
+test("slash commands are excluded: /workflow(s) is not a trigger", () => {
+  assert.equal(hasTrigger("/workflows"), false);
+  assert.equal(hasTrigger("/workflow"), false);
+  assert.equal(hasTrigger("run /workflows status"), false);
+  // A real trigger elsewhere still counts even if a slash command is also present.
+  assert.equal(hasTrigger("a workflow then /workflows"), true);
+  // Backspace toggle must not fire right after a slash command.
+  assert.equal(endsWithTrigger("/workflows"), false);
+  assert.equal(endsWithTrigger("type /workflow"), false);
+});
+
+test("colorizeWorkflow skips a slash-prefixed /workflow but paints a bare one", () => {
+  assert.equal(colorizeWorkflow("/workflows", 0), "/workflows", "slash command left plain");
+  const out = colorizeWorkflow("a workflow and /workflow", 0);
+  // Exactly one occurrence colored (the bare 'workflow', not the slash one).
+  const colorRuns = out.match(new RegExp("\\u001b\\[38;5;\\d+m", "g")) ?? [];
+  assert.equal(colorRuns.length, "workflow".length, "only the bare word is colored");
+  assert.equal(stripAnsi(out), "a workflow and /workflow");
+});
+
 test("tokenizeAnsi keeps CSI and APC sequences as single escape tokens", () => {
   const line = `a\x1b[7mb\x1b[0m${CURSOR_MARKER}c`;
   const tokens = tokenizeAnsi(line);

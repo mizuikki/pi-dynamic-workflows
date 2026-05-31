@@ -110,7 +110,7 @@ In the **interactive navigator**: `↑/↓` (or `j/k`) select · `enter`/`→` o
 
 ### Workflows mode (input box)
 
-As you type, the words `workflow`/`workflows` light up as a **flowing rainbow** — a signal that submitting this message will deliberately run a workflow (the message is rewritten to ask Pi to orchestrate subagents rather than answer directly). Changed your mind? Press **Backspace** once right after the word: it turns plain white (disarmed) without being deleted. Type a fresh trigger word to re-arm. Everything else about the editor — history, autocomplete, paste, multiline — is unchanged.
+As you type, the words `workflow`/`workflows` light up as a **flowing rainbow** — a signal that submitting this message will deliberately run a workflow (the message is rewritten to ask Pi to orchestrate subagents rather than answer directly). Changed your mind? Press **Backspace** once right after the word: it turns plain white (disarmed) without being deleted. Type a fresh trigger word to re-arm. Slash commands like `/workflows` are left alone (never highlighted). Everything else about the editor — history, autocomplete, paste, multiline — is unchanged.
 
 ## Writing a workflow
 

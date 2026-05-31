@@ -19,12 +19,15 @@
 import { CustomEditor, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 
-/** Matches a trigger anywhere in the text (substring, case-insensitive). */
-const TRIGGER = /workflows?/i;
+// A trigger is `workflow`/`workflows` (substring, case-insensitive) that is NOT
+// immediately preceded by `/` — so a slash command like `/workflows` or `/workflow`
+// is left alone (not colored, not armed).
+/** Matches a trigger anywhere in the text. */
+const TRIGGER = /(?<!\/)workflows?/i;
 /** Global variant for finding every occurrence to colorize. */
-const TRIGGER_G = /workflows?/gi;
+const TRIGGER_G = /(?<!\/)workflows?/gi;
 /** True when the text immediately before the cursor ends with a trigger word. */
-const TRIGGER_AT_END = /workflows?$/i;
+const TRIGGER_AT_END = /(?<!\/)workflows?$/i;
 
 /** 256-color ring cycling through the spectrum — shifted by a tick to "flow". */
 export const RAINBOW = [
