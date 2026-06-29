@@ -3,6 +3,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import type { ThinkingLevel } from "@mizuikki/pi-agent-core";
 import type { WorkflowAgent } from "./agent.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
@@ -88,6 +89,8 @@ export class WorkflowManager extends EventEmitter {
   private agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   private mainModel?: string;
+  /** The session's current thinking level; tier configs inherit from this when unset. */
+  private currentThinkingLevel?: ThinkingLevel;
   /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
   private sessionId?: string;
   private defaultAgentTimeoutMs: number | null;
@@ -140,6 +143,11 @@ export class WorkflowManager extends EventEmitter {
   /** Set the session's main model (provider/id). Used to auto-tier explore agents. */
   setMainModel(spec: string | undefined): void {
     this.mainModel = spec;
+  }
+
+  /** Set the session's current thinking level for future workflow runs. */
+  setThinkingLevel(level: ThinkingLevel | undefined): void {
+    this.currentThinkingLevel = level;
   }
 
   /**
@@ -290,6 +298,8 @@ export class WorkflowManager extends EventEmitter {
         args,
         agent: this.agent,
         mainModel: this.mainModel,
+        session: this.currentThinkingLevel ? { thinkingLevel: this.currentThinkingLevel } : undefined,
+        currentThinkingLevel: this.currentThinkingLevel,
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRetries: resolvedAgentRetries,

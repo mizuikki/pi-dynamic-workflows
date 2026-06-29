@@ -4,7 +4,7 @@ import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
 import type { AgentUsage } from "./agent.js";
-import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
+import { resolveAgentTierThinkingLevel, WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import {
   type AgentDefinition,
@@ -59,6 +59,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), shown in /workflows for default agents. */
   mainModel?: string;
+  /** The session's current thinking level; tier configs inherit from this when unspecified. */
+  currentThinkingLevel?: string;
   /**
    * Named subagent definitions for `agent({ agentType })`. Snapshotted once per
    * run for determinism. Defaults to scanning `.pi/agents` (project) + `~/.pi/agents`.
@@ -381,6 +383,8 @@ export async function runWorkflow<T = unknown>(
     const explicitModel = agentOptions.model ?? agentDef?.model;
     const modelSpec =
       explicitModel ?? (agentOptions.tier ? undefined : resolveModelForPhase(assignedPhase, routingConfig));
+    const tierThinkingLevel =
+      !explicitModel && agentOptions.tier ? resolveAgentTierThinkingLevel({ tier: agentOptions.tier }) : undefined;
     // For display in /workflows: the model this agent runs on — its explicit/phase
     // spec, else the session's main model. The real resolved id overrides this via
     // onModelResolved once the subagent session is created.
@@ -464,6 +468,7 @@ export async function runWorkflow<T = unknown>(
                 instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef),
                 model: modelSpec,
                 tier: agentOptions.tier,
+                thinkingLevel: tierThinkingLevel,
                 toolNames: agentDef?.tools,
                 disallowedToolNames: agentDef?.disallowedTools,
                 cwd: runCwd,

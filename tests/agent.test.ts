@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
-import { listAvailableModelSpecs, resolveAgentModelSpec, WorkflowAgent } from "../src/agent.js";
+import {
+  listAvailableModelSpecs,
+  resolveAgentModelSpec,
+  resolveAgentTierThinkingLevel,
+  WorkflowAgent,
+} from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import type { ModelTierConfig } from "../src/model-tier-config.js";
 import { runWorkflow } from "../src/workflow.js";
@@ -34,7 +39,11 @@ test("listAvailableModelSpecs entries have provider/model format when non-empty"
 // ═══════════════════════════════════════════════════════════════════════════
 
 const tierConfig: ModelTierConfig = {
-  tiers: { small: "vendor/small", medium: "vendor/medium", big: "vendor/big" },
+  tiers: {
+    small: { model: "vendor/small", thinkingLevel: "low" },
+    medium: { model: "vendor/medium" },
+    big: { model: "vendor/big", thinkingLevel: "high" },
+  },
 };
 const loadCfg = () => tierConfig;
 const noCfg = () => null;
@@ -74,12 +83,23 @@ test("resolveAgentModelSpec: untagged agent with NO config falls through to sess
 });
 
 test("resolveAgentModelSpec: untagged agent with a config lacking a medium tier => session default", () => {
-  const noMedium = () => ({ tiers: { small: "vendor/small" } });
+  const noMedium = () => ({ tiers: { small: { model: "vendor/small" } } });
   assert.equal(resolveAgentModelSpec({}, "main/model", noMedium), undefined);
 });
 
 test("resolveAgentModelSpec: tier with no main model and no config yields undefined", () => {
   assert.equal(resolveAgentModelSpec({ tier: "small" }, undefined, noCfg), undefined);
+});
+
+test("resolveAgentTierThinkingLevel returns explicit thinking when configured", () => {
+  assert.equal(resolveAgentTierThinkingLevel({ tier: "small" }, loadCfg), "low");
+  assert.equal(resolveAgentTierThinkingLevel({ tier: "big" }, loadCfg), "high");
+});
+
+test("resolveAgentTierThinkingLevel returns undefined when tier inherits the session default", () => {
+  assert.equal(resolveAgentTierThinkingLevel({ tier: "medium" }, loadCfg), undefined);
+  assert.equal(resolveAgentTierThinkingLevel({}, loadCfg), undefined);
+  assert.equal(resolveAgentTierThinkingLevel({ tier: "small" }, noCfg), undefined);
 });
 
 test("WorkflowAgent constructor accepts all option shapes without throwing", () => {

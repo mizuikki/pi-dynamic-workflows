@@ -1,20 +1,12 @@
 /**
  * Tests for workflows-models-command.ts
- *
- * Since pi.registerCommand and ctx.ui functions are only available at runtime
- * inside Pi, these tests focus on the pure logic: command creation,
- * the editSingleTier single-select helper, and integration with model-tier-config.
- *
- * editSingleTier now uses ctx.ui.custom() with SelectList.
- * In tests, we mock ctx.ui.custom to directly return the expected value.
  */
 
 import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 
 async function loadCommand() {
-  const mod = await import("../src/workflows-models-command.js");
-  return mod;
+  return await import("../src/workflows-models-command.js");
 }
 
 describe("workflows-models-command", () => {
@@ -23,7 +15,7 @@ describe("workflows-models-command", () => {
       const { registerWorkflowModelsCommand } = await loadCommand();
       const commands: string[] = [];
       const mockPi = {
-        registerCommand: mock.fn((name: string, _opts: unknown) => {
+        registerCommand: mock.fn((name: string) => {
           commands.push(name);
         }),
       };
@@ -46,7 +38,7 @@ describe("workflows-models-command", () => {
 
       registerWorkflowModelsCommand(mockPi as never);
       assert.ok(capturedDescription.length > 0, "description should not be empty");
-      assert.ok(capturedDescription.toLowerCase().includes("tier"), "description should mention tiers");
+      assert.ok(capturedDescription.toLowerCase().includes("thinking"), "description should mention thinking");
     });
   });
 
@@ -56,66 +48,60 @@ describe("workflows-models-command", () => {
       assert.equal(typeof mod.editSingleTier, "function");
     });
 
-    it("returns null when user presses Escape (done with null)", async () => {
+    it("returns null when user immediately backs out", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return null (simulating user cancelling)
       const ctx = {
         ui: {
-          custom: mock.fn(async () => null),
+          select: mock.fn(async () => "Back"),
           notify: mock.fn(),
         },
       };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
 
-      const result = await editSingleTier(ctx as never, tiers, "small");
+      const result = await editSingleTier(ctx as never, { model: "openai/gpt-4.1-mini" }, "small");
       assert.equal(result, null);
     });
 
-    it("returns null when user selects the same model (no change)", async () => {
+    it("updates the tier model via the model picker", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return the same model that's already selected
+      const selections = ["Model → openai/gpt-4.1-mini", "Back"];
       const ctx = {
+        modelRegistry: {
+          find: mock.fn((_provider: string, _id: string) => ({ provider: "openai", id: "gpt-5" })),
+          getAvailableSync: mock.fn(() => []),
+          getAll: mock.fn(() => []),
+        },
         ui: {
-          custom: mock.fn(async () => "gpt-4.1-mini"),
+          select: mock.fn(async () => selections.shift()),
+          custom: mock.fn(async () => "openai/gpt-5"),
           notify: mock.fn(),
         },
       };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
 
-      const result = await editSingleTier(ctx as never, tiers, "small");
-      assert.equal(result, null); // no change
+      const result = await editSingleTier(ctx as never, { model: "openai/gpt-4.1-mini" }, "small");
+      assert.deepEqual(result, { model: "openai/gpt-5" });
     });
 
-    it("selects a different model and returns updated tiers", async () => {
+    it("can switch a tier to inherit current session thinking", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return a different model
+      const selections = ["Thinking level → high", "inherit current session", "Back"];
       const ctx = {
+        modelRegistry: {
+          find: mock.fn((_provider: string, id: string) => ({
+            provider: "openai",
+            id,
+            reasoning: true,
+          })),
+          getAvailableSync: mock.fn(() => []),
+          getAll: mock.fn(() => []),
+        },
         ui: {
-          custom: mock.fn(async () => "gpt-5"),
+          select: mock.fn(async () => selections.shift()),
           notify: mock.fn(),
         },
       };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
 
-      const result = await editSingleTier(ctx as never, tiers, "small");
-      assert.ok(result, "should return updated tiers");
-      assert.equal(result.small, "gpt-5", "should have changed model");
-      assert.equal(typeof result.small, "string", "should still be a string");
-    });
-
-    it("selects a model when no current model exists", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      const ctx = {
-        ui: {
-          custom: mock.fn(async () => "openai/gpt-4.1-mini"),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = {};
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
-      assert.ok(result, "should return updated tiers");
-      assert.equal(result.small, "openai/gpt-4.1-mini");
+      const result = await editSingleTier(ctx as never, { model: "openai/gpt-4.1", thinkingLevel: "high" }, "big");
+      assert.deepEqual(result, { model: "openai/gpt-4.1" });
     });
   });
 });

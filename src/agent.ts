@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { ThinkingLevel } from "@mizuikki/pi-agent-core";
 import type { AssistantMessage, Model, TextContent } from "@mizuikki/pi-ai";
 import {
   AuthStorage,
@@ -16,7 +17,12 @@ import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
 import { applyToolPolicy } from "./agent-registry.js";
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
-import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
+import {
+  loadModelTierConfig,
+  type ModelTierConfig,
+  resolveTierModel,
+  resolveTierThinkingLevel,
+} from "./model-tier-config.js";
 import { type CreateAgentSessionOptions, createAgentSession, createCodingTools } from "./pi-coding-agent-sdk.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
@@ -224,6 +230,19 @@ export function resolveAgentModelSpec(
   return undefined;
 }
 
+/**
+ * Resolve the explicit thinking level to use for a tier, if one was configured.
+ * Undefined means "inherit the current session thinking level".
+ */
+export function resolveAgentTierThinkingLevel(
+  options: { tier?: string },
+  loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
+): ThinkingLevel | undefined {
+  if (!options.tier) return undefined;
+  const config = loadConfig();
+  return config ? resolveTierThinkingLevel(options.tier, config) : undefined;
+}
+
 export interface WorkflowAgentOptions {
   cwd?: string;
   /** Extra tools available to the subagent in addition to the structured output tool. */
@@ -294,6 +313,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * caring which concrete model backs that tier.
    */
   tier?: string;
+  /** Explicit thinking level for this subagent session. Undefined inherits the session default. */
+  thinkingLevel?: ThinkingLevel;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
   /** Called when `model`/`tier`/phase resolved to a spec that wasn't found (fell back to session default). */
@@ -435,6 +456,7 @@ export class WorkflowAgent {
       resourceLoader,
       // Per-call model wins over any sessionOptions.model.
       ...(resolvedModel ? { model: resolvedModel } : {}),
+      ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
     });
 
     await session.bindExtensions({

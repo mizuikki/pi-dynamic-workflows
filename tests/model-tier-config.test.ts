@@ -1,13 +1,5 @@
 /**
  * Tests for model-tier-config.ts
- *
- * Covers:
- * 1. buildDefaultTierConfig — all tiers default to the given model
- * 2. resolveTierModel logic
- * 3. save/load round-trip + all validation/error paths (scoped to a temp dir)
- * 4. sortedTierNames helper
- *
- * All tier configs are single-model-per-tier (Record<string, string>).
  */
 
 import assert from "node:assert/strict";
@@ -22,22 +14,14 @@ async function loadModule() {
 
 describe("model-tier-config", () => {
   describe("buildDefaultTierConfig", () => {
-    it("sets every tier to the provided current model", async () => {
+    it("sets every tier to the provided current model and inherits thinking", async () => {
       const { buildDefaultTierConfig } = await loadModule();
       const cfg = buildDefaultTierConfig("openai/gpt-4.1");
       assert.deepEqual(cfg.tiers, {
-        small: "openai/gpt-4.1",
-        medium: "openai/gpt-4.1",
-        big: "openai/gpt-4.1",
+        small: { model: "openai/gpt-4.1" },
+        medium: { model: "openai/gpt-4.1" },
+        big: { model: "openai/gpt-4.1" },
       });
-    });
-
-    it("each tier holds a single string", async () => {
-      const { buildDefaultTierConfig } = await loadModule();
-      const cfg = buildDefaultTierConfig("openai/gpt-4.1");
-      for (const [name, model] of Object.entries(cfg.tiers)) {
-        assert.equal(typeof model, "string", `${name} tier should hold a string`);
-      }
     });
 
     it("always produces the three standard tiers", async () => {
@@ -47,39 +31,55 @@ describe("model-tier-config", () => {
     });
   });
 
-  describe("resolveTierModel", () => {
-    it("returns the model for a valid tier", async () => {
-      const { resolveTierModel } = await loadModule();
+  describe("resolve helpers", () => {
+    it("returns the model and thinking level for a valid tier", async () => {
+      const { resolveTierModel, resolveTierThinkingLevel } = await loadModule();
       const config = {
-        tiers: { small: "openai/gpt-4.1-mini", medium: "openai/gpt-4.1", big: "openai/gpt-5" },
+        tiers: {
+          small: { model: "openai/gpt-4.1-mini", thinkingLevel: "low" },
+          medium: { model: "openai/gpt-4.1" },
+          big: { model: "openai/gpt-5", thinkingLevel: "high" },
+        },
       };
       assert.equal(resolveTierModel("small", config), "openai/gpt-4.1-mini");
       assert.equal(resolveTierModel("medium", config), "openai/gpt-4.1");
-      assert.equal(resolveTierModel("big", config), "openai/gpt-5");
+      assert.equal(resolveTierThinkingLevel("small", config), "low");
+      assert.equal(resolveTierThinkingLevel("medium", config), undefined);
+      assert.equal(resolveTierThinkingLevel("big", config), "high");
     });
 
     it("returns undefined for unknown tier name", async () => {
-      const { resolveTierModel } = await loadModule();
-      assert.equal(resolveTierModel("nonexistent", { tiers: { small: "gpt-4.1-mini" } }), undefined);
-    });
-
-    it("returns empty string when tier exists but no model is assigned", async () => {
-      const { resolveTierModel } = await loadModule();
-      assert.equal(resolveTierModel("medium", { tiers: { small: "gpt-4.1-mini", medium: "" } }), "");
+      const { resolveTierModel, resolveTierThinkingLevel } = await loadModule();
+      assert.equal(resolveTierModel("nonexistent", { tiers: { small: { model: "gpt-4.1-mini" } } }), undefined);
+      assert.equal(resolveTierThinkingLevel("nonexistent", { tiers: { small: { model: "gpt-4.1-mini" } } }), undefined);
     });
   });
 
   describe("loadModelTierConfig / saveModelTierConfig (scoped to tmpdir)", () => {
-    it("round-trips a valid config through disk", async () => {
+    it("round-trips a valid object config through disk", async () => {
       const { loadModelTierConfig, saveModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
       const config = {
-        tiers: { small: "gpt-4.1-mini", medium: "gpt-4.1", big: "gpt-5" },
+        tiers: {
+          small: { model: "gpt-4.1-mini", thinkingLevel: "low" },
+          medium: { model: "gpt-4.1" },
+          big: { model: "gpt-5", thinkingLevel: "high" },
+        },
       };
       saveModelTierConfig(config, cfgPath);
       const loaded = loadModelTierConfig(cfgPath);
       assert.deepEqual(loaded, config);
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("accepts legacy string tier values and normalizes them", async () => {
+      const { loadModelTierConfig } = await loadModule();
+      const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
+      const cfgPath = join(tmpDir, "model-tiers.json");
+      writeFileSync(cfgPath, '{"tiers": {"small": "gpt-4.1-mini"}}', "utf-8");
+      const result = loadModelTierConfig(cfgPath);
+      assert.deepEqual(result, { tiers: { small: { model: "gpt-4.1-mini" } } });
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
@@ -115,22 +115,12 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("returns null when a tier value is not a string", async () => {
+    it("returns null when a tier object is malformed", async () => {
       const { loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
-      writeFileSync(cfgPath, '{"tiers": {"small": ["gpt-4.1-mini"]}}', "utf-8");
-      assert.equal(loadModelTierConfig(cfgPath), null, "array values should be rejected");
-      rmSync(tmpDir, { recursive: true, force: true });
-    });
-
-    it("accepts a config where a tier value is a valid string", async () => {
-      const { loadModelTierConfig } = await loadModule();
-      const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
-      const cfgPath = join(tmpDir, "model-tiers.json");
-      writeFileSync(cfgPath, '{"tiers": {"small": "gpt-4.1-mini"}}', "utf-8");
-      const result = loadModelTierConfig(cfgPath);
-      assert.equal(result?.tiers.small, "gpt-4.1-mini");
+      writeFileSync(cfgPath, '{"tiers": {"small": {"thinkingLevel": "high"}}}', "utf-8");
+      assert.equal(loadModelTierConfig(cfgPath), null);
       rmSync(tmpDir, { recursive: true, force: true });
     });
   });
@@ -138,13 +128,25 @@ describe("model-tier-config", () => {
   describe("sortedTierNames", () => {
     it("returns names sorted: small < medium < big", async () => {
       const { sortedTierNames } = await loadModule();
-      const config = { tiers: { big: "gpt-5", small: "gpt-4.1-mini", medium: "gpt-4.1" } };
+      const config = {
+        tiers: {
+          big: { model: "gpt-5" },
+          small: { model: "gpt-4.1-mini" },
+          medium: { model: "gpt-4.1" },
+        },
+      };
       assert.deepEqual(sortedTierNames(config), ["small", "medium", "big"]);
     });
 
     it("places custom tier names alphabetically after the standard ones", async () => {
       const { sortedTierNames } = await loadModule();
-      const config = { tiers: { xlarge: "gpt-5", medium: "gpt-4.1", small: "gpt-4.1-mini" } };
+      const config = {
+        tiers: {
+          xlarge: { model: "gpt-5" },
+          medium: { model: "gpt-4.1" },
+          small: { model: "gpt-4.1-mini" },
+        },
+      };
       assert.deepEqual(sortedTierNames(config), ["small", "medium", "xlarge"]);
     });
   });

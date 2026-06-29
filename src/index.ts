@@ -52,6 +52,7 @@ export {
   getModelTierConfigPath,
   loadModelTierConfig,
   resolveTierModel,
+  resolveTierThinkingLevel,
   saveModelTierConfig,
   sortedTierNames,
 } from "./model-tier-config.js";

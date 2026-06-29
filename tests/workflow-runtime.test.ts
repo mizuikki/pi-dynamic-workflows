@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
+import { saveModelTierConfig } from "../src/model-tier-config.js";
 import { type JournalEntry, runWorkflow } from "../src/workflow.js";
 
 /** Agent runner that counts real invocations and echoes a per-call result. */
@@ -214,6 +218,47 @@ await agent('x', { label: 'x' })
 return 1`;
   await runWorkflow(script, { agent: recorder, persistLogs: false });
   assert.equal(seenModel, "meta/default-model", "an agent with no model/tier/phase route uses meta.model");
+});
+
+test("runWorkflow passes tier-configured thinking level only when the tier supplies the model", async () => {
+  const calls: Array<{ model?: string; tier?: string; thinkingLevel?: string }> = [];
+  const runner = {
+    async run(_prompt: string, options: { model?: string; tier?: string; thinkingLevel?: string }) {
+      calls.push(options);
+      return "ok";
+    },
+  };
+  const script = `export const meta = { name: 'tier_thinking', description: 'thinking propagation' }
+await agent('tier model', { label: 'tier-model', tier: 'small' })
+await agent('explicit model', { label: 'explicit-model', tier: 'small', model: 'override/model' })
+return 1`;
+
+  const tmpHome = mkdtempSync(join(tmpdir(), "workflow-tier-home-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tmpHome;
+  try {
+    saveModelTierConfig({
+      tiers: {
+        small: { model: "vendor/small", thinkingLevel: "low" },
+        medium: { model: "vendor/medium" },
+        big: { model: "vendor/big", thinkingLevel: "high" },
+      },
+    });
+
+    await runWorkflow(script, {
+      agent: runner,
+      persistLogs: false,
+    });
+  } finally {
+    process.env.HOME = previousHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  }
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].tier, "small");
+  assert.equal(calls[0].thinkingLevel, "low");
+  assert.equal(calls[1].model, "override/model");
+  assert.equal(calls[1].thinkingLevel, undefined);
 });
 
 test("runWorkflow falls back to an estimate when provider reports total === 0", async () => {

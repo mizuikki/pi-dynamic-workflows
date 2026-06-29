@@ -113,7 +113,7 @@ The same model — on Pi, plus the production pieces a real run needs:
                             switch the live panel between the compact one-liner and the detailed
                             per-phase/per-agent view (with tokens, cost, and a live tok/s rate)
 /workflows-progress-max <N> cap agents shown per phase in detailed mode (1-1000, default 8)
-/workflows-models           map the small / medium / big tiers to real models
+/workflows-models           map the small / medium / big tiers to models + thinking levels
 /ultracode [off]            ultracode: auto-arm an exhaustive workflow for every substantive message
 /effort off|high|ultra      finer control over the standing opt-in (high = thorough, ultra = ultracode)
 
@@ -154,7 +154,7 @@ The full guide — every global, agent option, `agentType` definitions, structur
 
 | Agent option | Description |
 | --- | --- |
-| `tier` | `"small"` \| `"medium"` \| `"big"` — coarse model routing (configure via `/workflows-models`). |
+| `tier` | `"small"` \| `"medium"` \| `"big"` — coarse model routing plus an optional tier-specific thinking level (configure via `/workflows-models`; unset thinking inherits the current Pi session). |
 | `model` | Exact `provider/modelId` (always wins over `tier`). |
 | `agentType` | A named definition (`.pi/agents/<name>.md`) binding tools + model + role prompt. |
 | `isolation: "worktree"` | Run in a throwaway git worktree for conflict-free parallel edits. |
