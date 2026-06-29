@@ -11,16 +11,8 @@
  * When editing a tier, a single-select picker is used (like Pi's `/model`).
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import {
-  Container,
-  type SelectItem,
-  SelectList,
-  type SelectListTheme,
-  Spacer,
-  Text,
-  type TUI,
-} from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@mizuikki/pi-coding-agent";
+import { Container, type SelectItem, SelectList, type SelectListTheme, Spacer, Text, type TUI } from "@mizuikki/pi-tui";
 import { listAvailableModelSpecs } from "./agent.js";
 import {
   buildDefaultTierConfig,

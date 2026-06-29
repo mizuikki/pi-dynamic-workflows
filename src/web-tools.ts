@@ -7,7 +7,7 @@
  * - web_fetch:  fetch a URL and return readable text (HTML stripped, truncated)
  */
 
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@mizuikki/pi-coding-agent";
 import { Type } from "typebox";
 
 const UA =

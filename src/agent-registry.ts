@@ -19,7 +19,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter } from "@mizuikki/pi-coding-agent";
 import { AGENTS_DIR } from "./config.js";
 
 export interface AgentDefinition {

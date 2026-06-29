@@ -3,7 +3,8 @@
  * command that runs its script, passing parsed arguments through as `args`.
  */
 
-import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@mizuikki/pi-coding-agent";
+import { createCodingTools } from "./pi-coding-agent-sdk.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";

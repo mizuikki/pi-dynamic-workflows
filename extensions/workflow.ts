@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mizuikki/pi-coding-agent";
 import {
   createEffortState,
   createWorkflowStorage,

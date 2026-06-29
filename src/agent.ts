@@ -1,22 +1,23 @@
 import { join } from "node:path";
-import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, TextContent } from "@mizuikki/pi-ai";
 import {
   AuthStorage,
-  type CreateAgentSessionOptions,
-  createAgentSession,
-  createCodingTools,
+  DefaultResourceLoader,
   getAgentDir,
+  type LoadExtensionsResult,
   ModelRegistry,
+  type ResourceLoader,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+} from "@mizuikki/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
 import { applyToolPolicy } from "./agent-registry.js";
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
+import { type CreateAgentSessionOptions, createAgentSession, createCodingTools } from "./pi-coding-agent-sdk.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
 /**
@@ -60,6 +61,41 @@ export function extractValidated<T>(text: string, schema: TSchema): T | undefine
     // typebox can throw on exotic schemas; treat as no match.
   }
   return undefined;
+}
+
+const WORKFLOW_EXTENSION_SUFFIXES = ["extensions/workflow.ts", "extensions/workflow.js"] as const;
+
+function normalizeExtensionPath(pathValue: string): string {
+  return pathValue.replace(/\\/g, "/");
+}
+
+function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
+  const normalizedPath = normalizeExtensionPath(pathValue);
+  return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalizedPath.endsWith(suffix));
+}
+
+function filterWorkflowExtensions(result: LoadExtensionsResult): LoadExtensionsResult {
+  return {
+    ...result,
+    extensions: result.extensions.filter(
+      (extension) => !shouldFilterWorkflowExtensionPath(extension.resolvedPath ?? extension.path),
+    ),
+    errors: result.errors.filter((error) => !shouldFilterWorkflowExtensionPath(error.path)),
+  };
+}
+
+export function wrapResourceLoaderForWorkflowSubagents(resourceLoader: ResourceLoader): ResourceLoader {
+  return {
+    getExtensions: () => filterWorkflowExtensions(resourceLoader.getExtensions()),
+    getSkills: () => resourceLoader.getSkills(),
+    getPrompts: () => resourceLoader.getPrompts(),
+    getThemes: () => resourceLoader.getThemes(),
+    getAgentsFiles: () => resourceLoader.getAgentsFiles(),
+    getSystemPrompt: () => resourceLoader.getSystemPrompt(),
+    getAppendSystemPrompt: () => resourceLoader.getAppendSystemPrompt(),
+    extendResources: (paths) => resourceLoader.extendResources(paths),
+    reload: () => resourceLoader.reload(),
+  };
 }
 
 /**
@@ -192,7 +228,7 @@ export interface WorkflowAgentOptions {
   cwd?: string;
   /** Extra tools available to the subagent in addition to the structured output tool. */
   tools?: ToolDefinition[];
-  /** Override any createAgentSession option (model, authStorage, resourceLoader, etc.). */
+  /** Override any createAgentSession option (model, models, authStorage, resourceLoader, etc.). */
   session?: Partial<CreateAgentSessionOptions>;
   /** Extra system guidance prepended to every subagent task. */
   instructions?: string;
@@ -215,7 +251,7 @@ export function listAvailableModelSpecs(): string[] {
     const dir = getAgentDir();
     const auth = AuthStorage.create(join(dir, "auth.json"));
     const registry = ModelRegistry.create(auth, join(dir, "models.json"));
-    return registry.getAvailable().map((m) => `${m.provider}/${m.id}`);
+    return registry.getAvailableSync().map((m) => `${m.provider}/${m.id}`);
   } catch {
     return [];
   }
@@ -293,7 +329,7 @@ export class WorkflowAgent {
   private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
   private readonly instructions?: string;
   private readonly mainModel?: string;
-  /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
+  /** Lazily built once; shares the SDK's agentDir/auth/models so lookup matches session creation. */
   private registry?: ModelRegistry;
 
   constructor(options: WorkflowAgentOptions = {}) {
@@ -306,11 +342,15 @@ export class WorkflowAgent {
 
   private getRegistry(): ModelRegistry {
     if (!this.registry) {
-      const dir = getAgentDir();
+      const dir = this.sessionOptions.agentDir ?? getAgentDir();
       // Same agentDir/auth files createAgentSession uses by default, so a model
-      // resolved here carries valid credentials.
-      const auth = AuthStorage.create(join(dir, "auth.json"));
-      this.registry = ModelRegistry.create(auth, join(dir, "models.json"));
+      // resolved here carries valid credentials and explicit-model wiring.
+      const auth = this.sessionOptions.authStorage ?? AuthStorage.create(join(dir, "auth.json"));
+      const registry =
+        this.sessionOptions.modelRegistry ??
+        ModelRegistry.create(auth, join(dir, "models.json"), this.sessionOptions.models);
+      registry.setExplicitModels(this.sessionOptions.models);
+      this.registry = registry;
     }
     return this.registry;
   }
@@ -320,13 +360,14 @@ export class WorkflowAgent {
    * or a bare `modelId` (prefers auth-configured models, then any known model).
    * Returns undefined when nothing matches.
    */
-  private resolveModel(spec: string): Model<any> | undefined {
+  private async resolveModel(spec: string): Promise<Model<any> | undefined> {
     const registry = this.getRegistry();
     const slash = spec.indexOf("/");
     if (slash > 0) {
       return registry.find(spec.slice(0, slash), spec.slice(slash + 1));
     }
-    return registry.getAvailable().find((m) => m.id === spec) ?? registry.getAll().find((m) => m.id === spec);
+    const available = await registry.getAvailable();
+    return available.find((m) => m.id === spec) ?? registry.getAll().find((m) => m.id === spec);
   }
 
   async run<TSchemaDef extends TSchema | undefined = undefined>(
@@ -359,7 +400,7 @@ export class WorkflowAgent {
     // spec falls back to the session default (with a warning) rather than failing.
     let resolvedModel: Model<any> | undefined;
     if (modelSpec) {
-      resolvedModel = this.resolveModel(modelSpec);
+      resolvedModel = await this.resolveModel(modelSpec);
       if (resolvedModel) {
         options.onModelResolved?.(`${resolvedModel.provider}/${resolvedModel.id}`);
       } else {
@@ -368,26 +409,64 @@ export class WorkflowAgent {
       }
     }
 
-    const agentDir = getAgentDir();
+    const agentDir = this.sessionOptions.agentDir ?? getAgentDir();
+    const {
+      resourceLoader: providedResourceLoader,
+      settingsManager: providedSettingsManager,
+      ...sessionOptions
+    } = this.sessionOptions;
+    // Use real SettingsManager to inherit user's default provider/model settings.
+    // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
+    // would fall back to the first available model (e.g. openai-codex) which may
+    // not have valid auth, causing silent empty responses.
+    const settingsManager = providedSettingsManager ?? SettingsManager.create(runCwd, agentDir);
+    const baseResourceLoader =
+      providedResourceLoader ?? new DefaultResourceLoader({ cwd: runCwd, agentDir, settingsManager });
+    const resourceLoader = wrapResourceLoaderForWorkflowSubagents(baseResourceLoader);
+    await resourceLoader.reload();
+
     const { session } = await createAgentSession({
       cwd: runCwd,
       agentDir,
       sessionManager: SessionManager.inMemory(),
-      // Use real SettingsManager to inherit user's default provider/model settings.
-      // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
-      // would fall back to the first available model (e.g. openai-codex) which may
-      // not have valid auth, causing silent empty responses.
-      settingsManager: SettingsManager.create(this.cwd, agentDir),
+      settingsManager,
       customTools,
-      ...this.sessionOptions,
+      ...sessionOptions,
+      resourceLoader,
       // Per-call model wins over any sessionOptions.model.
       ...(resolvedModel ? { model: resolvedModel } : {}),
+    });
+
+    await session.bindExtensions({
+      commandContextActions: {
+        waitForIdle: () => session.agent.waitForIdle(),
+        newSession: async () => ({ cancelled: true }),
+        fork: async () => ({ cancelled: true }),
+        navigateTree: async () => ({ cancelled: true }),
+        switchSession: async () => ({ cancelled: true }),
+        reload: async () => {
+          await session.reload();
+        },
+      },
+      onError: (error) => {
+        console.error(`Extension error (${error.extensionPath}): ${error.error}`);
+      },
     });
 
     let removeAbortListener: (() => void) | undefined;
     let removeHistoryListener: (() => void) | undefined;
     let lastHistoryEmit = 0;
-    const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
+    let turnStarted = false;
+    let messagesSnapshot: unknown[] = structuredClone(session.messages) as unknown[];
+    let terminalMessagesSnapshot: unknown[] | undefined;
+    let resolveTerminalTurn: (() => void) | undefined;
+    const terminalTurn = new Promise<void>((resolve) => {
+      resolveTerminalTurn = resolve;
+    });
+    const refreshMessagesSnapshot = () => {
+      messagesSnapshot = structuredClone(session.messages) as unknown[];
+    };
+    const emitHistory = () => options.onHistory?.(compactAgentHistory(messagesSnapshot));
     const maybeEmitHistory = () => {
       if (!options.onHistory) return;
       const now = Date.now();
@@ -402,18 +481,27 @@ export class WorkflowAgent {
         options.signal.addEventListener("abort", onAbort, { once: true });
         removeAbortListener = () => options.signal?.removeEventListener("abort", onAbort);
       }
-      if (options.onHistory) {
-        removeHistoryListener = session.subscribe(() => maybeEmitHistory());
-      }
+      removeHistoryListener = session.subscribe((event) => {
+        if (event.type === "agent_end" && turnStarted) {
+          terminalMessagesSnapshot = structuredClone(event.messages) as unknown[];
+          resolveTerminalTurn?.();
+        }
+        refreshMessagesSnapshot();
+        maybeEmitHistory();
+      });
 
+      turnStarted = true;
       await session.prompt(this.buildPrompt(prompt, options as AgentRunOptions<any>, Boolean(options.schema)));
+      await terminalTurn;
+      refreshMessagesSnapshot();
+      const messagesAfterPrompt = terminalMessagesSnapshot ?? messagesSnapshot;
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
 
       // The SDK buries a provider usage/quota limit in the assistant message rather
       // than throwing; detect it here (before the schema/empty-text branches) so it
       // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
       // (schema path) or a silent empty-output null (non-schema path).
-      throwIfProviderLimit(session.messages, options.label);
+      throwIfProviderLimit(messagesAfterPrompt, options.label);
 
       if (options.schema) {
         return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
@@ -421,7 +509,7 @@ export class WorkflowAgent {
         )) as AgentRunResult<TSchemaDef>;
       }
 
-      const text = this.lastAssistantText(session.messages);
+      const text = this.lastAssistantText(messagesAfterPrompt);
       if (!text.trim()) {
         throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
           recoverable: true,

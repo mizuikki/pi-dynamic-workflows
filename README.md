@@ -164,6 +164,8 @@ The full guide — every global, agent option, `agentType` definitions, structur
 
 By default, workflows do not set a run-wide token budget or per-agent hard timeout. Use the `workflow` tool's `tokenBudget` / `agentTimeoutMs`, per-phase budgets, or per-agent `timeoutMs` only when you want an explicit cap. A global fallback timeout can also be set in `~/.pi/workflows/settings.json` as `{ "defaultAgentTimeoutMs": 600000 }`; set it to `null` or omit it for no default hard timeout.
 
+Workflow subagents also initialize Pi extensions before they run. In practice that means extension-provided tools such as the `mcp` proxy tool from `pi-mcp-adapter` are available inside `agent()` calls when they are installed in Pi. The compatibility contract here is the proxy tool itself; extension-specific direct-tool surfacing and UI-driven flows remain best-effort in headless/background subagents.
+
 For larger or flakier fan-outs, the `workflow` tool also accepts `concurrency` (max agents running at once, clamped to the runtime maximum of `16`) and `agentRetries` (retry attempts after a recoverable agent failure such as a timeout, connection failure, or empty output). Both can be defaulted in `~/.pi/workflows/settings.json` as `{ "defaultConcurrency": 4, "defaultAgentRetries": 2 }`; a per-run tool value overrides the default, and a per-agent `retries` overrides `agentRetries`. Retries default to `0` (off) unless configured or passed, and only recoverable failures retry — nonrecoverable errors still abort the run.
 
 The live "Workflows running" panel is configured in the same `~/.pi/workflows/settings.json`: `"progressPanelMode"` is `"compact"` (default, one line per run) or `"detailed"` (per-phase/per-agent rows with tokens, cost, and a live tok/s rate), and `"progressPanelMaxAgents"` (default `8`, range `1`–`1000`) caps how many agents each phase shows in detailed mode before a `… N earlier agents` line. Toggle them live with `/workflows-progress compact|detailed` and `/workflows-progress-max <N>` — changes take effect on the next render without a restart.
@@ -171,6 +173,14 @@ The live "Workflows running" panel is configured in the same `~/.pi/workflows/se
 Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()`, and `require`/`import`/`fs`/network are unavailable, so runs stay reproducible — which is what makes resume reliable.
 
 ## Development
+
+For local development, this repo installs `@mizuikki/pi-*` dev dependencies from GitHub Packages. Authenticate once before `npm install`:
+
+```bash
+npm login --scope=@mizuikki --auth-type=legacy --registry=https://npm.pkg.github.com
+```
+
+Use a GitHub classic personal access token with `read:packages` when `npm login` prompts for a password.
 
 ```bash
 npm install

@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 import { before, describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { type Terminal, TUI } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionUIContext } from "@mizuikki/pi-coding-agent";
+import { type Terminal, TUI } from "@mizuikki/pi-tui";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ function createMockTui(): TUI {
 }
 
 /** Editor theme stub. */
-function makeTheme(): import("@earendil-works/pi-tui").EditorTheme {
+function makeTheme(): import("@mizuikki/pi-tui").EditorTheme {
   const identity = (s: string) => s;
   return {
     borderColor: identity,
@@ -365,7 +365,7 @@ describe("WorkflowEditor", () => {
     // internal module location relative to it. import.meta.resolve honours the
     // package's "import" export condition (require.resolve would fail — the
     // package defines no "require" condition).
-    const pkgEntryUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
+    const pkgEntryUrl = import.meta.resolve("@mizuikki/pi-coding-agent");
     const distDir = dirname(fileURLToPath(pkgEntryUrl));
     const keybindingsPath = join(distDir, "core", "keybindings.js");
     const core = await import(pathToFileURL(keybindingsPath).href);
