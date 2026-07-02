@@ -11,13 +11,13 @@ import {
   workflowProjectPaths,
   workflowUserSavedDir,
 } from "../src/workflow-paths.js";
-import { withFakeHome } from "./helpers/fake-home.js";
+import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
-function withIsolatedHome(fn: (home: string, cwd: string) => void): void {
+async function withIsolatedHome(fn: (home: string, cwd: string) => Promise<void>): Promise<void> {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-project-"));
   try {
-    withFakeHome(home, () => fn(home, cwd));
+    await withFakeHomeAsync(home, async () => fn(home, cwd));
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -25,15 +25,15 @@ function withIsolatedHome(fn: (home: string, cwd: string) => void): void {
 }
 
 describe("workflow paths", () => {
-  it("resolves workflow home under the user home", () => {
-    withIsolatedHome((home) => {
+  it("resolves workflow home under the user home", async () => {
+    await withIsolatedHome(async (home) => {
       assert.equal(workflowHomeDir(), join(home, WORKFLOW_HOME_RELATIVE_DIR));
       assert.equal(workflowUserSavedDir(), join(home, WORKFLOW_HOME_RELATIVE_DIR, "saved"));
     });
   });
 
-  it("creates stable project namespaces from cwd", () => {
-    withIsolatedHome((_home, cwd) => {
+  it("creates stable project namespaces from cwd", async () => {
+    await withIsolatedHome(async (_home, cwd) => {
       const key = workflowProjectKey(cwd);
       assert.equal(key, workflowProjectKey(cwd));
       assert.match(key, /^[a-z0-9._-]+-[a-f0-9]{12}$/);
@@ -41,8 +41,8 @@ describe("workflow paths", () => {
     });
   });
 
-  it("keeps new project storage under workflow home and legacy paths under cwd", () => {
-    withIsolatedHome((home, cwd) => {
+  it("keeps new project storage under workflow home and legacy paths under cwd", async () => {
+    await withIsolatedHome(async (home, cwd) => {
       const paths = workflowProjectPaths(cwd);
       assert.ok(paths.rootDir.startsWith(join(home, WORKFLOW_HOME_RELATIVE_DIR, WORKFLOW_PROJECTS_SUBDIR)));
       assert.equal(paths.runsDir, join(paths.rootDir, "runs"));

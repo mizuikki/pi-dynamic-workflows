@@ -3,6 +3,9 @@ import { parse } from "node:path";
 const HOME_ENV_KEYS = ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"] as const;
 type HomeEnvKey = (typeof HOME_ENV_KEYS)[number];
 
+let fakeHomeQueue: Promise<void> = Promise.resolve();
+let fakeHomeActive = false;
+
 /**
  * Temporarily point Node's os.homedir() at a fake home directory.
  *
@@ -11,21 +14,36 @@ type HomeEnvKey = (typeof HOME_ENV_KEYS)[number];
  * complete Windows home env tuple afterwards.
  */
 export function withFakeHome<T>(home: string, fn: () => T): T {
+  if (fakeHomeActive) {
+    throw new Error("withFakeHome cannot run concurrently; use withFakeHomeAsync instead");
+  }
   const restore = installFakeHome(home);
+  fakeHomeActive = true;
   try {
     return fn();
   } finally {
+    fakeHomeActive = false;
     restore();
   }
 }
 
 /** Async variant of withFakeHome(). */
 export async function withFakeHomeAsync<T>(home: string, fn: () => Promise<T>): Promise<T> {
+  const previous = fakeHomeQueue;
+  let release: (() => void) | undefined;
+  fakeHomeQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+
   const restore = installFakeHome(home);
+  fakeHomeActive = true;
   try {
     return await fn();
   } finally {
+    fakeHomeActive = false;
     restore();
+    release?.();
   }
 }
 
