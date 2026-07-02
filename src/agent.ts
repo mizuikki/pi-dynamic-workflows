@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import type { ThinkingLevel } from "@mizuikki/pi-agent-core";
-import type { AssistantMessage, Model, TextContent } from "@mizuikki/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
   DefaultResourceLoader,
@@ -11,7 +11,7 @@ import {
   SessionManager,
   SettingsManager,
   type ToolDefinition,
-} from "@mizuikki/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
@@ -265,11 +265,15 @@ export interface WorkflowAgentOptions {
  * `provider/modelId` specs. Used to tell the workflow author which models it may
  * route agents to. Best-effort: returns [] if the registry can't be built.
  */
-export function listAvailableModelSpecs(): string[] {
+export function listAvailableModelSpecs(modelRegistry?: Pick<ModelRegistry, "getAvailableSync">): string[] {
   try {
-    const dir = getAgentDir();
-    const auth = AuthStorage.create(join(dir, "auth.json"));
-    const registry = ModelRegistry.create(auth, join(dir, "models.json"));
+    const registry =
+      modelRegistry ??
+      (() => {
+        const dir = getAgentDir();
+        const auth = AuthStorage.create(join(dir, "auth.json"));
+        return ModelRegistry.create(auth, join(dir, "models.json"));
+      })();
     return registry.getAvailableSync().map((m) => `${m.provider}/${m.id}`);
   } catch {
     return [];

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import type { ExtensionAPI } from "@mizuikki/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createEffortState, effortDirective } from "../src/effort-command.js";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
 import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME } from "../src/workflow-editor.js";

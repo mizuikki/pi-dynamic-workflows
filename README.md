@@ -174,15 +174,10 @@ Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()
 
 ## Development
 
-For local development, this repo installs `@mizuikki/pi-*` dev dependencies from GitHub Packages. Authenticate once before `npm install`:
+For local development, keep a sibling Pi checkout at `../pi` on the target compatible ref (currently `v0.80.3`); this repo links `@earendil-works/pi-*` dev dependencies from that workspace.
 
 ```bash
-npm login --scope=@mizuikki --auth-type=legacy --registry=https://npm.pkg.github.com
-```
-
-Use a GitHub classic personal access token with `read:packages` when `npm login` prompts for a password.
-
-```bash
+git clone --branch v0.80.3 https://github.com/earendil-works/pi.git ../pi
 npm install
 npm test     # biome + tsc + unit tests
 ```

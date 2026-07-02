@@ -8,10 +8,18 @@
  * An omitted thinking level means "inherit the current Pi session thinking level".
  */
 
-import type { ThinkingLevel } from "@mizuikki/pi-agent-core";
-import { clampThinkingLevel, getSupportedThinkingLevels, type Model } from "@mizuikki/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@mizuikki/pi-coding-agent";
-import { Container, type SelectItem, SelectList, type SelectListTheme, Spacer, Text, type TUI } from "@mizuikki/pi-tui";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { clampThinkingLevel, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import {
+  Container,
+  type SelectItem,
+  SelectList,
+  type SelectListTheme,
+  Spacer,
+  Text,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import { listAvailableModelSpecs } from "./agent.js";
 import {
   buildDefaultTierConfig,
@@ -43,7 +51,8 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
       await ctx.waitForIdle();
 
       const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-      let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel);
+      const availableModelSpecs = listAvailableModelSpecs(ctx.modelRegistry);
+      let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, availableModelSpecs);
       let dirty = false;
 
       const ensureFresh = (cfg: ModelTierConfig) => {
@@ -92,7 +101,7 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
             "This will reset every tier to your current Pi model and inherit the session thinking level. Continue?",
           );
           if (confirmed) {
-            ensureFresh(buildDefaultTierConfig(currentModel));
+            ensureFresh(buildDefaultTierConfig(currentModel, availableModelSpecs));
             ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
           }
           continue;
@@ -179,7 +188,7 @@ function tierTargetsEqual(a: ModelTierTarget, b: ModelTierTarget): boolean {
 }
 
 async function pickTierModel(ctx: ExtensionCommandContext, current: string, tierName: string): Promise<string | null> {
-  const available = listAvailableModelSpecs();
+  const available = listAvailableModelSpecs(ctx.modelRegistry);
   const items: SelectItem[] = available.map((m) => ({ value: m, label: m }));
 
   return ctx.ui.custom<string | null>((tui: TUI, theme: Theme, _keybindings, done) => {

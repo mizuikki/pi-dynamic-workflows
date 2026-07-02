@@ -1,4 +1,4 @@
-import { createModels, type FauxResponseStep, fauxProvider, type Model, type Models } from "@mizuikki/pi-ai";
+import { createModels, type FauxResponseStep, fauxProvider, type Model, type Models } from "@earendil-works/pi-ai";
 
 export interface ExplicitFauxModels {
   faux: ReturnType<typeof fauxProvider>;

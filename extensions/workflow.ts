@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mizuikki/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   createEffortState,
   createWorkflowStorage,
@@ -30,7 +30,7 @@ export default function extension(pi: ExtensionAPI) {
     defaultAgentRetries: settings.defaultAgentRetries,
   });
 
-  const workflowTool = createWorkflowTool({ cwd, manager, storage });
+  let workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
   // messages, like CC's ultracode. Shared with the editor's input hook below and
@@ -47,6 +47,8 @@ export default function extension(pi: ExtensionAPI) {
   let editorInstalled = false;
 
   pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
+    workflowTool = createWorkflowTool({ cwd, manager, storage, modelRegistry: ctx.modelRegistry });
+    pi.registerTool(workflowTool);
     const active = pi.getActiveTools();
     if (!active.includes(workflowTool.name)) {
       pi.setActiveTools([...active, workflowTool.name]);

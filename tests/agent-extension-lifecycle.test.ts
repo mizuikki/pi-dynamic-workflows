@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fauxAssistantMessage, fauxToolCall } from "@mizuikki/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   DefaultResourceLoader,
   type Extension,
@@ -12,7 +12,7 @@ import {
   type ResourceLoader,
   SessionManager,
   SettingsManager,
-} from "@mizuikki/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { WorkflowAgent, wrapResourceLoaderForWorkflowSubagents } from "../src/agent.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";

@@ -3,7 +3,7 @@
  * They run a generated workflow script and print the final report.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@mizuikki/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { generateAdversarialReviewWorkflow } from "./adversarial-review.js";
 import { generateDeepResearchWorkflow } from "./deep-research.js";
 import { createCodingTools } from "./pi-coding-agent-sdk.js";

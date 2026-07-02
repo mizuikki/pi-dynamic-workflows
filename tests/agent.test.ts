@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Model } from "@earendil-works/pi-ai";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
 import {
   listAvailableModelSpecs,
@@ -32,6 +33,25 @@ test("listAvailableModelSpecs entries have provider/model format when non-empty"
     assert.ok(provider.length > 0, "provider should not be empty");
     assert.ok(id.length > 0, "model id should not be empty");
   }
+});
+
+test("listAvailableModelSpecs uses the current session registry", () => {
+  const explicitModel = {
+    provider: "explicit-faux",
+    id: "faux-1",
+    api: "faux",
+    name: "Explicit Faux",
+    baseUrl: "http://localhost:0",
+    input: ["text"],
+    reasoning: false,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+  } satisfies Model<"faux">;
+
+  const result = listAvailableModelSpecs({ getAvailableSync: () => [explicitModel] });
+
+  assert.deepEqual(result, ["explicit-faux/faux-1"]);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

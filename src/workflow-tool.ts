@@ -1,5 +1,5 @@
-import { defineTool, type ToolDefinition } from "@mizuikki/pi-coding-agent";
-import { Text } from "@mizuikki/pi-tui";
+import { defineTool, type ModelRegistry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { listAvailableModelSpecs } from "./agent.js";
 import { listAgentTypes, loadAgentRegistry } from "./agent-registry.js";
@@ -24,8 +24,8 @@ import { loadWorkflowSettings } from "./workflow-settings.js";
  * This string is injected into the workflow tool's promptGuidelines and
  * therefore appears in the LLM's system prompt for every workflow execution.
  */
-export function modelRoutingGuideline(): string {
-  const available = listAvailableModelSpecs();
+export function modelRoutingGuideline(modelRegistry?: Pick<ModelRegistry, "getAvailableSync">): string {
+  const available = listAvailableModelSpecs(modelRegistry);
   const list = available.length
     ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
     : "Use models the user has configured.";
@@ -131,6 +131,8 @@ export interface WorkflowToolOptions {
   defaultConcurrency?: number;
   /** Default retry attempts after recoverable agent failures. */
   defaultAgentRetries?: number;
+  /** Current session model registry, used to list explicit Models in prompt guidance. */
+  modelRegistry?: Pick<ModelRegistry, "getAvailableSync">;
 }
 
 export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefinition<typeof workflowToolSchema, any> {
@@ -174,7 +176,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted. Check for nulls before synthesizing conclusions.",
       "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",
       "For workflow, if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors.",
-      modelRoutingGuideline(),
+      modelRoutingGuideline(options.modelRegistry),
       agentTypeGuideline(),
       "For workflow, do not assume the parent assistant has repository code context inside subagents; include enough task context and relevant paths in each agent prompt.",
       "For workflow, runs are background by default: the tool returns immediately with a run ID, the turn ends so the user isn't blocked, and the result is delivered back into the conversation when the run finishes. Pass background: false only when you must use the result inline in this same turn (it will block).",

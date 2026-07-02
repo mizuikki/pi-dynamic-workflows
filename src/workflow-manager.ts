@@ -3,7 +3,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { ThinkingLevel } from "@mizuikki/pi-agent-core";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { WorkflowAgent } from "./agent.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";

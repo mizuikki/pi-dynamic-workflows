@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ThinkingLevel } from "@mizuikki/pi-agent-core";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { listAvailableModelSpecs } from "./agent.js";
 import { MODEL_TIERS_FILE } from "./config.js";
 
@@ -64,8 +64,11 @@ export function getModelTierConfigPath(): string {
  * model. New users get consistent behaviour (every tier == the model they're
  * already chatting with) and can refine tiers later via `/workflows-models`.
  */
-export function buildDefaultTierConfig(currentModelSpec?: string): ModelTierConfig {
-  const model = currentModelSpec ?? listAvailableModelSpecs()[0] ?? "";
+export function buildDefaultTierConfig(
+  currentModelSpec?: string,
+  availableModelSpecs = listAvailableModelSpecs(),
+): ModelTierConfig {
+  const model = currentModelSpec ?? availableModelSpecs[0] ?? "";
   return {
     tiers: {
       small: { model },
