@@ -48,7 +48,7 @@ test(
     faux.setResponses([fauxAssistantMessage("explicit workflow result")]);
 
     const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${faux.model.id}` });
-    manager.setSessionOptions({ modelRegistry, model: faux.model });
+    manager.setSessionOptions({ modelRegistry, model: faux.model, models: faux.models });
 
     const result = await manager.runSync(oneAgentScript);
 
@@ -77,7 +77,7 @@ test(
     faux.setResponses([(_context, _options, _state, model) => fauxAssistantMessage(`resolved:${model.id}`)]);
 
     const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
-    manager.setSessionOptions({ modelRegistry, model: selectedModel });
+    manager.setSessionOptions({ modelRegistry, model: selectedModel, models: faux.models });
 
     const result = await manager.runSync(selectedModelScript);
 
@@ -120,7 +120,7 @@ test(
       ]);
 
       const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
-      manager.setSessionOptions({ modelRegistry, model: selectedModel });
+      manager.setSessionOptions({ modelRegistry, model: selectedModel, models: faux.models });
 
       const { runId, promise } = manager.startInBackground(resumeWithWebToolsScript, undefined, {
         tools: [...createCodingTools(cwd), ...createWebTools()],

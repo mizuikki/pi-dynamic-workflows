@@ -20,7 +20,7 @@ import {
   Text,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { listAvailableModelSpecsAsync } from "./agent.js";
+import { getAvailableModelsSync, listAvailableModelSpecsAsync } from "./agent.js";
 import {
   buildDefaultTierConfig,
   loadModelTierConfig,
@@ -282,6 +282,6 @@ function resolveModelSpec(ctx: ExtensionCommandContext, spec: string): Model<any
   if (slash > 0) {
     return ctx.modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1));
   }
-  const available = ctx.modelRegistry.getAvailableSync();
+  const available = getAvailableModelsSync(ctx.modelRegistry);
   return available.find((m) => m.id === spec) ?? ctx.modelRegistry.getAll().find((m) => m.id === spec);
 }

@@ -1,7 +1,7 @@
-import { defineTool, type ModelRegistry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { listAvailableModelSpecs } from "./agent.js";
+import { type AvailableModelsSource, listAvailableModelSpecs } from "./agent.js";
 import { listAgentTypes, loadAgentRegistry } from "./agent-registry.js";
 import {
   createToolUpdateWorkflowDisplay,
@@ -24,15 +24,13 @@ import { loadWorkflowSettings } from "./workflow-settings.js";
  * This string is injected into the workflow tool's promptGuidelines and
  * therefore appears in the LLM's system prompt for every workflow execution.
  */
-export function modelRoutingGuideline(
-  modelRegistryOrAvailable?: Pick<ModelRegistry, "getAvailableSync"> | readonly string[],
-): string {
+export function modelRoutingGuideline(modelRegistryOrAvailable?: AvailableModelsSource | readonly string[]): string {
   const available =
     modelRegistryOrAvailable === undefined
       ? listAvailableModelSpecs()
       : Array.isArray(modelRegistryOrAvailable)
         ? [...modelRegistryOrAvailable]
-        : listAvailableModelSpecs(modelRegistryOrAvailable as Pick<ModelRegistry, "getAvailableSync">);
+        : listAvailableModelSpecs(modelRegistryOrAvailable as AvailableModelsSource);
   const list = available.length
     ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
     : "Use models the user has configured.";
@@ -139,7 +137,7 @@ export interface WorkflowToolOptions {
   /** Default retry attempts after recoverable agent failures. */
   defaultAgentRetries?: number;
   /** Current session model registry, used to list explicit Models in prompt guidance. */
-  modelRegistry?: Pick<ModelRegistry, "getAvailableSync">;
+  modelRegistry?: AvailableModelsSource;
   /** Auth-verified available model specs for prompt guidance. */
   availableModelSpecs?: readonly string[];
 }
