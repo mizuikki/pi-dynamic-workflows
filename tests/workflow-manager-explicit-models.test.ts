@@ -44,16 +44,20 @@ test(
       provider: "deepseek",
       models: [{ id: "explicit-workflow", name: "Explicit Workflow Model" }],
     });
-    const modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory(), faux.models);
-    faux.setResponses([fauxAssistantMessage("explicit workflow result")]);
+    try {
+      const modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory(), faux.models);
+      faux.setResponses([fauxAssistantMessage("explicit workflow result")]);
 
-    const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${faux.model.id}` });
-    manager.setSessionOptions({ modelRegistry, model: faux.model, models: faux.models });
+      const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${faux.model.id}` });
+      manager.setSessionOptions({ modelRegistry, model: faux.model, models: faux.models });
 
-    const result = await manager.runSync(oneAgentScript);
+      const result = await manager.runSync(oneAgentScript);
 
-    assert.equal((result.result as { a: string }).a, "explicit workflow result");
-    assert.equal(faux.getPendingResponseCount(), 0, "the explicit model provider should be consumed");
+      assert.equal((result.result as { a: string }).a, "explicit workflow result");
+      assert.equal(faux.getPendingResponseCount(), 0, "the explicit model provider should be consumed");
+    } finally {
+      faux.dispose();
+    }
   }),
 );
 
@@ -67,22 +71,26 @@ test(
         { id: "workflow-selected", name: "Workflow Selected Model" },
       ],
     });
-    const modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory(), faux.models);
-    const selectedModel = faux.getModel("workflow-selected");
+    try {
+      const modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory(), faux.models);
+      const selectedModel = faux.getModel("workflow-selected");
 
-    if (!selectedModel) {
-      throw new Error("selected faux model should exist");
+      if (!selectedModel) {
+        throw new Error("selected faux model should exist");
+      }
+
+      faux.setResponses([(_context, _options, _state, model) => fauxAssistantMessage(`resolved:${model.id}`)]);
+
+      const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
+      manager.setSessionOptions({ modelRegistry, model: selectedModel, models: faux.models });
+
+      const result = await manager.runSync(selectedModelScript);
+
+      assert.equal((result.result as { a: string }).a, "resolved:workflow-selected");
+      assert.equal(faux.getPendingResponseCount(), 0, "the selected session model should be consumed");
+    } finally {
+      faux.dispose();
     }
-
-    faux.setResponses([(_context, _options, _state, model) => fauxAssistantMessage(`resolved:${model.id}`)]);
-
-    const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
-    manager.setSessionOptions({ modelRegistry, model: selectedModel, models: faux.models });
-
-    const result = await manager.runSync(selectedModelScript);
-
-    assert.equal((result.result as { a: string }).a, "resolved:workflow-selected");
-    assert.equal(faux.getPendingResponseCount(), 0, "the selected session model should be consumed");
   }),
 );
 
@@ -93,59 +101,63 @@ test(
       provider: "deepseek",
       models: [{ id: "workflow-web", name: "Workflow Web Model" }],
     });
-    const modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory(), faux.models);
-    const selectedModel = faux.getModel("workflow-web");
-
-    if (!selectedModel) {
-      throw new Error("workflow web model should exist");
-    }
-
-    let fetchCalls = 0;
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => {
-      fetchCalls += 1;
-      return new Response(
-        '<html><body><h2><a href="https://example.com/result">Result</a></h2><p>Example body</p></body></html>',
-        { status: 200 },
-      );
-    };
-
     try {
-      faux.setResponses([
-        fauxAssistantMessage("first-result"),
-        fauxAssistantMessage("", {
-          stopReason: "error",
-          errorMessage: "Codex usage limit reached. Resets in ~3h.",
-        }),
-      ]);
+      const modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory(), faux.models);
+      const selectedModel = faux.getModel("workflow-web");
 
-      const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
-      manager.setSessionOptions({ modelRegistry, model: selectedModel, models: faux.models });
+      if (!selectedModel) {
+        throw new Error("workflow web model should exist");
+      }
 
-      const { runId, promise } = manager.startInBackground(resumeWithWebToolsScript, undefined, {
-        tools: [...createCodingTools(cwd), ...createWebTools()],
-      });
-      await promise.catch(() => {});
+      let fetchCalls = 0;
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => {
+        fetchCalls += 1;
+        return new Response(
+          '<html><body><h2><a href="https://example.com/result">Result</a></h2><p>Example body</p></body></html>',
+          { status: 200 },
+        );
+      };
 
-      assert.equal(manager.getRun(runId)?.status, "paused", "run should pause on provider usage limit");
+      try {
+        faux.setResponses([
+          fauxAssistantMessage("first-result"),
+          fauxAssistantMessage("", {
+            stopReason: "error",
+            errorMessage: "Codex usage limit reached. Resets in ~3h.",
+          }),
+        ]);
 
-      faux.setResponses([
-        fauxAssistantMessage(
-          [fauxToolCall("web_search", { query: "pi workflow" }), { type: "text", text: "Used web_search" }],
-          { stopReason: "toolUse" },
-        ),
-        fauxAssistantMessage("second-result"),
-      ]);
+        const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
+        manager.setSessionOptions({ modelRegistry, model: selectedModel, models: faux.models });
 
-      assert.equal(await manager.resume(runId), true, "resumed run should restart with its original tools");
-      await new Promise((resolve) => setTimeout(resolve, 100));
+        const { runId, promise } = manager.startInBackground(resumeWithWebToolsScript, undefined, {
+          tools: [...createCodingTools(cwd), ...createWebTools()],
+        });
+        await promise.catch(() => {});
 
-      assert.equal(fetchCalls, 1, "web_search should execute after resume");
-      assert.equal(manager.getRun(runId)?.status, "completed");
-      assert.equal((manager.getRun(runId)?.result?.result as { a: string; b: string }).a, "first-result");
-      assert.equal((manager.getRun(runId)?.result?.result as { a: string; b: string }).b, "second-result");
+        assert.equal(manager.getRun(runId)?.status, "paused", "run should pause on provider usage limit");
+
+        faux.setResponses([
+          fauxAssistantMessage(
+            [fauxToolCall("web_search", { query: "pi workflow" }), { type: "text", text: "Used web_search" }],
+            { stopReason: "toolUse" },
+          ),
+          fauxAssistantMessage("second-result"),
+        ]);
+
+        assert.equal(await manager.resume(runId), true, "resumed run should restart with its original tools");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        assert.equal(fetchCalls, 1, "web_search should execute after resume");
+        assert.equal(manager.getRun(runId)?.status, "completed");
+        assert.equal((manager.getRun(runId)?.result?.result as { a: string; b: string }).a, "first-result");
+        assert.equal((manager.getRun(runId)?.result?.result as { a: string; b: string }).b, "second-result");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     } finally {
-      globalThis.fetch = originalFetch;
+      faux.dispose();
     }
   }),
 );

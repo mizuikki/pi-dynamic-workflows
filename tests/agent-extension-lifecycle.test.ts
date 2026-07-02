@@ -92,6 +92,7 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
       assert.equal(faux.getPendingResponseCount(), 0, "all faux responses should be consumed");
     });
   } finally {
+    faux.dispose();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -134,6 +135,7 @@ test("WorkflowAgent uses the per-run cwd when loading default project settings u
       assert.equal(faux.getPendingResponseCount(), 0, "per-run settings should select the run cwd model");
     });
   } finally {
+    faux.dispose();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
     rmSync(runCwd, { recursive: true, force: true });

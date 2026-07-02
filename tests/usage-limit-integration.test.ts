@@ -53,6 +53,7 @@ async function withFauxSession(
       }),
     );
   } finally {
+    faux.dispose();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
