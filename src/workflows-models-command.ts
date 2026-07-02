@@ -20,7 +20,7 @@ import {
   Text,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { listAvailableModelSpecs } from "./agent.js";
+import { listAvailableModelSpecsAsync } from "./agent.js";
 import {
   buildDefaultTierConfig,
   loadModelTierConfig,
@@ -51,7 +51,7 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
       await ctx.waitForIdle();
 
       const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-      const availableModelSpecs = listAvailableModelSpecs(ctx.modelRegistry);
+      const availableModelSpecs = await listAvailableModelSpecsAsync(ctx.modelRegistry);
       let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, availableModelSpecs);
       let dirty = false;
 
@@ -188,7 +188,7 @@ function tierTargetsEqual(a: ModelTierTarget, b: ModelTierTarget): boolean {
 }
 
 async function pickTierModel(ctx: ExtensionCommandContext, current: string, tierName: string): Promise<string | null> {
-  const available = listAvailableModelSpecs(ctx.modelRegistry);
+  const available = await listAvailableModelSpecsAsync(ctx.modelRegistry);
   const items: SelectItem[] = available.map((m) => ({ value: m, label: m }));
 
   return ctx.ui.custom<string | null>((tui: TUI, theme: Theme, _keybindings, done) => {

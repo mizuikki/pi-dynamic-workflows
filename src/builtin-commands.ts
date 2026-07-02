@@ -3,12 +3,13 @@
  * They run a generated workflow script and print the final report.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { generateAdversarialReviewWorkflow } from "./adversarial-review.js";
 import { generateDeepResearchWorkflow } from "./deep-research.js";
 import { createCodingTools } from "./pi-coding-agent-sdk.js";
 import { createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import type { WorkflowManager } from "./workflow-manager.js";
 
 function alreadyRegistered(pi: ExtensionAPI, name: string): boolean {
   try {
@@ -24,7 +25,52 @@ function reportText(result: WorkflowRunResult): string {
   return JSON.stringify(result.result, null, 2);
 }
 
-export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }): void {
+function currentModelSpec(ctx: ExtensionCommandContext): string | undefined {
+  return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+}
+
+function syncManagerFromContext(pi: ExtensionAPI, manager: WorkflowManager, ctx: ExtensionCommandContext): void {
+  manager.setSessionOptions({ modelRegistry: ctx.modelRegistry, model: ctx.model });
+  manager.setMainModel(currentModelSpec(ctx));
+  manager.setThinkingLevel(pi.getThinkingLevel());
+  manager.setSessionId(ctx.sessionManager.getSessionId());
+}
+
+async function runBuiltinWorkflow(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  script: string,
+  args: unknown,
+  options: {
+    cwd: string;
+    tools: ToolDefinition[];
+    manager?: WorkflowManager;
+    onPhase: (title: string) => void;
+  },
+): Promise<WorkflowRunResult> {
+  if (options.manager) {
+    syncManagerFromContext(pi, options.manager, ctx);
+    return options.manager.runSync(script, args, {
+      tools: options.tools,
+      onPhase: options.onPhase,
+    });
+  }
+
+  return runWorkflow(script, {
+    cwd: options.cwd,
+    args,
+    tools: options.tools,
+    session: {
+      modelRegistry: ctx.modelRegistry,
+      model: ctx.model,
+    },
+    mainModel: currentModelSpec(ctx),
+    currentThinkingLevel: pi.getThinkingLevel(),
+    onPhase: options.onPhase,
+  });
+}
+
+export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; manager?: WorkflowManager }): void {
   const cwd = opts.cwd;
 
   if (!alreadyRegistered(pi, "deep-research")) {
@@ -35,13 +81,18 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         if (!question) return ctx.ui.notify("Usage: /deep-research <question>", "warning");
         ctx.ui.notify("Researching — running web searches across several angles…", "info");
         try {
-          const result = await runWorkflow(generateDeepResearchWorkflow(), {
-            cwd,
-            args: { question },
-            // Research agents need real web access on top of the coding tools.
-            tools: [...createCodingTools(cwd), ...createWebTools()],
-            onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
-          });
+          const result = await runBuiltinWorkflow(
+            pi,
+            ctx,
+            generateDeepResearchWorkflow(),
+            { question },
+            {
+              cwd,
+              tools: [...createCodingTools(cwd), ...createWebTools()],
+              manager: opts.manager,
+              onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
+            },
+          );
           ctx.ui.setStatus("deep-research", undefined);
           await pi.sendMessage({ customType: "deep-research", content: reportText(result), display: true });
         } catch (error) {
@@ -60,12 +111,18 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         if (!task) return ctx.ui.notify("Usage: /adversarial-review <task or question>", "warning");
         ctx.ui.notify("Reviewing — investigating then refuting each finding…", "info");
         try {
-          const result = await runWorkflow(generateAdversarialReviewWorkflow(), {
-            cwd,
-            args: { task },
-            tools: createCodingTools(cwd),
-            onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),
-          });
+          const result = await runBuiltinWorkflow(
+            pi,
+            ctx,
+            generateAdversarialReviewWorkflow(),
+            { task },
+            {
+              cwd,
+              tools: createCodingTools(cwd),
+              manager: opts.manager,
+              onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),
+            },
+          );
           ctx.ui.setStatus("adversarial-review", undefined);
           await pi.sendMessage({ customType: "adversarial-review", content: reportText(result), display: true });
         } catch (error) {

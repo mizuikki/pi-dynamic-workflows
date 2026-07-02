@@ -23,8 +23,8 @@ jobs:
       - name: Checkout Pi workspace dependency
         run: |
           PI_REPO_REF="${PI_REPO_REF:-v0.80.3}"
-          git clone --depth 1 --branch "$PI_REPO_REF" https://github.com/earendil-works/pi.git ../pi \
-            || git clone --depth 1 --branch v0.80.3 https://github.com/earendil-works/pi.git ../pi
+          git clone --filter=blob:none https://github.com/earendil-works/pi.git ../pi
+          git -C ../pi checkout "$PI_REPO_REF"
       - name: Install dependencies
         run: npm ci
       - name: Lint, build, and test

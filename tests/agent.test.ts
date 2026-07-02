@@ -4,6 +4,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
 import {
   listAvailableModelSpecs,
+  listAvailableModelSpecsAsync,
   resolveAgentModelSpec,
   resolveAgentTierThinkingLevel,
   WorkflowAgent,
@@ -50,6 +51,25 @@ test("listAvailableModelSpecs uses the current session registry", () => {
   } satisfies Model<"faux">;
 
   const result = listAvailableModelSpecs({ getAvailableSync: () => [explicitModel] });
+
+  assert.deepEqual(result, ["explicit-faux/faux-1"]);
+});
+
+test("listAvailableModelSpecsAsync uses the current session registry", async () => {
+  const explicitModel = {
+    provider: "explicit-faux",
+    id: "faux-1",
+    api: "faux",
+    name: "Explicit Faux",
+    baseUrl: "http://localhost:0",
+    input: ["text"],
+    reasoning: false,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+  } satisfies Model<"faux">;
+
+  const result = await listAvailableModelSpecsAsync({ getAvailable: async () => [explicitModel] });
 
   assert.deepEqual(result, ["explicit-faux/faux-1"]);
 });

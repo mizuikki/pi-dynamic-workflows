@@ -262,8 +262,8 @@ export interface WorkflowAgentOptions {
 
 /**
  * List the user's currently available models (those with auth configured) as
- * `provider/modelId` specs. Used to tell the workflow author which models it may
- * route agents to. Best-effort: returns [] if the registry can't be built.
+ * `provider/modelId` specs. Used by synchronous call sites such as default tier
+ * bootstrapping. Best-effort: returns [] if the registry can't be built.
  */
 export function listAvailableModelSpecs(modelRegistry?: Pick<ModelRegistry, "getAvailableSync">): string[] {
   try {
@@ -275,6 +275,27 @@ export function listAvailableModelSpecs(modelRegistry?: Pick<ModelRegistry, "get
         return ModelRegistry.create(auth, join(dir, "models.json"));
       })();
     return registry.getAvailableSync().map((m) => `${m.provider}/${m.id}`);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Async availability list for UI/prompt surfaces that need auth-verified model
+ * specs, including explicit Models providers whose auth resolves asynchronously.
+ */
+export async function listAvailableModelSpecsAsync(
+  modelRegistry?: Pick<ModelRegistry, "getAvailable">,
+): Promise<string[]> {
+  try {
+    const registry =
+      modelRegistry ??
+      (() => {
+        const dir = getAgentDir();
+        const auth = AuthStorage.create(join(dir, "auth.json"));
+        return ModelRegistry.create(auth, join(dir, "models.json"));
+      })();
+    return (await registry.getAvailable()).map((m) => `${m.provider}/${m.id}`);
   } catch {
     return [];
   }

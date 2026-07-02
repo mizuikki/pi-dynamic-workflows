@@ -153,6 +153,12 @@ test("modelRoutingGuideline can list explicit models from the session registry",
   assert.match(text, /explicit-faux\/faux-1/);
 });
 
+test("modelRoutingGuideline can list precomputed available model specs", () => {
+  const text = modelRoutingGuideline(["explicit-faux/faux-1"]);
+
+  assert.match(text, /explicit-faux\/faux-1/);
+});
+
 test("modelRoutingGuideline explains when to use each option", () => {
   const text = modelRoutingGuideline();
   assert.ok(/small.*(exploration|search|inventory|agents)/i.test(text), "small tier should mention light workloads");

@@ -64,9 +64,11 @@ describe("workflows-models-command", () => {
     it("updates the tier model via the model picker", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       const selections = ["Model → openai/gpt-4.1-mini", "Back"];
+      const getAvailable = mock.fn(async () => []);
       const ctx = {
         modelRegistry: {
           find: mock.fn((_provider: string, _id: string) => ({ provider: "openai", id: "gpt-5" })),
+          getAvailable,
           getAvailableSync: mock.fn(() => []),
           getAll: mock.fn(() => []),
         },
@@ -79,6 +81,7 @@ describe("workflows-models-command", () => {
 
       const result = await editSingleTier(ctx as never, { model: "openai/gpt-4.1-mini" }, "small");
       assert.deepEqual(result, { model: "openai/gpt-5" });
+      assert.equal(getAvailable.mock.callCount(), 1, "model picker should use the async available-model list");
     });
 
     it("can switch a tier to inherit current session thinking", async () => {
@@ -91,6 +94,7 @@ describe("workflows-models-command", () => {
             id,
             reasoning: true,
           })),
+          getAvailable: mock.fn(async () => []),
           getAvailableSync: mock.fn(() => []),
           getAll: mock.fn(() => []),
         },

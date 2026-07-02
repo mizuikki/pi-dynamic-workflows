@@ -174,10 +174,11 @@ Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()
 
 ## Development
 
-For local development, keep a sibling Pi checkout at `../pi` on the target compatible ref (currently `v0.80.3`); this repo links `@earendil-works/pi-*` dev dependencies from that workspace.
+For local development, keep a sibling Pi checkout at `../pi` on the exact compatible upstream ref (currently `v0.80.3`); this repo links `@earendil-works/pi-*` dev dependencies from that workspace.
 
 ```bash
-git clone --branch v0.80.3 https://github.com/earendil-works/pi.git ../pi
+git clone https://github.com/earendil-works/pi.git ../pi
+git -C ../pi checkout v0.80.3
 npm install
 npm test     # biome + tsc + unit tests
 ```

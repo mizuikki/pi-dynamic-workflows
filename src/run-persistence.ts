@@ -32,6 +32,8 @@ export interface PersistedRunState {
   workflowName: string;
   script: string;
   args?: unknown;
+  /** Full workflow subagent tool surface by name, when it differs from the default coding tools. */
+  toolNames?: string[];
   /** The pi session this run belongs to. Runs persist on disk across sessions but
    * the navigator shows only the current session's runs (undefined = legacy/global). */
   sessionId?: string;
