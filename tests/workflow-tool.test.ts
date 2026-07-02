@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Model } from "@earendil-works/pi-ai";
 import { backgroundStartedText, createWorkflowTool, modelRoutingGuideline } from "../src/workflow-tool.js";
 
 // ─── backgroundStartedText ─────────────────────────────────────────────────────
@@ -131,6 +132,31 @@ test("modelRoutingGuideline references the model scope (auth-independent)", () =
     text.includes("route only to these") || text.includes("models the user has configured"),
     "should explain which models are in scope (listed or fallback)",
   );
+});
+
+test("modelRoutingGuideline can list explicit models from the session registry", () => {
+  const explicitModel = {
+    provider: "explicit-faux",
+    id: "faux-1",
+    api: "faux",
+    name: "Explicit Faux",
+    baseUrl: "http://localhost:0",
+    input: ["text"],
+    reasoning: false,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+  } satisfies Model<"faux">;
+
+  const text = modelRoutingGuideline({ getAvailableSync: () => [explicitModel] });
+
+  assert.match(text, /explicit-faux\/faux-1/);
+});
+
+test("modelRoutingGuideline can list precomputed available model specs", () => {
+  const text = modelRoutingGuideline(["explicit-faux/faux-1"]);
+
+  assert.match(text, /explicit-faux\/faux-1/);
 });
 
 test("modelRoutingGuideline explains when to use each option", () => {

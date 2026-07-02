@@ -23,6 +23,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Prepare Pi workspace dependency
+        run: |
+          PI_REPO_REF="${PI_REPO_REF:-v0.80.3}"
+          git clone --filter=blob:none https://github.com/earendil-works/pi.git ../pi
+          git -C ../pi checkout "$PI_REPO_REF"
+          npm --prefix ../pi ci --ignore-scripts
+          npm --prefix ../pi/packages/tui run build
+          npm --prefix ../pi/packages/ai run build
+          npm --prefix ../pi/packages/agent run build
+          npm --prefix ../pi/packages/coding-agent run build
       - run: npm ci
       - name: Lint, build, and test
         run: npm test
@@ -37,6 +47,16 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+      - name: Prepare Pi workspace dependency
+        run: |
+          PI_REPO_REF="${PI_REPO_REF:-v0.80.3}"
+          git clone --filter=blob:none https://github.com/earendil-works/pi.git ../pi
+          git -C ../pi checkout "$PI_REPO_REF"
+          npm --prefix ../pi ci --ignore-scripts
+          npm --prefix ../pi/packages/tui run build
+          npm --prefix ../pi/packages/ai run build
+          npm --prefix ../pi/packages/agent run build
+          npm --prefix ../pi/packages/coding-agent run build
       - run: npm ci
 
       - name: Verify tag matches package.json version

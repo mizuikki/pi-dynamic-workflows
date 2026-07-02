@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mizuikki/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   createEffortState,
   createWorkflowStorage,
@@ -6,6 +6,7 @@ import {
   installResultDelivery,
   installTaskPanel,
   installWorkflowEditor,
+  listAvailableModelSpecsAsync,
   loadWorkflowSettings,
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
@@ -30,15 +31,47 @@ export default function extension(pi: ExtensionAPI) {
     defaultAgentRetries: settings.defaultAgentRetries,
   });
 
-  const workflowTool = createWorkflowTool({ cwd, manager, storage });
+  let workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
+
+  const ensureWorkflowToolActive = () => {
+    const active = pi.getActiveTools();
+    if (!active.includes(workflowTool.name)) {
+      pi.setActiveTools([...active, workflowTool.name]);
+    }
+  };
+
+  const syncWorkflowRuntime = async (ctx: ExtensionContext, options?: { activateTool?: boolean }) => {
+    const workflowToolWasActive = pi.getActiveTools().includes(workflowTool.name);
+    manager.setSessionOptions({ modelRegistry: ctx.modelRegistry, model: ctx.model });
+    manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
+    manager.setThinkingLevel(pi.getThinkingLevel());
+    try {
+      manager.setSessionId(ctx.sessionManager?.getSessionId());
+    } catch {
+      // sessionManager may be unavailable in some contexts — fall back to global history.
+    }
+
+    const availableModelSpecs = await listAvailableModelSpecsAsync(ctx.modelRegistry);
+    workflowTool = createWorkflowTool({
+      cwd,
+      manager,
+      storage,
+      modelRegistry: ctx.modelRegistry,
+      availableModelSpecs,
+    });
+    pi.registerTool(workflowTool);
+    if (options?.activateTool || workflowToolWasActive) {
+      ensureWorkflowToolActive();
+    }
+  };
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
   // messages, like CC's ultracode. Shared with the editor's input hook below and
   // with the explicit /workflows run <prompt> manual trigger.
   const effort = createEffortState();
   registerWorkflowCommands(pi, manager, { storage, cwd, effort });
   registerWorkflowModelsCommand(pi);
-  registerBuiltinWorkflows(pi, { cwd });
+  registerBuiltinWorkflows(pi, { cwd, manager });
   registerAllSavedWorkflows(pi, cwd, storage, manager);
   registerEffortCommand(pi, effort);
   // "Workflows mode": type `workflow(s)` to arm a forced workflow (animated),
@@ -46,23 +79,8 @@ export default function extension(pi: ExtensionAPI) {
   // the editor itself is installed once the UI is available (session_start).
   let editorInstalled = false;
 
-  pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
-    const active = pi.getActiveTools();
-    if (!active.includes(workflowTool.name)) {
-      pi.setActiveTools([...active, workflowTool.name]);
-    }
-    // Tell the manager the session's main model so "explore" agents auto-tier
-    // down to a lighter same-family sibling (e.g. Claude → Haiku).
-    manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
-    manager.setThinkingLevel(pi.getThinkingLevel());
-    // Scope the /workflows history to this session: runs persist on disk across
-    // sessions, but the navigator/task panel show only the current session's runs.
-    // Switching back to a previous session re-shows that session's runs.
-    try {
-      manager.setSessionId(ctx.sessionManager?.getSessionId());
-    } catch {
-      // sessionManager may be unavailable in some contexts — fall back to global history.
-    }
+  pi.on("session_start", async (_event: unknown, ctx: ExtensionContext) => {
+    await syncWorkflowRuntime(ctx, { activateTool: true });
     // Deliver a background run's result into the conversation when it finishes.
     installResultDelivery(pi, manager);
     // Live "workflows running" panel below the input (focus + enter to open).
@@ -78,6 +96,14 @@ export default function extension(pi: ExtensionAPI) {
       });
       editorInstalled = true;
     }
+  });
+
+  pi.on("input", async (_event, ctx) => {
+    await syncWorkflowRuntime(ctx);
+  });
+
+  pi.on("model_select", async (_event, ctx) => {
+    await syncWorkflowRuntime(ctx);
   });
 
   pi.on("thinking_level_select", (event) => {

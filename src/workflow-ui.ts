@@ -13,9 +13,9 @@
  * Component shell (openWorkflowNavigator) wires them to live manager events.
  */
 
-import type { ExtensionAPI, ExtensionUIContext, Theme } from "@mizuikki/pi-coding-agent";
-import type { Component, Focusable, TUI } from "@mizuikki/pi-tui";
-import { parseKey, truncateToWidth, wrapTextWithAnsi } from "@mizuikki/pi-tui";
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
+import { parseKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
 import type { PersistedRunState } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
@@ -538,7 +538,7 @@ function currentCount(state: NavigatorState, model: NavigatorModel): number {
   return 0;
 }
 
-import type { OverlayAnchor } from "@mizuikki/pi-tui";
+import type { OverlayAnchor } from "@earendil-works/pi-tui";
 
 export interface NavigatorOptions {
   storage?: WorkflowStorage;

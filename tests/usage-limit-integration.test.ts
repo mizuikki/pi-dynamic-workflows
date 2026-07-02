@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { type FauxResponseStep, fauxAssistantMessage, type Model, type Models } from "@mizuikki/pi-ai";
+import { type FauxResponseStep, fauxAssistantMessage, type Model, type Models } from "@earendil-works/pi-ai";
 import { WorkflowAgent } from "../src/agent.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
@@ -53,6 +53,7 @@ async function withFauxSession(
       }),
     );
   } finally {
+    faux.dispose();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }

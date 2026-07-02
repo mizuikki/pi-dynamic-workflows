@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fauxAssistantMessage, fauxToolCall } from "@mizuikki/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   DefaultResourceLoader,
   type Extension,
@@ -12,7 +12,7 @@ import {
   type ResourceLoader,
   SessionManager,
   SettingsManager,
-} from "@mizuikki/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { WorkflowAgent, wrapResourceLoaderForWorkflowSubagents } from "../src/agent.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
@@ -92,6 +92,7 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
       assert.equal(faux.getPendingResponseCount(), 0, "all faux responses should be consumed");
     });
   } finally {
+    faux.dispose();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -134,6 +135,7 @@ test("WorkflowAgent uses the per-run cwd when loading default project settings u
       assert.equal(faux.getPendingResponseCount(), 0, "per-run settings should select the run cwd model");
     });
   } finally {
+    faux.dispose();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
     rmSync(runCwd, { recursive: true, force: true });

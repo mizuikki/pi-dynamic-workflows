@@ -71,3 +71,70 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
   );
   assert.equal(typeof advReviewCmd.handler, "function");
 });
+
+test("registerBuiltinWorkflows syncs the live session model into manager-backed runs", async () => {
+  const commands: Array<{ name: string; handler: (args: string, ctx: unknown) => Promise<void> }> = [];
+  const sent: Array<{ customType?: string; content?: string }> = [];
+  const managerCalls: Array<[string, unknown]> = [];
+  let runOptions: { tools?: unknown[]; onPhase?: (title: string) => void } | undefined;
+
+  const pi = {
+    getCommands: () => [],
+    registerCommand: (name: string, spec: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
+      commands.push({ name, handler: spec.handler });
+    },
+    sendMessage: async (message: { customType?: string; content?: string }) => {
+      sent.push(message);
+    },
+    getThinkingLevel: () => "high",
+  };
+
+  const manager = {
+    setSessionOptions: (options: unknown) => managerCalls.push(["session", options]),
+    setMainModel: (model: unknown) => managerCalls.push(["mainModel", model]),
+    setThinkingLevel: (level: unknown) => managerCalls.push(["thinking", level]),
+    setSessionId: (sessionId: unknown) => managerCalls.push(["sessionId", sessionId]),
+    runSync: async (
+      _script: string,
+      _args: unknown,
+      options: { tools?: unknown[]; onPhase?: (title: string) => void },
+    ) => {
+      runOptions = options;
+      options.onPhase?.("Research");
+      return {
+        meta: { name: "deep_research", description: "d" },
+        result: { report: "manager result" },
+        logs: [],
+        phases: ["Research"],
+        agentCount: 1,
+        durationMs: 1,
+      };
+    },
+  };
+
+  registerBuiltinWorkflows(pi as never, { cwd: "/tmp", manager: manager as never });
+  const deepResearchHandler = commands.find((command) => command.name === "deep-research")?.handler;
+  assert.ok(deepResearchHandler, "deep-research handler should exist");
+
+  const ctx = {
+    modelRegistry: { getAvailable: async () => [] },
+    model: { provider: "explicit-faux", id: "selected-model" },
+    sessionManager: { getSessionId: () => "session-123" },
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+    },
+  };
+
+  await deepResearchHandler("trace auth flows", ctx as never);
+
+  assert.deepEqual(managerCalls, [
+    ["session", { modelRegistry: ctx.modelRegistry, model: ctx.model }],
+    ["mainModel", "explicit-faux/selected-model"],
+    ["thinking", "high"],
+    ["sessionId", "session-123"],
+  ]);
+  assert.ok((runOptions?.tools?.length ?? 0) > 0, "deep-research should pass workflow tools to manager.runSync");
+  assert.equal(sent[0]?.customType, "deep-research");
+  assert.equal(sent[0]?.content, "manager result");
+});

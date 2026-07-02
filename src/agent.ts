@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import type { ThinkingLevel } from "@mizuikki/pi-agent-core";
-import type { AssistantMessage, Model, TextContent } from "@mizuikki/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, Model, Models, ProviderEnv, ProviderHeaders, TextContent } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
   DefaultResourceLoader,
@@ -11,7 +11,7 @@ import {
   SessionManager,
   SettingsManager,
   type ToolDefinition,
-} from "@mizuikki/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
@@ -243,12 +243,203 @@ export function resolveAgentTierThinkingLevel(
   return config ? resolveTierThinkingLevel(options.tier, config) : undefined;
 }
 
+type AvailableModelList = readonly Model<any>[] | Model<any>[] | Promise<readonly Model<any>[] | Model<any>[]>;
+
+export type AvailableModelsSource =
+  | { getAvailableSync(): readonly Model<any>[] | Model<any>[] }
+  | { getAvailable(): AvailableModelList; getAvailableSync?(): readonly Model<any>[] | Model<any>[] };
+
+type CompatibleResolvedRequestAuth =
+  | { ok: true; apiKey?: string; headers?: ProviderHeaders; env?: ProviderEnv }
+  | { ok: false; error: string };
+
+type CompatibleModelRegistry = AvailableModelsSource & {
+  authStorage?: AuthStorage;
+  find(provider: string, modelId: string): Model<any> | undefined;
+  getAll(): Model<any>[];
+  hasConfiguredAuth?(model: Model<any>): boolean | Promise<boolean>;
+  hasConfiguredAuthSync?(model: Model<any>): boolean;
+  getApiKeyAndHeaders?(model: Model<any>): Promise<CompatibleResolvedRequestAuth>;
+  isUsingOAuth?(model: Model<any>): boolean;
+  getProviderDisplayName?(provider: string): string;
+  getProviderAuthStatus?(provider: string): unknown;
+  getApiKeyForProvider?(provider: string): Promise<string | undefined>;
+  registerProvider?(...args: unknown[]): void;
+  unregisterProvider?(...args: unknown[]): void;
+  refresh?(): void;
+  getError?(): string | undefined;
+  setExplicitModels?(explicitModels: Models | undefined): void;
+  getExplicitModelsSource?(): Models | undefined;
+};
+
+type WorkflowSessionOptions = Partial<CreateAgentSessionOptions> & {
+  modelRegistry?: CompatibleModelRegistry;
+  models?: Models;
+};
+
+function mergeModelLists(baseModels: readonly Model<any>[], overlayModels: readonly Model<any>[]): Model<any>[] {
+  const merged = [...baseModels];
+  for (const overlay of overlayModels) {
+    const existingIndex = merged.findIndex((model) => model.provider === overlay.provider && model.id === overlay.id);
+    if (existingIndex >= 0) {
+      merged[existingIndex] = overlay;
+    } else {
+      merged.push(overlay);
+    }
+  }
+  return merged;
+}
+
+function getExplicitModel(
+  explicitModels: Models | undefined,
+  provider: string,
+  modelId: string,
+): Model<any> | undefined {
+  return explicitModels?.getModel(provider, modelId);
+}
+
+export function getAvailableModelsSync(source?: AvailableModelsSource): Model<any>[] {
+  if (!source) return [];
+  if ("getAvailableSync" in source && typeof source.getAvailableSync === "function") {
+    return [...source.getAvailableSync()];
+  }
+  if ("getAvailable" in source) {
+    const available = source.getAvailable();
+    if (Array.isArray(available)) {
+      return [...available];
+    }
+  }
+  return [];
+}
+
+async function getAvailableModelsAsync(source: AvailableModelsSource): Promise<Model<any>[]> {
+  if ("getAvailableSync" in source && typeof source.getAvailableSync === "function" && !("getAvailable" in source)) {
+    return [...source.getAvailableSync()];
+  }
+  if ("getAvailable" in source) {
+    const available = source.getAvailable();
+    return Array.isArray(available) ? [...available] : [...(await available)];
+  }
+  return [];
+}
+
+function createCompatibleModelRegistry(
+  baseRegistry: CompatibleModelRegistry,
+  explicitModels: Models | undefined,
+): CompatibleModelRegistry {
+  if (!explicitModels) {
+    return baseRegistry;
+  }
+
+  let currentExplicitModels: Models | undefined = explicitModels;
+  const getExplicitProvider = (provider: string) => currentExplicitModels?.getProvider(provider);
+  const getMergedModels = () => mergeModelLists(baseRegistry.getAll(), currentExplicitModels?.getModels() ?? []);
+
+  const registry: CompatibleModelRegistry = {
+    authStorage: baseRegistry.authStorage,
+    find(provider, modelId) {
+      return getExplicitModel(currentExplicitModels, provider, modelId) ?? baseRegistry.find(provider, modelId);
+    },
+    getAll() {
+      return getMergedModels();
+    },
+    async getAvailable() {
+      const baseAvailable = "getAvailable" in baseRegistry ? await getAvailableModelsAsync(baseRegistry) : [];
+      const explicitAvailability = await Promise.all(
+        (currentExplicitModels?.getModels() ?? []).map(async (model) => ({
+          model,
+          auth: await currentExplicitModels?.getAuth(model).catch(() => undefined),
+        })),
+      );
+      return mergeModelLists(
+        baseAvailable,
+        explicitAvailability.filter((entry) => entry.auth !== undefined).map((entry) => entry.model),
+      );
+    },
+    getAvailableSync() {
+      const baseAvailable = getAvailableModelsSync(baseRegistry);
+      return mergeModelLists(baseAvailable, currentExplicitModels?.getModels() ?? []);
+    },
+    hasConfiguredAuth(model) {
+      if (getExplicitModel(currentExplicitModels, model.provider, model.id)) {
+        return getExplicitProvider(model.provider) !== undefined;
+      }
+      if (typeof baseRegistry.hasConfiguredAuth === "function") {
+        return baseRegistry.hasConfiguredAuth(model);
+      }
+      return getAvailableModelsSync(baseRegistry).some(
+        (availableModel) => availableModel.provider === model.provider && availableModel.id === model.id,
+      );
+    },
+    hasConfiguredAuthSync(model) {
+      if (getExplicitModel(currentExplicitModels, model.provider, model.id)) {
+        return getExplicitProvider(model.provider) !== undefined;
+      }
+      if (typeof baseRegistry.hasConfiguredAuthSync === "function") {
+        return baseRegistry.hasConfiguredAuthSync(model);
+      }
+      return getAvailableModelsSync(baseRegistry).some(
+        (availableModel) => availableModel.provider === model.provider && availableModel.id === model.id,
+      );
+    },
+    async getApiKeyAndHeaders(model) {
+      const explicitModel = getExplicitModel(currentExplicitModels, model.provider, model.id);
+      const explicitSource = currentExplicitModels;
+      if (explicitModel && explicitSource) {
+        try {
+          const auth = await explicitSource.getAuth(explicitModel);
+          if (!auth) {
+            return { ok: false, error: `No API key found for "${model.provider}"` };
+          }
+          return {
+            ok: true,
+            apiKey: auth.auth.apiKey,
+            headers: auth.auth.headers,
+            env: auth.env,
+          };
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      if (typeof baseRegistry.getApiKeyAndHeaders === "function") {
+        return baseRegistry.getApiKeyAndHeaders(model);
+      }
+      return { ok: false, error: `No auth resolver found for "${model.provider}"` };
+    },
+    isUsingOAuth(model) {
+      if (getExplicitModel(currentExplicitModels, model.provider, model.id)) {
+        return getExplicitProvider(model.provider)?.auth.oauth !== undefined;
+      }
+      return baseRegistry.isUsingOAuth?.(model) ?? false;
+    },
+    getProviderDisplayName: baseRegistry.getProviderDisplayName?.bind(baseRegistry),
+    getProviderAuthStatus: baseRegistry.getProviderAuthStatus?.bind(baseRegistry),
+    getApiKeyForProvider: baseRegistry.getApiKeyForProvider?.bind(baseRegistry),
+    registerProvider: baseRegistry.registerProvider?.bind(baseRegistry),
+    unregisterProvider: baseRegistry.unregisterProvider?.bind(baseRegistry),
+    refresh: baseRegistry.refresh?.bind(baseRegistry),
+    getError: baseRegistry.getError?.bind(baseRegistry),
+    setExplicitModels(nextExplicitModels) {
+      currentExplicitModels = nextExplicitModels;
+      baseRegistry.setExplicitModels?.(nextExplicitModels);
+    },
+    getExplicitModelsSource() {
+      return currentExplicitModels;
+    },
+  };
+
+  return registry;
+}
+
 export interface WorkflowAgentOptions {
   cwd?: string;
   /** Extra tools available to the subagent in addition to the structured output tool. */
   tools?: ToolDefinition[];
   /** Override any createAgentSession option (model, models, authStorage, resourceLoader, etc.). */
-  session?: Partial<CreateAgentSessionOptions>;
+  session?: WorkflowSessionOptions;
   /** Extra system guidance prepended to every subagent task. */
   instructions?: string;
   /**
@@ -262,15 +453,38 @@ export interface WorkflowAgentOptions {
 
 /**
  * List the user's currently available models (those with auth configured) as
- * `provider/modelId` specs. Used to tell the workflow author which models it may
- * route agents to. Best-effort: returns [] if the registry can't be built.
+ * `provider/modelId` specs. Used by synchronous call sites such as default tier
+ * bootstrapping. Best-effort: returns [] if the registry can't be built.
  */
-export function listAvailableModelSpecs(): string[] {
+export function listAvailableModelSpecs(modelRegistry?: AvailableModelsSource): string[] {
   try {
-    const dir = getAgentDir();
-    const auth = AuthStorage.create(join(dir, "auth.json"));
-    const registry = ModelRegistry.create(auth, join(dir, "models.json"));
-    return registry.getAvailableSync().map((m) => `${m.provider}/${m.id}`);
+    const registry =
+      modelRegistry ??
+      (() => {
+        const dir = getAgentDir();
+        const auth = AuthStorage.create(join(dir, "auth.json"));
+        return ModelRegistry.create(auth, join(dir, "models.json"));
+      })();
+    return getAvailableModelsSync(registry).map((m) => `${m.provider}/${m.id}`);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Async availability list for UI/prompt surfaces that need auth-verified model
+ * specs, including explicit Models providers whose auth resolves asynchronously.
+ */
+export async function listAvailableModelSpecsAsync(modelRegistry?: AvailableModelsSource): Promise<string[]> {
+  try {
+    const registry =
+      modelRegistry ??
+      (() => {
+        const dir = getAgentDir();
+        const auth = AuthStorage.create(join(dir, "auth.json"));
+        return ModelRegistry.create(auth, join(dir, "models.json"));
+      })();
+    return (await getAvailableModelsAsync(registry)).map((m) => `${m.provider}/${m.id}`);
   } catch {
     return [];
   }
@@ -347,11 +561,11 @@ export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef 
 export class WorkflowAgent {
   private readonly cwd: string;
   private readonly baseTools: ToolDefinition[];
-  private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
+  private readonly sessionOptions: WorkflowSessionOptions;
   private readonly instructions?: string;
   private readonly mainModel?: string;
   /** Lazily built once; shares the SDK's agentDir/auth/models so lookup matches session creation. */
-  private registry?: ModelRegistry;
+  private registry?: CompatibleModelRegistry;
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -361,17 +575,19 @@ export class WorkflowAgent {
     this.mainModel = options.mainModel;
   }
 
-  private getRegistry(): ModelRegistry {
+  private getExplicitModelsSource(): Models | undefined {
+    return this.sessionOptions.models ?? this.sessionOptions.modelRegistry?.getExplicitModelsSource?.();
+  }
+
+  private getRegistry(): CompatibleModelRegistry {
     if (!this.registry) {
       const dir = this.sessionOptions.agentDir ?? getAgentDir();
       // Same agentDir/auth files createAgentSession uses by default, so a model
-      // resolved here carries valid credentials and explicit-model wiring.
+      // resolved here carries valid credentials and explicit-model wiring when
+      // the host Pi runtime exposes the explicit Models surface.
       const auth = this.sessionOptions.authStorage ?? AuthStorage.create(join(dir, "auth.json"));
-      const registry =
-        this.sessionOptions.modelRegistry ??
-        ModelRegistry.create(auth, join(dir, "models.json"), this.sessionOptions.models);
-      registry.setExplicitModels(this.sessionOptions.models);
-      this.registry = registry;
+      const baseRegistry = this.sessionOptions.modelRegistry ?? ModelRegistry.create(auth, join(dir, "models.json"));
+      this.registry = createCompatibleModelRegistry(baseRegistry, this.getExplicitModelsSource());
     }
     return this.registry;
   }
@@ -387,7 +603,7 @@ export class WorkflowAgent {
     if (slash > 0) {
       return registry.find(spec.slice(0, slash), spec.slice(slash + 1));
     }
-    const available = await registry.getAvailable();
+    const available = await getAvailableModelsAsync(registry);
     return available.find((m) => m.id === spec) ?? registry.getAll().find((m) => m.id === spec);
   }
 
@@ -434,6 +650,8 @@ export class WorkflowAgent {
     const {
       resourceLoader: providedResourceLoader,
       settingsManager: providedSettingsManager,
+      models: _explicitModels,
+      modelRegistry: _sessionModelRegistry,
       ...sessionOptions
     } = this.sessionOptions;
     // Use real SettingsManager to inherit user's default provider/model settings.
@@ -453,6 +671,7 @@ export class WorkflowAgent {
       settingsManager,
       customTools,
       ...sessionOptions,
+      modelRegistry: this.getRegistry() as CreateAgentSessionOptions["modelRegistry"],
       resourceLoader,
       // Per-call model wins over any sessionOptions.model.
       ...(resolvedModel ? { model: resolvedModel } : {}),

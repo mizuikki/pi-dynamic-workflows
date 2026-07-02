@@ -3,4 +3,4 @@ export {
   type CreateAgentSessionResult,
   createAgentSession,
   createCodingTools,
-} from "@mizuikki/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";

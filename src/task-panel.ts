@@ -6,8 +6,8 @@
  *    conversation so the paused task continues with the outcome.
  */
 
-import type { ExtensionAPI, ExtensionUIContext, Theme } from "@mizuikki/pi-coding-agent";
-import { type Component, type TUI, truncateToWidth, visibleWidth } from "@mizuikki/pi-tui";
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
+import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";

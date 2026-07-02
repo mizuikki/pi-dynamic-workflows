@@ -21,8 +21,8 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionUIContext,
-} from "@mizuikki/pi-coding-agent";
-import type { EditorTheme, TUI } from "@mizuikki/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { DEFAULT_KEYWORD_TRIGGER_WORD, normalizeKeywordTriggerWord } from "./config.js";
 import { type EffortState, effortDirective, isSubstantive } from "./effort-command.js";
 import {

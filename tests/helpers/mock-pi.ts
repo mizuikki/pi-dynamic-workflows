@@ -5,7 +5,7 @@
  * per-test `as never` casts across the command test files.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@mizuikki/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 export interface RegisteredCommand {
   name: string;

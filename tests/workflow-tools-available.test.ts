@@ -15,7 +15,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
-import type { ExtensionAPI, ExtensionUIContext } from "@mizuikki/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME, type WorkflowModeState } from "../src/workflow-editor.js";
 
 // ---------------------------------------------------------------------------

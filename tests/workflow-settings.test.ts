@@ -11,7 +11,7 @@ import {
   saveWorkflowSettings,
   saveWorkflowSettingsForCwd,
 } from "../src/workflow-settings.js";
-import { withFakeHome } from "./helpers/fake-home.js";
+import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 function withSettingsPath(fn: (settingsPath: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-settings-"));
@@ -84,12 +84,12 @@ describe("workflow settings", () => {
     });
   });
 
-  it("merges project settings over global settings when cwd is provided", () => {
+  it("merges project settings over global settings when cwd is provided", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {
-      withFakeHome(fakeHome, () => {
+      await withFakeHomeAsync(fakeHome, async () => {
         const globalPath = getWorkflowSettingsPath();
         const projectPath = getWorkflowProjectSettingsPath(cwd);
         saveWorkflowSettings({ keywordTriggerEnabled: true, defaultAgentTimeoutMs: 600000 }, globalPath);
@@ -109,12 +109,12 @@ describe("workflow settings", () => {
     }
   });
 
-  it("saves cwd preferences globally without creating a project override", () => {
+  it("saves cwd preferences globally without creating a project override", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {
-      withFakeHome(fakeHome, () => {
+      await withFakeHomeAsync(fakeHome, async () => {
         saveWorkflowSettingsForCwd({ keywordTriggerEnabled: false }, cwd);
 
         assert.deepEqual(loadWorkflowSettings({ cwd }), { keywordTriggerEnabled: false });
@@ -125,12 +125,12 @@ describe("workflow settings", () => {
     }
   });
 
-  it("saves cwd preferences into an existing project override", () => {
+  it("saves cwd preferences into an existing project override", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {
-      withFakeHome(fakeHome, () => {
+      await withFakeHomeAsync(fakeHome, async () => {
         saveWorkflowSettings({ keywordTriggerEnabled: false }, { cwd, scope: "project" });
 
         saveWorkflowSettingsForCwd({ keywordTriggerEnabled: true }, cwd);
