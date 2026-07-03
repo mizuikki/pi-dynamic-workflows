@@ -449,6 +449,14 @@ export interface WorkflowAgentOptions {
    * to the session default when no config is saved yet.
    */
   mainModel?: string;
+  /**
+   * Shared model registry from the host Pi session. When provided, subagents
+   * resolve tier/model specs against the same registry the main session uses,
+   * including dynamically-registered providers such as ollama-cloud. Without
+   * this, the agent builds an isolated registry from disk and may miss models
+   * that are only available via extension registration.
+   */
+  modelRegistry?: CompatibleModelRegistry;
 }
 
 /**
@@ -552,6 +560,14 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * structured_output) before falling back to strict prose extraction. Default 2.
    */
   maxSchemaRetries?: number;
+  /**
+   * Per-run model registry override. Takes precedence over the constructor's
+   * `modelRegistry` (WorkflowAgentOptions.modelRegistry) for both model
+   * resolution and the `createAgentSession` call this run makes. Falls back to
+   * the constructor's shared registry, then a lazily-built disk registry, when
+   * omitted.
+   */
+  modelRegistry?: CompatibleModelRegistry;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -564,8 +580,15 @@ export class WorkflowAgent {
   private readonly sessionOptions: WorkflowSessionOptions;
   private readonly instructions?: string;
   private readonly mainModel?: string;
+  /** Shared registry from the host session, when provided. */
+  private readonly sharedRegistry?: CompatibleModelRegistry;
   /** Lazily built once; shares the SDK's agentDir/auth/models so lookup matches session creation. */
   private registry?: CompatibleModelRegistry;
+  /** Wrapped host registries by identity, so repeated run() calls don't rebuild the same adapter. */
+  private wrappedRegistryCache = new WeakMap<
+    CompatibleModelRegistry,
+    { explicitModels: Models | undefined; registry: CompatibleModelRegistry }
+  >();
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -573,21 +596,39 @@ export class WorkflowAgent {
     this.sessionOptions = options.session ?? {};
     this.instructions = options.instructions;
     this.mainModel = options.mainModel;
+    this.sharedRegistry = options.modelRegistry;
   }
 
-  private getExplicitModelsSource(): Models | undefined {
-    return this.sessionOptions.models ?? this.sessionOptions.modelRegistry?.getExplicitModelsSource?.();
+  private getExplicitModelsSource(activeRegistry?: CompatibleModelRegistry): Models | undefined {
+    return (
+      this.sessionOptions.models ??
+      activeRegistry?.getExplicitModelsSource?.() ??
+      this.sessionOptions.modelRegistry?.getExplicitModelsSource?.()
+    );
   }
 
-  private getRegistry(): CompatibleModelRegistry {
+  private getRegistry(perRunRegistry?: CompatibleModelRegistry): CompatibleModelRegistry {
+    const providedRegistry = perRunRegistry ?? this.sharedRegistry ?? this.sessionOptions.modelRegistry;
+    const explicitModels = this.getExplicitModelsSource(providedRegistry);
+    if (providedRegistry) {
+      let wrapped = this.wrappedRegistryCache.get(providedRegistry);
+      if (!wrapped || wrapped.explicitModels !== explicitModels) {
+        wrapped = {
+          explicitModels,
+          registry: createCompatibleModelRegistry(providedRegistry, explicitModels),
+        };
+        this.wrappedRegistryCache.set(providedRegistry, wrapped);
+      }
+      return wrapped.registry;
+    }
     if (!this.registry) {
       const dir = this.sessionOptions.agentDir ?? getAgentDir();
       // Same agentDir/auth files createAgentSession uses by default, so a model
       // resolved here carries valid credentials and explicit-model wiring when
       // the host Pi runtime exposes the explicit Models surface.
       const auth = this.sessionOptions.authStorage ?? AuthStorage.create(join(dir, "auth.json"));
-      const baseRegistry = this.sessionOptions.modelRegistry ?? ModelRegistry.create(auth, join(dir, "models.json"));
-      this.registry = createCompatibleModelRegistry(baseRegistry, this.getExplicitModelsSource());
+      const baseRegistry = ModelRegistry.create(auth, join(dir, "models.json"));
+      this.registry = createCompatibleModelRegistry(baseRegistry, this.getExplicitModelsSource(baseRegistry));
     }
     return this.registry;
   }
@@ -597,8 +638,8 @@ export class WorkflowAgent {
    * or a bare `modelId` (prefers auth-configured models, then any known model).
    * Returns undefined when nothing matches.
    */
-  private async resolveModel(spec: string): Promise<Model<any> | undefined> {
-    const registry = this.getRegistry();
+  private async resolveModel(spec: string, perRunRegistry?: CompatibleModelRegistry): Promise<Model<any> | undefined> {
+    const registry = this.getRegistry(perRunRegistry);
     const slash = spec.indexOf("/");
     if (slash > 0) {
       return registry.find(spec.slice(0, slash), spec.slice(slash + 1));
@@ -637,7 +678,7 @@ export class WorkflowAgent {
     // spec falls back to the session default (with a warning) rather than failing.
     let resolvedModel: Model<any> | undefined;
     if (modelSpec) {
-      resolvedModel = await this.resolveModel(modelSpec);
+      resolvedModel = await this.resolveModel(modelSpec, options.modelRegistry);
       if (resolvedModel) {
         options.onModelResolved?.(`${resolvedModel.provider}/${resolvedModel.id}`);
       } else {
@@ -671,7 +712,7 @@ export class WorkflowAgent {
       settingsManager,
       customTools,
       ...sessionOptions,
-      modelRegistry: this.getRegistry() as CreateAgentSessionOptions["modelRegistry"],
+      modelRegistry: this.getRegistry(options.modelRegistry) as CreateAgentSessionOptions["modelRegistry"],
       resourceLoader,
       // Per-call model wins over any sessionOptions.model.
       ...(resolvedModel ? { model: resolvedModel } : {}),

@@ -1,3 +1,5 @@
+import { jsString, safeAgentLabel } from "./workflow-script-helpers.js";
+
 /**
  * Adversarial review mode for workflows.
  * Agents cross-check each other's findings for higher quality results.
@@ -77,10 +79,15 @@ return { total: findings.length, survivors, report }`;
  */
 export function generateMultiPerspectiveWorkflow(topic: string, perspectives: string[]): string {
   const perspectiveAgents = perspectives
-    .map(
-      (p, _i) =>
-        `  () => agent('Analyze from ${p} perspective: ' + topic, { label: '${p.toLowerCase().replace(/\\s+/g, "-")}' }),`,
-    )
+    .map((perspective, index) => {
+      const label = safeAgentLabel(perspective, `perspective-${index + 1}`);
+      return [
+        "  () => agent(",
+        `    'Analyze from ' + ${jsString(perspective)} + ' perspective: ' + topic,`,
+        `    { label: ${jsString(label)} },`,
+        "  ),",
+      ].join("\n");
+    })
     .join("\n");
 
   return `export const meta = {
@@ -93,7 +100,7 @@ export function generateMultiPerspectiveWorkflow(topic: string, perspectives: st
 };
 
 phase('Perspective Analysis');
-const topic = '${topic.replace(/'/g, "\\'")}';
+const topic = ${jsString(topic)};
 const analyses = await parallel([
 ${perspectiveAgents}
 ]);

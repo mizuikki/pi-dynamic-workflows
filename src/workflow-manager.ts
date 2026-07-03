@@ -84,6 +84,8 @@ export interface WorkflowManagerOptions {
   session?: WorkflowAgentOptions["session"];
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   mainModel?: string;
+  /** Shared model registry from the host Pi session. */
+  modelRegistry?: WorkflowAgentOptions["modelRegistry"];
   /** The pi session id to tag runs with (see setSessionId). */
   sessionId?: string;
   /** Default per-agent timeout when a run does not pass agentTimeoutMs. null means no hard timeout. */
@@ -125,6 +127,8 @@ export class WorkflowManager extends EventEmitter {
   private sessionOptions?: WorkflowAgentOptions["session"];
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   private mainModel?: string;
+  /** Shared model registry from the host Pi session. */
+  private modelRegistry?: WorkflowAgentOptions["modelRegistry"];
   /** The session's current thinking level; tier configs inherit from this when unset. */
   private currentThinkingLevel?: ThinkingLevel;
   /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
@@ -140,6 +144,7 @@ export class WorkflowManager extends EventEmitter {
     this.agent = options.agent;
     this.sessionOptions = options.session;
     this.mainModel = options.mainModel;
+    this.modelRegistry = options.modelRegistry ?? options.session?.modelRegistry;
     this.sessionId = options.sessionId;
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
@@ -186,11 +191,23 @@ export class WorkflowManager extends EventEmitter {
 
   setSessionOptions(session: WorkflowAgentOptions["session"] | undefined): void {
     this.sessionOptions = session;
+    if (session?.modelRegistry) {
+      this.modelRegistry = session.modelRegistry;
+    }
   }
 
   /** Set the session's main model (provider/id). Used to auto-tier explore agents. */
   setMainModel(spec: string | undefined): void {
     this.mainModel = spec;
+  }
+
+  /** Set the host session's shared model registry for future workflow runs. */
+  setModelRegistry(registry: WorkflowAgentOptions["modelRegistry"] | undefined): void {
+    this.modelRegistry = registry;
+  }
+
+  getModelRegistry(): WorkflowAgentOptions["modelRegistry"] | undefined {
+    return this.modelRegistry;
   }
 
   /** Set the session's current thinking level for future workflow runs. */
@@ -362,6 +379,7 @@ export class WorkflowManager extends EventEmitter {
                 ...(this.currentThinkingLevel ? { thinkingLevel: this.currentThinkingLevel } : {}),
               }
             : undefined,
+        modelRegistry: this.modelRegistry,
         currentThinkingLevel: this.currentThinkingLevel,
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,

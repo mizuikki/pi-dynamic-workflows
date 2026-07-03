@@ -4,6 +4,10 @@
  * Uses Pi's built-in `ctx.ui.select()`, `ctx.ui.confirm()`, and `ctx.ui.notify()`
  * to let users view and manage workflow tier configuration.
  *
+ * Model selection draws from the host session's shared model registry so users
+ * see every provider Pi can reach, including extension-registered providers such
+ * as `ollama-cloud`.
+ *
  * Each tier stores a model plus an optional explicit thinking level.
  * An omitted thinking level means "inherit the current Pi session thinking level".
  */
