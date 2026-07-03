@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerBuiltinWorkflows } from "../src/builtin-commands.js";
+import { registerBuiltinWorkflows, tokenizeArgs } from "../src/builtin-commands.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
 test("registerBuiltinWorkflows registers all four built-in workflow commands", () => {
@@ -32,6 +32,21 @@ test("registerBuiltinWorkflows registers only missing commands", () => {
   );
 });
 
+test("tokenizeArgs handles quoted and unquoted tokens", () => {
+  assert.deepEqual(tokenizeArgs('topic "two words" plain'), ["topic", "two words", "plain"]);
+});
+
+test("tokenizeArgs preserves empty quoted tokens", () => {
+  assert.deepEqual(tokenizeArgs("cmd \"\" '' tail"), ["cmd", "", "", "tail"]);
+});
+
+test("tokenizeArgs handles adjacent quoted tokens independently", () => {
+  assert.deepEqual(tokenizeArgs('"first""second" plain'), ["first", "second", "plain"]);
+});
+
+test("tokenizeArgs treats unmatched quotes as ordinary non-space tokens", () => {
+  assert.deepEqual(tokenizeArgs('"unterminated topic'), ['"unterminated', "topic"]);
+});
 test("registerBuiltinWorkflows deep-research handler validates empty args (returns early)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
@@ -104,6 +119,76 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
   assert.equal(typeof advReviewCmd.handler, "function");
 });
 
+function makeManagerBackedCommandHarness() {
+  const commands: Array<{ name: string; handler: (args: string, ctx: unknown) => Promise<void> }> = [];
+  const notified: Array<{ message: string; type?: string }> = [];
+  let capturedScript = "";
+
+  const pi = {
+    getCommands: () => [],
+    registerCommand: (name: string, spec: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
+      commands.push({ name, handler: spec.handler });
+    },
+    sendMessage: async () => {},
+    getThinkingLevel: () => undefined,
+  };
+  const manager = {
+    setSessionOptions: () => {},
+    setModelRegistry: () => {},
+    setMainModel: () => {},
+    setThinkingLevel: () => {},
+    setSessionId: () => {},
+    runSync: async (script: string) => {
+      capturedScript = script;
+      return {
+        meta: { name: "builtin", description: "d" },
+        result: { synthesis: "ok", report: "ok" },
+        logs: [],
+        phases: [],
+        agentCount: 1,
+        durationMs: 1,
+      };
+    },
+  };
+  const ctx = {
+    modelRegistry: { getAvailable: async () => [] },
+    sessionManager: { getSessionId: () => "session-123" },
+    ui: {
+      notify: (message: string, type?: string) => notified.push({ message, type }),
+      setStatus: () => {},
+    },
+  };
+
+  registerBuiltinWorkflows(pi as never, { cwd: "/tmp", manager: manager as never });
+  return { commands, ctx, notified, getScript: () => capturedScript };
+}
+
+test("multi-perspective caps user-supplied perspectives", async () => {
+  const { commands, ctx, notified, getScript } = makeManagerBackedCommandHarness();
+  const handler = commands.find((command) => command.name === "multi-perspective")?.handler;
+  assert.ok(handler, "multi-perspective handler should exist");
+
+  const perspectives = Array.from({ length: 12 }, (_, i) => `angle-${i + 1}`).join(" ");
+  await handler(`"topic" ${perspectives}`, ctx as never);
+
+  assert.ok(notified.some((n) => n.type === "warning" && n.message.includes("first 10 perspectives")));
+  assert.ok(getScript().includes("angle-10"));
+  assert.ok(!getScript().includes("angle-11"));
+});
+
+test("codebase-audit caps user-supplied checks", async () => {
+  const { commands, ctx, notified, getScript } = makeManagerBackedCommandHarness();
+  const handler = commands.find((command) => command.name === "codebase-audit")?.handler;
+  assert.ok(handler, "codebase-audit handler should exist");
+
+  const checks = Array.from({ length: 12 }, (_, i) => `check-${i + 1}`).join(" ");
+  await handler(`src ${checks}`, ctx as never);
+
+  assert.ok(notified.some((n) => n.type === "warning" && n.message.includes("first 10 checks")));
+  assert.ok(getScript().includes("check-10"));
+  assert.ok(!getScript().includes("check-11"));
+});
+
 test("registerBuiltinWorkflows syncs the live session model into manager-backed runs", async () => {
   const commands: Array<{ name: string; handler: (args: string, ctx: unknown) => Promise<void> }> = [];
   const sent: Array<{ customType?: string; content?: string }> = [];
@@ -123,6 +208,7 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
 
   const manager = {
     setSessionOptions: (options: unknown) => managerCalls.push(["session", options]),
+    setModelRegistry: (registry: unknown) => managerCalls.push(["registry", registry]),
     setMainModel: (model: unknown) => managerCalls.push(["mainModel", model]),
     setThinkingLevel: (level: unknown) => managerCalls.push(["thinking", level]),
     setSessionId: (sessionId: unknown) => managerCalls.push(["sessionId", sessionId]),
@@ -162,6 +248,7 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
 
   assert.deepEqual(managerCalls, [
     ["session", { modelRegistry: ctx.modelRegistry, model: ctx.model }],
+    ["registry", ctx.modelRegistry],
     ["mainModel", "explicit-faux/selected-model"],
     ["thinking", "high"],
     ["sessionId", "session-123"],

@@ -584,6 +584,8 @@ export class WorkflowAgent {
   private readonly sharedRegistry?: CompatibleModelRegistry;
   /** Lazily built once; shares the SDK's agentDir/auth/models so lookup matches session creation. */
   private registry?: CompatibleModelRegistry;
+  /** Wrapped host registries by identity, so repeated run() calls don't rebuild the same adapter. */
+  private wrappedRegistryCache = new WeakMap<CompatibleModelRegistry, CompatibleModelRegistry>();
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -602,7 +604,12 @@ export class WorkflowAgent {
     const explicitModels = this.getExplicitModelsSource();
     const providedRegistry = perRunRegistry ?? this.sharedRegistry ?? this.sessionOptions.modelRegistry;
     if (providedRegistry) {
-      return createCompatibleModelRegistry(providedRegistry, explicitModels);
+      let wrapped = this.wrappedRegistryCache.get(providedRegistry);
+      if (!wrapped) {
+        wrapped = createCompatibleModelRegistry(providedRegistry, explicitModels);
+        this.wrappedRegistryCache.set(providedRegistry, wrapped);
+      }
+      return wrapped;
     }
     if (!this.registry) {
       const dir = this.sessionOptions.agentDir ?? getAgentDir();

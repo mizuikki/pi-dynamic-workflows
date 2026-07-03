@@ -20,13 +20,24 @@ function alreadyRegistered(pi: ExtensionAPI, name: string): boolean {
   }
 }
 
+const MAX_BUILTIN_COMMAND_ITEMS = 10;
+
 /** Split a command argument string into tokens, respecting single/double quotes. */
-function tokenizeArgs(input: string): string[] {
+export function tokenizeArgs(input: string): string[] {
   const tokens: string[] = [];
   for (const m of input.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
     tokens.push(m[1] ?? m[2] ?? m[3] ?? "");
   }
   return tokens;
+}
+
+function capCommandItems(items: string[], label: string, ctx: ExtensionCommandContext): string[] {
+  if (items.length <= MAX_BUILTIN_COMMAND_ITEMS) return items;
+  ctx.ui.notify(
+    `Using the first ${MAX_BUILTIN_COMMAND_ITEMS} ${label}; ${items.length - MAX_BUILTIN_COMMAND_ITEMS} extra ${label} omitted.`,
+    "warning",
+  );
+  return items.slice(0, MAX_BUILTIN_COMMAND_ITEMS);
 }
 
 function reportText(result: WorkflowRunResult): string {
@@ -41,7 +52,7 @@ function currentModelSpec(ctx: ExtensionCommandContext): string | undefined {
 
 function syncManagerFromContext(pi: ExtensionAPI, manager: WorkflowManager, ctx: ExtensionCommandContext): void {
   manager.setSessionOptions({ modelRegistry: ctx.modelRegistry, model: ctx.model });
-  manager.setModelRegistry?.(ctx.modelRegistry);
+  manager.setModelRegistry(ctx.modelRegistry);
   manager.setMainModel(currentModelSpec(ctx));
   manager.setThinkingLevel(pi.getThinkingLevel());
   manager.setSessionId(ctx.sessionManager.getSessionId());
@@ -154,7 +165,9 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           return ctx.ui.notify('Usage: /multi-perspective "<topic>" [perspective1] [perspective2] …', "warning");
         }
         const perspectives =
-          rest.length >= 2 ? rest : ["technical", "product", "security", "user experience", "maintainability"];
+          rest.length >= 2
+            ? capCommandItems(rest, "perspectives", ctx)
+            : ["technical", "product", "security", "user experience", "maintainability"];
         ctx.ui.notify(`Analyzing from ${perspectives.length} perspectives…`, "info");
         try {
           const result = await runBuiltinWorkflow(
@@ -189,14 +202,21 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
         if (!scope || checks.length === 0) {
           return ctx.ui.notify('Usage: /codebase-audit <scope> "<check1>" ["<check2>" …]', "warning");
         }
-        ctx.ui.notify(`Auditing ${scope} across ${checks.length} checks…`, "info");
+        const cappedChecks = capCommandItems(checks, "checks", ctx);
+        ctx.ui.notify(`Auditing ${scope} across ${cappedChecks.length} checks…`, "info");
         try {
-          const result = await runBuiltinWorkflow(pi, ctx, generateCodebaseAuditWorkflow(scope, checks), undefined, {
-            cwd,
-            tools: createCodingTools(cwd),
-            manager: opts.manager,
-            onPhase: (title) => ctx.ui.setStatus("codebase-audit", `audit: ${title}`),
-          });
+          const result = await runBuiltinWorkflow(
+            pi,
+            ctx,
+            generateCodebaseAuditWorkflow(scope, cappedChecks),
+            undefined,
+            {
+              cwd,
+              tools: createCodingTools(cwd),
+              manager: opts.manager,
+              onPhase: (title) => ctx.ui.setStatus("codebase-audit", `audit: ${title}`),
+            },
+          );
           ctx.ui.setStatus("codebase-audit", undefined);
           await pi.sendMessage({ customType: "codebase-audit", content: reportText(result), display: true });
         } catch (error) {

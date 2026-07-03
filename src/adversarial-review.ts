@@ -1,3 +1,5 @@
+import { jsString, safeAgentLabel } from "./workflow-script-helpers.js";
+
 /**
  * Adversarial review mode for workflows.
  * Agents cross-check each other's findings for higher quality results.
@@ -70,19 +72,6 @@ const report = await agent(
 )
 
 return { total: findings.length, survivors, report }`;
-}
-
-function jsString(value: string): string {
-  return JSON.stringify(value);
-}
-
-function safeAgentLabel(value: string, fallback: string): string {
-  const label = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 32);
-  return label || fallback;
 }
 
 /**

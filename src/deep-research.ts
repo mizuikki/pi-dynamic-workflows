@@ -1,3 +1,5 @@
+import { jsString, safeAgentLabel } from "./workflow-script-helpers.js";
+
 /**
  * Deep research workflow.
  * Built-in workflow for comprehensive research across multiple sources.
@@ -70,19 +72,6 @@ const report = await agent(
 )
 
 return { question, queries, supported: (verdict && verdict.supported) || [], report }`;
-}
-
-function jsString(value: string): string {
-  return JSON.stringify(value);
-}
-
-function safeAgentLabel(value: string, fallback: string): string {
-  const label = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 32);
-  return label || fallback;
 }
 
 /**

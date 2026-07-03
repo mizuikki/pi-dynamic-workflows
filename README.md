@@ -127,7 +127,7 @@ The same model — on Pi, plus the production pieces a real run needs:
 
 `/multi-perspective` and `/codebase-audit` take quoted arguments so a topic or check can be multiple words:
 
-```
+```text
 /multi-perspective "should we use Redis or Postgres for session storage"
 /multi-perspective "JWT vs session cookies" security scalability developer-experience
 /codebase-audit src/ "missing error handling" "unused exports" "inconsistent naming"

@@ -180,6 +180,14 @@ describe("agentDefinitionKey", () => {
     assert.notEqual(agentDefinitionKey(base), agentDefinitionKey({ ...base, tools: ["read", "write"] }));
   });
 
+  it("preserves the pre-isolation key shape when isolation is absent", () => {
+    const def: AgentDefinition = { name: "x", prompt: "p", source: "project" };
+    assert.equal(
+      agentDefinitionKey(def),
+      JSON.stringify({ tools: null, disallowedTools: null, model: null, prompt: "p" }),
+    );
+  });
+
   it("changes when isolation changes", () => {
     const base: AgentDefinition = { name: "x", prompt: "p", source: "project" };
     assert.notEqual(agentDefinitionKey(base), agentDefinitionKey({ ...base, isolation: "worktree" }));

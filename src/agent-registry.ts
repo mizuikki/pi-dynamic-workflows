@@ -156,13 +156,24 @@ export function applyToolPolicy<T extends { name: string }>(tools: T[], allow?: 
  */
 export function agentDefinitionKey(def: AgentDefinition | undefined): string | null {
   if (!def) return null;
-  return JSON.stringify({
+  const key: {
+    tools: string[] | null;
+    disallowedTools: string[] | null;
+    model: string | null;
+    isolation?: "worktree";
+    prompt: string;
+  } = {
     tools: def.tools ?? null,
     disallowedTools: def.disallowedTools ?? null,
     model: def.model ?? null,
-    isolation: def.isolation ?? null,
     prompt: def.prompt,
-  });
+  };
+  // Preserve the pre-isolation serialized shape for definitions that do not use
+  // isolation, so paused pre-upgrade workflows can still replay their journaled
+  // agentType calls. Definitions that opt into isolation intentionally get a new
+  // key because they run with different filesystem semantics.
+  if (def.isolation) key.isolation = def.isolation;
+  return JSON.stringify(key);
 }
 
 /** List registered agent types for discoverability in the tool guideline. */
