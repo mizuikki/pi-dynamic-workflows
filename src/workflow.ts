@@ -438,6 +438,9 @@ export async function runWorkflow<T = unknown>(
         worktree = await createWorktree(baseCwd, `${runId}-${callIndex}-${label}`);
         if (!worktree.isolated) log(`isolation ignored for "${label}" (${worktree.reason})`);
       }
+      const activeIsolation = worktree?.isolated ? resolvedIsolation : undefined;
+      const unavailableIsolation =
+        resolvedIsolation === "worktree" && worktree && !worktree.isolated ? resolvedIsolation : undefined;
       const runCwd = worktree?.isolated ? worktree.cwd : undefined;
 
       // Captured from the subagent's real session usage; falls back to an
@@ -470,7 +473,13 @@ export async function runWorkflow<T = unknown>(
                 label,
                 schema: agentOptions.schema,
                 signal: options.signal,
-                instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, resolvedIsolation),
+                instructions: buildAgentInstructions(
+                  assignedPhase,
+                  agentOptions,
+                  agentDef,
+                  activeIsolation,
+                  unavailableIsolation,
+                ),
                 model: modelSpec,
                 tier: agentOptions.tier,
                 thinkingLevel: tierThinkingLevel,
@@ -1073,7 +1082,8 @@ function buildAgentInstructions(
   phase: string | undefined,
   options: AgentOptions,
   def: AgentDefinition | undefined,
-  resolvedIsolation?: "worktree",
+  activeIsolation?: "worktree",
+  unavailableIsolation?: "worktree",
 ): string | undefined {
   const lines: string[] = [];
   // A resolved agentType binds a real role prompt (the definition body). Only
@@ -1081,9 +1091,12 @@ function buildAgentInstructions(
   if (def?.prompt) lines.push(def.prompt);
   else if (options.agentType) lines.push(`Act as workflow subagent type: ${options.agentType}`);
   if (phase) lines.push(`Workflow phase: ${phase}`);
-  // Use resolvedIsolation so the annotation fires whether isolation came from
-  // the call site or from the agentDef's isolation field.
-  if (resolvedIsolation) lines.push(`Requested isolation: ${resolvedIsolation}`);
+  // Use activeIsolation so the annotation only claims isolation when the
+  // subagent's cwd really points at an isolated worktree. If the request fell
+  // back to the shared tree, make that explicit in the prompt too.
+  if (activeIsolation) lines.push(`Requested isolation: ${activeIsolation}`);
+  else if (unavailableIsolation)
+    lines.push(`Isolation unavailable: requested ${unavailableIsolation}; running in the shared worktree.`);
   // Note: options.model is applied for real via the session, not injected as prose.
   return lines.length ? lines.join("\n\n") : undefined;
 }

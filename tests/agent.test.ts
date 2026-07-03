@@ -165,6 +165,16 @@ test("WorkflowAgent constructor accepts all option shapes without throwing", () 
   }
 });
 
+function makeExplicitModelSource(model: Model<any>) {
+  return {
+    getModel: (provider: string, modelId: string) =>
+      provider === model.provider && modelId === model.id ? model : undefined,
+    getModels: () => [model],
+    getProvider: (provider: string) => (provider === model.provider ? { id: provider, auth: {} } : undefined),
+    getAuth: async () => ({ auth: {} }),
+  } as any;
+}
+
 test("WorkflowAgent reuses an injected ModelRegistry instead of building its own", async () => {
   const mockModel = { provider: "mock", id: "shared" } as any;
   const registry = {
@@ -198,6 +208,54 @@ test("WorkflowAgent.resolveModel resolves via a per-run registry when the constr
   const agent = new WorkflowAgent({ cwd: "/tmp" });
   const resolved = await (agent as any).resolveModel("router/per-run-only", perRunRegistry);
   assert.equal(resolved, perRunModel, "should resolve via the per-run registry, not a disk registry");
+});
+
+test("WorkflowAgent.resolveModel uses explicit models from the active per-run registry", async () => {
+  const explicitModel = { provider: "explicit", id: "per-run" } as Model<any>;
+  const explicitModels = makeExplicitModelSource(explicitModel);
+  const perRunRegistry = {
+    find: () => undefined,
+    getAvailable: () => [],
+    getAll: () => [],
+    getExplicitModelsSource: () => explicitModels,
+  } as any;
+
+  const agent = new WorkflowAgent({ cwd: "/tmp" });
+  const resolved = await (agent as any).resolveModel("explicit/per-run", perRunRegistry);
+  assert.equal(resolved, explicitModel, "per-run registry explicit models should be preserved");
+});
+
+test("WorkflowAgent.resolveModel uses explicit models from the shared constructor registry", async () => {
+  const explicitModel = { provider: "explicit", id: "shared" } as Model<any>;
+  const explicitModels = makeExplicitModelSource(explicitModel);
+  const sharedRegistry = {
+    find: () => undefined,
+    getAvailable: () => [],
+    getAll: () => [],
+    getExplicitModelsSource: () => explicitModels,
+  } as any;
+
+  const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: sharedRegistry });
+  const resolved = await (agent as any).resolveModel("explicit/shared");
+  assert.equal(resolved, explicitModel, "shared registry explicit models should be preserved");
+});
+
+test("WorkflowAgent.getRegistry refreshes a cached wrapper when the active explicit model source changes", async () => {
+  const firstModel = { provider: "explicit", id: "first" } as Model<any>;
+  const secondModel = { provider: "explicit", id: "second" } as Model<any>;
+  let explicitModels = makeExplicitModelSource(firstModel);
+  const sharedRegistry = {
+    find: () => undefined,
+    getAvailable: () => [],
+    getAll: () => [],
+    getExplicitModelsSource: () => explicitModels,
+  } as any;
+
+  const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: sharedRegistry });
+  assert.equal(await (agent as any).resolveModel("explicit/first"), firstModel);
+
+  explicitModels = makeExplicitModelSource(secondModel);
+  assert.equal(await (agent as any).resolveModel("explicit/second"), secondModel);
 });
 
 test("WorkflowAgent.resolveModel: per-run registry takes precedence over the constructor's shared registry", async () => {

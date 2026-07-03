@@ -316,6 +316,47 @@ return {}`;
     }
   });
 
+  it("agentType isolation fallback tells the agent it is running in the shared worktree", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-agent-isolation-fallback-"));
+    try {
+      const isolatedRegistry: AgentRegistry = new Map([
+        [
+          "isolated-auditor",
+          {
+            name: "isolated-auditor",
+            prompt: "Run isolated.",
+            isolation: "worktree",
+            source: "project",
+          } as AgentDefinition,
+        ],
+      ]);
+      const { seen, runner } = capturingAgent();
+      const logs: string[] = [];
+      const script = `export const meta = { name: 'isolated_fallback', description: 'agentType isolation fallback' }
+await agent('audit', { label: 'a', agentType: 'isolated-auditor' })
+return {}`;
+
+      await runWorkflow(script, {
+        cwd: dir,
+        runId: "iso-fallback-test",
+        agent: runner,
+        persistLogs: false,
+        agentRegistry: isolatedRegistry,
+        onLog: (message) => logs.push(message),
+      });
+
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].cwd, undefined, "fallback should not pass an isolated cwd");
+      assert.ok(!seen[0].instructions?.includes("Requested isolation: worktree"));
+      assert.ok(
+        seen[0].instructions?.includes("Isolation unavailable: requested worktree; running in the shared worktree."),
+      );
+      assert.ok(logs.some((message) => message.includes('isolation ignored for "a"')));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("unknown agentType logs a fallback and binds no tools/model", async () => {
     const { seen, runner } = capturingAgent();
     const logs: string[] = [];

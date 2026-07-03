@@ -585,7 +585,10 @@ export class WorkflowAgent {
   /** Lazily built once; shares the SDK's agentDir/auth/models so lookup matches session creation. */
   private registry?: CompatibleModelRegistry;
   /** Wrapped host registries by identity, so repeated run() calls don't rebuild the same adapter. */
-  private wrappedRegistryCache = new WeakMap<CompatibleModelRegistry, CompatibleModelRegistry>();
+  private wrappedRegistryCache = new WeakMap<
+    CompatibleModelRegistry,
+    { explicitModels: Models | undefined; registry: CompatibleModelRegistry }
+  >();
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -596,20 +599,27 @@ export class WorkflowAgent {
     this.sharedRegistry = options.modelRegistry;
   }
 
-  private getExplicitModelsSource(): Models | undefined {
-    return this.sessionOptions.models ?? this.sessionOptions.modelRegistry?.getExplicitModelsSource?.();
+  private getExplicitModelsSource(activeRegistry?: CompatibleModelRegistry): Models | undefined {
+    return (
+      this.sessionOptions.models ??
+      activeRegistry?.getExplicitModelsSource?.() ??
+      this.sessionOptions.modelRegistry?.getExplicitModelsSource?.()
+    );
   }
 
   private getRegistry(perRunRegistry?: CompatibleModelRegistry): CompatibleModelRegistry {
-    const explicitModels = this.getExplicitModelsSource();
     const providedRegistry = perRunRegistry ?? this.sharedRegistry ?? this.sessionOptions.modelRegistry;
+    const explicitModels = this.getExplicitModelsSource(providedRegistry);
     if (providedRegistry) {
       let wrapped = this.wrappedRegistryCache.get(providedRegistry);
-      if (!wrapped) {
-        wrapped = createCompatibleModelRegistry(providedRegistry, explicitModels);
+      if (!wrapped || wrapped.explicitModels !== explicitModels) {
+        wrapped = {
+          explicitModels,
+          registry: createCompatibleModelRegistry(providedRegistry, explicitModels),
+        };
         this.wrappedRegistryCache.set(providedRegistry, wrapped);
       }
-      return wrapped;
+      return wrapped.registry;
     }
     if (!this.registry) {
       const dir = this.sessionOptions.agentDir ?? getAgentDir();
@@ -618,7 +628,7 @@ export class WorkflowAgent {
       // the host Pi runtime exposes the explicit Models surface.
       const auth = this.sessionOptions.authStorage ?? AuthStorage.create(join(dir, "auth.json"));
       const baseRegistry = ModelRegistry.create(auth, join(dir, "models.json"));
-      this.registry = createCompatibleModelRegistry(baseRegistry, explicitModels);
+      this.registry = createCompatibleModelRegistry(baseRegistry, this.getExplicitModelsSource(baseRegistry));
     }
     return this.registry;
   }
