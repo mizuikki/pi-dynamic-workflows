@@ -74,10 +74,11 @@ test("generateCodebaseAuditWorkflow includes validator and report phases", () =>
   assert.match(body, /report-writer/);
 });
 
-test("generateCodebaseAuditWorkflow escapes single quotes in scope", () => {
-  const body = generateCodebaseAuditWorkflow("it's a test", ["check"]);
-  // Should not contain unescaped quotes that would break the script
-  assert.ok(!body.includes("it's") || body.includes("it\\'s"), "should not contain it's");
+test("generateCodebaseAuditWorkflow safely serializes scope and check strings", () => {
+  const body = generateCodebaseAuditWorkflow("it's a test\\path", ["don't break", 'quote " and \\ slash', "!!!"]);
+  const { meta } = parseWorkflowScript(body);
+  assert.equal(meta.name, "codebase_audit");
+  assert.match(body, /check-3/, "empty slug labels should fall back to a safe label");
 });
 
 test("generateCodebaseAuditWorkflow truncates long scope names", () => {
@@ -101,6 +102,17 @@ test("generateMultiPerspectiveWorkflow produces a valid, parseable script", () =
     meta.phases?.map((p) => p.title),
     ["Perspective Analysis", "Synthesis"],
   );
+});
+
+test("generateMultiPerspectiveWorkflow safely serializes topic and perspective strings", () => {
+  const body = generateMultiPerspectiveWorkflow("topic with quote ' and trailing slash\\", [
+    "owner's lens",
+    'quote " and \\ slash',
+    "!!!",
+  ]);
+  const { meta } = parseWorkflowScript(body);
+  assert.equal(meta.name, "multi_perspective_analysis");
+  assert.match(body, /perspective-3/, "empty slug labels should fall back to a safe label");
 });
 
 test("generateMultiPerspectiveWorkflow creates one agent per perspective", () => {

@@ -72,24 +72,39 @@ const report = await agent(
 return { question, queries, supported: (verdict && verdict.supported) || [], report }`;
 }
 
+function jsString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function safeAgentLabel(value: string, fallback: string): string {
+  const label = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  return label || fallback;
+}
+
 /**
  * Generate a codebase audit workflow.
  */
 export function generateCodebaseAuditWorkflow(scope: string, checks: string[]): string {
-  const escapedScope = scope.replace(/'/g, "\\'").slice(0, 60);
+  const scriptScope = scope.slice(0, 60);
   const checkAgents = checks
-    .map((check) => {
-      const label = check
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .slice(0, 20);
-      return `  () => agent('Audit ${check} across: ' + scope, { label: '${label}' }),`;
+    .map((check, index) => {
+      const label = safeAgentLabel(check, `check-${index + 1}`);
+      return [
+        "  () => agent(",
+        `    'Audit ' + ${jsString(check)} + ' across: ' + scope,`,
+        `    { label: ${jsString(label)} },`,
+        "  ),",
+      ].join("\n");
     })
     .join("\n");
 
   return `export const meta = {
   name: 'codebase_audit',
-  description: 'Codebase audit: ${escapedScope}',
+  description: ${jsString(`Codebase audit: ${scriptScope}`)},
   phases: [
     { title: 'Individual Checks' },
     { title: 'Cross-Validation' },
@@ -98,7 +113,7 @@ export function generateCodebaseAuditWorkflow(scope: string, checks: string[]): 
 };
 
 phase('Individual Checks');
-const scope = '${escapedScope}';
+const scope = ${jsString(scriptScope)};
 const findings = await parallel([
 ${checkAgents}
 ]);
