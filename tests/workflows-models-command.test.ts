@@ -132,5 +132,31 @@ describe("workflows-models-command", () => {
 
       assert.equal(formatThinkingLevel("max"), "max");
     });
+
+    it("offers only off when the tier model cannot be resolved", async () => {
+      const { editSingleTier } = await import("../src/workflows-models-command.js");
+      const selections = ["Thinking level → inherit current session", "Back"];
+      const selectCalls: Array<string[]> = [];
+      const ctx = {
+        modelRegistry: {
+          find: mock.fn(() => undefined),
+          getAvailable: mock.fn(async () => []),
+          getAvailableSync: mock.fn(() => []),
+          getAll: mock.fn(() => []),
+        },
+        ui: {
+          select: mock.fn(async (_title: string, options: string[]) => {
+            selectCalls.push(options);
+            return selections.shift();
+          }),
+          notify: mock.fn(),
+        },
+      };
+
+      const result = await editSingleTier(ctx as never, { model: "missing/model" }, "small");
+
+      assert.equal(result, null);
+      assert.deepEqual(selectCalls[1], ["inherit current session  [current]", "off"]);
+    });
   });
 });
