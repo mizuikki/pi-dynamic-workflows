@@ -73,6 +73,18 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
+    it("round-trips a max thinking level through disk", async () => {
+      const { loadModelTierConfig, saveModelTierConfig } = await loadModule();
+      const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
+      const cfgPath = join(tmpDir, "model-tiers.json");
+      const config = { tiers: { big: { model: "openai/gpt-5", thinkingLevel: "max" } } };
+
+      saveModelTierConfig(config, cfgPath);
+      assert.deepEqual(loadModelTierConfig(cfgPath), config);
+
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
     it("accepts legacy string tier values and normalizes them", async () => {
       const { loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));

@@ -34,15 +34,6 @@ import {
   sortedTierNames,
 } from "./model-tier-config.js";
 
-const THINKING_LEVEL_LABELS = {
-  off: "off",
-  minimal: "minimal",
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: "xhigh",
-} as const satisfies Record<"off" | ThinkingLevel, string>;
-
 const INHERIT_THINKING = "__inherit_current_session__";
 
 /**
@@ -184,7 +175,11 @@ function formatTierSummary(name: string, target: ModelTierTarget): string {
 }
 
 function formatThinkingSummary(target: ModelTierTarget): string {
-  return target.thinkingLevel ? THINKING_LEVEL_LABELS[target.thinkingLevel] : "inherit current session";
+  return target.thinkingLevel ? formatThinkingLevel(target.thinkingLevel) : "inherit current session";
+}
+
+export function formatThinkingLevel(level: string): string {
+  return level;
 }
 
 function tierTargetsEqual(a: ModelTierTarget, b: ModelTierTarget): boolean {
@@ -241,7 +236,7 @@ async function pickTierThinkingLevel(
   const supported = getSupportedThinkingForSpec(ctx, tier.model);
   const choices = [
     { label: "inherit current session", value: INHERIT_THINKING },
-    ...supported.map((level) => ({ label: THINKING_LEVEL_LABELS[level], value: level })),
+    ...supported.map((level) => ({ label: formatThinkingLevel(level), value: level })),
   ];
 
   const current = tier.thinkingLevel ?? INHERIT_THINKING;
@@ -266,7 +261,7 @@ async function pickTierThinkingLevel(
 function getSupportedThinkingForSpec(ctx: ExtensionCommandContext, spec: string): Array<"off" | ThinkingLevel> {
   const model = resolveModelSpec(ctx, spec);
   if (!model) {
-    return ["off", "minimal", "low", "medium", "high", "xhigh"];
+    return ["off"];
   }
   return getSupportedThinkingLevels(model) as Array<"off" | ThinkingLevel>;
 }

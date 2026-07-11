@@ -107,5 +107,56 @@ describe("workflows-models-command", () => {
       const result = await editSingleTier(ctx as never, { model: "openai/gpt-4.1", thinkingLevel: "high" }, "big");
       assert.deepEqual(result, { model: "openai/gpt-4.1" });
     });
+
+    it("displays an explicit max thinking level", async () => {
+      const { editSingleTier } = await import("../src/workflows-models-command.js");
+      const selectCalls: Array<string[]> = [];
+      const ctx = {
+        ui: {
+          select: mock.fn(async (_title: string, options: string[]) => {
+            selectCalls.push(options);
+            return "Back";
+          }),
+          notify: mock.fn(),
+        },
+      };
+
+      const result = await editSingleTier(ctx as never, { model: "openai/gpt-5", thinkingLevel: "max" }, "big");
+
+      assert.equal(result, null);
+      assert.ok(selectCalls[0].includes("Thinking level → max"));
+    });
+
+    it("formats unknown future thinking levels without a label table", async () => {
+      const { formatThinkingLevel } = await import("../src/workflows-models-command.js");
+
+      assert.equal(formatThinkingLevel("max"), "max");
+    });
+
+    it("offers only off when the tier model cannot be resolved", async () => {
+      const { editSingleTier } = await import("../src/workflows-models-command.js");
+      const selections = ["Thinking level → inherit current session", "Back"];
+      const selectCalls: Array<string[]> = [];
+      const ctx = {
+        modelRegistry: {
+          find: mock.fn(() => undefined),
+          getAvailable: mock.fn(async () => []),
+          getAvailableSync: mock.fn(() => []),
+          getAll: mock.fn(() => []),
+        },
+        ui: {
+          select: mock.fn(async (_title: string, options: string[]) => {
+            selectCalls.push(options);
+            return selections.shift();
+          }),
+          notify: mock.fn(),
+        },
+      };
+
+      const result = await editSingleTier(ctx as never, { model: "missing/model" }, "small");
+
+      assert.equal(result, null);
+      assert.deepEqual(selectCalls[1], ["inherit current session  [current]", "off"]);
+    });
   });
 });
