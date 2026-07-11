@@ -107,5 +107,45 @@ describe("workflows-models-command", () => {
       const result = await editSingleTier(ctx as never, { model: "openai/gpt-4.1", thinkingLevel: "high" }, "big");
       assert.deepEqual(result, { model: "openai/gpt-4.1" });
     });
+
+    it("displays and saves max when Pi reports it as supported", async () => {
+      const { editSingleTier } = await import("../src/workflows-models-command.js");
+      const selections = ["Thinking level → inherit current session", "max", "Back"];
+      const selectCalls: Array<{ title: string; options: string[] }> = [];
+      const ctx = {
+        modelRegistry: {
+          find: mock.fn((_provider: string, id: string) => ({
+            provider: "openai",
+            id,
+            reasoning: true,
+            thinkingLevelMap: { max: "max" },
+          })),
+          getAvailable: mock.fn(async () => []),
+          getAvailableSync: mock.fn(() => []),
+          getAll: mock.fn(() => []),
+        },
+        ui: {
+          select: mock.fn(async (title: string, options: string[]) => {
+            selectCalls.push({ title, options });
+            return selections.shift();
+          }),
+          notify: mock.fn(),
+        },
+      };
+
+      const result = await editSingleTier(ctx as never, { model: "openai/gpt-5" }, "big");
+
+      assert.deepEqual(result, { model: "openai/gpt-5", thinkingLevel: "max" });
+      assert.deepEqual(selectCalls[1].options, [
+        "inherit current session  [current]",
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max",
+      ]);
+      assert.ok(!selectCalls[1].options.includes("undefined"));
+    });
   });
 });
