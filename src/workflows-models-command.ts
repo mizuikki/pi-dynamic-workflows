@@ -178,7 +178,7 @@ function formatThinkingSummary(target: ModelTierTarget): string {
   return target.thinkingLevel ? formatThinkingLevel(target.thinkingLevel) : "inherit current session";
 }
 
-function formatThinkingLevel(level: string): string {
+export function formatThinkingLevel(level: string): string {
   return level;
 }
 
