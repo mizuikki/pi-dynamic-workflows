@@ -2,18 +2,17 @@
  * `/workflows-models` command handler.
  *
  * Uses Pi's built-in `ctx.ui.select()`, `ctx.ui.confirm()`, and `ctx.ui.notify()`
- * to let users view and manage workflow tier configuration.
+ * to let users view and manage model tier configuration for workflows.
  *
  * Model selection draws from the host session's shared model registry so users
  * see every provider Pi can reach, including extension-registered providers such
  * as `ollama-cloud`.
  *
- * Each tier stores a model plus an optional explicit thinking level.
- * An omitted thinking level means "inherit the current Pi session thinking level".
+ * Each tier holds exactly one model spec string. The string may include Pi
+ * CLI-style thinking suffixes, e.g. `openai-codex/gpt-5.5:xhigh`.
+ * When editing a tier, users pick a model, then an optional thinking level.
  */
 
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { clampThinkingLevel, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
   Container,
@@ -24,33 +23,37 @@ import {
   Text,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { getAvailableModelsSync, listAvailableModelSpecsAsync } from "./agent.js";
+import { listAvailableModelSpecs } from "./agent.js";
+import {
+  formatModelSpecWithThinking,
+  type ModelThinkingLevel,
+  splitModelSpecThinking,
+  THINKING_LEVELS,
+} from "./model-spec.js";
 import {
   buildDefaultTierConfig,
   loadModelTierConfig,
-  type ModelTierConfig,
-  type ModelTierTarget,
   saveModelTierConfig,
   sortedTierNames,
 } from "./model-tier-config.js";
-
-const INHERIT_THINKING = "__inherit_current_session__";
 
 /**
  * Register the `/workflows-models` command with Pi.
  */
 export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
   pi.registerCommand("workflows-models", {
-    description: "View and edit workflow tier models and thinking levels (small/medium/big)",
+    description: "View and edit model tiers used by workflows (small/medium/big)",
     handler: async (_args, ctx) => {
       await ctx.waitForIdle();
 
+      // Load the saved config, or build an in-memory default spread across the
+      // available models. If the model registry is empty, fall back to the
+      // current Pi model so the tiers are still usable.
       const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-      const availableModelSpecs = await listAvailableModelSpecsAsync(ctx.modelRegistry);
-      let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, availableModelSpecs);
+      let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, listAvailableModelSpecs());
       let dirty = false;
 
-      const ensureFresh = (cfg: ModelTierConfig) => {
+      const ensureFresh = (cfg: typeof config) => {
         config = cfg;
         dirty = true;
       };
@@ -62,50 +65,44 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
 
         menuOptions.push("─".repeat(30));
         for (const name of tiers) {
-          menuOptions.push(formatTierSummary(name, config.tiers[name]));
+          const model = config.tiers[name];
+          menuOptions.push(`${name} tier → ${model}`);
         }
         menuOptions.push("─".repeat(30));
+
         menuOptions.push("Reset to defaults");
         menuOptions.push(dirty ? "Save and exit" : "Exit");
 
-        const choice = await ctx.ui.select("Workflow tier configuration", menuOptions);
+        const choice = await ctx.ui.select("Model tier configuration", menuOptions);
+
         if (!choice) break;
 
-        let handledTierSelection = false;
+        // Handle "<tier> → [model]" selections
         for (const name of tiers) {
-          if (choice === formatTierSummary(name, config.tiers[name])) {
-            const updatedTier = await editSingleTier(ctx, config.tiers[name], name);
-            if (updatedTier !== null) {
-              ensureFresh({
-                ...config,
-                tiers: {
-                  ...config.tiers,
-                  [name]: updatedTier,
-                },
-              });
+          if (choice.startsWith(`${name} tier →`)) {
+            const updatedTiers = await editSingleTier(ctx, config.tiers, name);
+            if (updatedTiers !== null) {
+              ensureFresh({ ...config, tiers: updatedTiers });
             }
-            handledTierSelection = true;
             break;
           }
         }
-        if (handledTierSelection) continue;
 
         if (choice === "Reset to defaults") {
           const confirmed = await ctx.ui.confirm(
-            "Reset workflow tiers",
-            "This will reset every tier to your current Pi model and inherit the session thinking level. Continue?",
+            "Reset model tiers",
+            "This will reset tiers from your available model list. Continue?",
           );
           if (confirmed) {
-            ensureFresh(buildDefaultTierConfig(currentModel, availableModelSpecs));
+            ensureFresh(buildDefaultTierConfig(currentModel, listAvailableModelSpecs()));
             ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
           }
-          continue;
         }
 
         if (choice === "Save and exit" || choice === "Exit") {
           if (choice === "Save and exit") {
             saveModelTierConfig(config);
-            ctx.ui.notify("Workflow tier configuration saved.", "info");
+            ctx.ui.notify("Model tiers saved.", "info");
           }
           break;
         }
@@ -114,90 +111,48 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
   });
 }
 
+const DEFAULT_THINKING_CHOICE = "Default thinking (session setting)";
+const THINKING_CHOICES = [DEFAULT_THINKING_CHOICE, ...THINKING_LEVELS] as const;
+
+function fromThinkingChoice(choice: string | undefined): ModelThinkingLevel | undefined {
+  return THINKING_LEVELS.find((level) => level === choice);
+}
+
 /**
- * Interactive editor for a single tier.
+ * Interactive editor for a single tier — scrollable model picker plus optional
+ * thinking-level picker.
  *
- * Returns the updated tier target, or null if nothing changed.
+ * Uses `ctx.ui.custom()` with Pi TUI's `SelectList` for proper scrollable list
+ * with limited visible rows (like `/advisor`). The currently selected base
+ * model is shown in the dialog title. After choosing the model, users can set
+ * a Pi CLI-style thinking suffix or keep the session default.
+ *
+ * Returns the updated tiers object, or null if nothing changed.
  */
 export async function editSingleTier(
   ctx: ExtensionCommandContext,
-  tier: ModelTierTarget,
+  tiers: Record<string, string>,
   tierName: string,
-): Promise<ModelTierTarget | null> {
-  let working = { ...tier };
+): Promise<Record<string, string> | null> {
+  const available = listAvailableModelSpecs(ctx.modelRegistry);
+  const knownSpecs = available.length > 0 ? available : undefined;
+  const current = tiers[tierName];
+  const currentParts = splitModelSpecThinking(current, knownSpecs);
 
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const choice = await ctx.ui.select(`Edit "${tierName}" tier`, [
-      `Model → ${working.model}`,
-      `Thinking level → ${formatThinkingSummary(working)}`,
-      "Back",
-    ]);
-
-    if (!choice || choice === "Back") break;
-
-    if (choice.startsWith("Model →")) {
-      const next = await pickTierModel(ctx, working.model, tierName);
-      if (!next || next === working.model) continue;
-
-      const previousThinking = working.thinkingLevel;
-      working = { ...working, model: next };
-      if (previousThinking) {
-        const supported = getSupportedThinkingForSpec(ctx, next);
-        if (supported.length > 0 && !supported.includes(previousThinking)) {
-          const clamped = clampForTierThinking(ctx, next, previousThinking);
-          if (clamped) {
-            working.thinkingLevel = clamped;
-            ctx.ui.notify(
-              `"${tierName}" thinking level adjusted to ${clamped} because ${next} does not support ${previousThinking}.`,
-              "info",
-            );
-          }
-        }
-      }
-      continue;
-    }
-
-    if (choice.startsWith("Thinking level →")) {
-      const next = await pickTierThinkingLevel(ctx, working, tierName);
-      if (next === undefined) continue;
-      working = next;
-    }
-  }
-
-  if (tierTargetsEqual(tier, working)) return null;
-  ctx.ui.notify(`"${tierName}" tier → ${working.model} | thinking: ${formatThinkingSummary(working)}`, "info");
-  return working;
-}
-
-function formatTierSummary(name: string, target: ModelTierTarget): string {
-  return `${name} tier → ${target.model} | thinking: ${formatThinkingSummary(target)}`;
-}
-
-function formatThinkingSummary(target: ModelTierTarget): string {
-  return target.thinkingLevel ? formatThinkingLevel(target.thinkingLevel) : "inherit current session";
-}
-
-export function formatThinkingLevel(level: string): string {
-  return level;
-}
-
-function tierTargetsEqual(a: ModelTierTarget, b: ModelTierTarget): boolean {
-  return a.model === b.model && a.thinkingLevel === b.thinkingLevel;
-}
-
-async function pickTierModel(ctx: ExtensionCommandContext, current: string, tierName: string): Promise<string | null> {
-  const available = await listAvailableModelSpecsAsync(ctx.modelRegistry);
+  // Build SelectItems: all available models as scrollable list
   const items: SelectItem[] = available.map((m) => ({ value: m, label: m }));
 
-  return ctx.ui.custom<string | null>((tui: TUI, theme: Theme, _keybindings, done) => {
+  const selectedModel = await ctx.ui.custom<string | null>((tui: TUI, theme: Theme, _keybindings, done) => {
     const container = new Container();
+
+    // Title showing current model
     const titleText = current
       ? `Pick a model for "${tierName}" (current: ${current})`
       : `Pick a model for "${tierName}"`;
     container.addChild(new Text(theme.fg("accent", titleText), 1, 0));
     container.addChild(new Spacer(1));
 
+    // SelectList theme
     const selectTheme: SelectListTheme = {
       selectedPrefix: (t: string) => theme.bg("selectedBg", theme.fg("accent", t)),
       selectedText: (t: string) => theme.bg("selectedBg", theme.bold(t)),
@@ -207,15 +162,22 @@ async function pickTierModel(ctx: ExtensionCommandContext, current: string, tier
     };
 
     const selectList = new SelectList(items, 12, selectTheme);
-    const idx = items.findIndex((i) => i.value === current);
-    if (idx >= 0) selectList.setSelectedIndex(idx);
 
+    // Preselect the current base model even when the stored tier has :thinking.
+    if (currentParts.modelSpec) {
+      const idx = items.findIndex((i) => i.value === currentParts.modelSpec);
+      if (idx >= 0) selectList.setSelectedIndex(idx);
+    }
+
+    // Wire up callbacks
     selectList.onSelect = (item) => done(item.value);
     selectList.onCancel = () => done(null);
 
     container.addChild(selectList);
     container.addChild(new Spacer(1));
-    container.addChild(new Text(theme.fg("dim", "↑↓ navigate  enter select  esc cancel"), 1, 0));
+    container.addChild(
+      new Text(theme.fg("dim", "↑↓ navigate  enter select  esc cancel  · thinking is chosen next"), 1, 0),
+    );
 
     return {
       render: (w: number) => container.render(w),
@@ -226,61 +188,20 @@ async function pickTierModel(ctx: ExtensionCommandContext, current: string, tier
       },
     };
   });
-}
 
-async function pickTierThinkingLevel(
-  ctx: ExtensionCommandContext,
-  tier: ModelTierTarget,
-  tierName: string,
-): Promise<ModelTierTarget | undefined> {
-  const supported = getSupportedThinkingForSpec(ctx, tier.model);
-  const choices = [
-    { label: "inherit current session", value: INHERIT_THINKING },
-    ...supported.map((level) => ({ label: formatThinkingLevel(level), value: level })),
-  ];
+  if (!selectedModel) return null;
 
-  const current = tier.thinkingLevel ?? INHERIT_THINKING;
-  const selected = await ctx.ui.select(
-    `Thinking level for "${tierName}" (${tier.model})`,
-    choices.map((choice) => `${choice.label}${choice.value === current ? "  [current]" : ""}`),
+  const currentThinkingLabel = currentParts.thinkingLevel ?? DEFAULT_THINKING_CHOICE;
+  const thinkingChoice = await ctx.ui.select(
+    `Thinking for "${tierName}" tier (current: ${currentThinkingLabel})`,
+    THINKING_CHOICES.map((choice) => String(choice)),
   );
+  if (!thinkingChoice) return null;
 
-  if (!selected) return undefined;
-  const chosen = choices.find(
-    (choice) => `${choice.label}${choice.value === current ? "  [current]" : ""}` === selected,
-  );
-  if (!chosen) return undefined;
+  const thinkingLevel = fromThinkingChoice(thinkingChoice);
+  const result = formatModelSpecWithThinking(selectedModel, thinkingLevel);
+  if (result === current) return null;
 
-  if (chosen.value === INHERIT_THINKING) {
-    const { thinkingLevel: _thinkingLevel, ...rest } = tier;
-    return rest;
-  }
-  return { ...tier, thinkingLevel: chosen.value as ThinkingLevel };
-}
-
-function getSupportedThinkingForSpec(ctx: ExtensionCommandContext, spec: string): Array<"off" | ThinkingLevel> {
-  const model = resolveModelSpec(ctx, spec);
-  if (!model) {
-    return ["off"];
-  }
-  return getSupportedThinkingLevels(model) as Array<"off" | ThinkingLevel>;
-}
-
-function clampForTierThinking(
-  ctx: ExtensionCommandContext,
-  spec: string,
-  level: ThinkingLevel,
-): ThinkingLevel | undefined {
-  const model = resolveModelSpec(ctx, spec);
-  if (!model) return level;
-  return clampThinkingLevel(model, level) as ThinkingLevel;
-}
-
-function resolveModelSpec(ctx: ExtensionCommandContext, spec: string): Model<any> | undefined {
-  const slash = spec.indexOf("/");
-  if (slash > 0) {
-    return ctx.modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1));
-  }
-  const available = getAvailableModelsSync(ctx.modelRegistry);
-  return available.find((m) => m.id === spec) ?? ctx.modelRegistry.getAll().find((m) => m.id === spec);
+  ctx.ui.notify(`"${tierName}" tier → ${result}`, "info");
+  return { ...tiers, [tierName]: result };
 }

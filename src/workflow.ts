@@ -17,6 +17,7 @@ import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_RETRIES, MAX_AGENTS_PER_RUN, MAX_CO
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+import { createAgentStoreTools, SharedStore } from "./shared-store.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
@@ -39,6 +40,13 @@ export interface JournalEntry {
   /** sha256 of the call's identity (prompt + model + phase + agentType + schema). */
   hash: string;
   result: unknown;
+  /**
+   * Per-agent write delta (keys set by this agent) for additive replay on resume.
+   * Replaces the former full-map snapshot to fix parallel-agent ordering: applying
+   * deltas in callSeq order accumulates all agents' writes correctly regardless of
+   * which agent finished first. Absent on older journal entries.
+   */
+  storeDelta?: Record<string, unknown>;
 }
 
 /**
@@ -63,8 +71,9 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   currentThinkingLevel?: string;
   /**
    * Named subagent definitions for `agent({ agentType })`. Snapshotted once per
-   * run for determinism. Defaults to scanning `.pi/agents` (project) + `~/.pi/agents`.
-   * Injectable for tests.
+   * run for determinism. Defaults to scanning `.pi/agents` (project) +
+   * `~/.pi/agent/agents` (user, primary) + `~/.pi/agents` (user, deprecated
+   * fallback). Injectable for tests.
    */
   agentRegistry?: AgentRegistry;
   concurrency?: number;
@@ -88,6 +97,12 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onAgentJournal?: (entry: JournalEntry) => void;
   /** Internal: shared runtime inherited by a nested workflow() call. */
   sharedRuntime?: SharedRuntime;
+  /**
+   * Shared store for this run. One instance is created per top-level run and
+   * propagated into nested workflow() calls. Pass an existing instance to share
+   * state across a parent and child run; omit to create a fresh isolated store.
+   */
+  sharedStore?: SharedStore;
   /** Resolve a saved-workflow name to its script, enabling `workflow('name', args)`. */
   loadSavedWorkflow?: (name: string) => string | undefined;
   /**
@@ -296,6 +311,10 @@ export async function runWorkflow<T = unknown>(
   };
   const limiter = shared.limiter;
 
+  // One store instance per run; nested workflow() calls inherit the parent's store
+  // so all agents across nesting levels share the same key-value space.
+  const store: SharedStore = options.sharedStore ?? new SharedStore();
+
   const log = (message: string) => {
     const text = String(message);
     state.logs.push(text);
@@ -394,6 +413,15 @@ export async function runWorkflow<T = unknown>(
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
     const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef));
+    // Store delta key: callIndex alone is NOT run-unique. A nested workflow()
+    // call (see workflowFn below) shares this run's SharedStore instance but
+    // restarts its own callSeq at 0, so a parent agent and a concurrently
+    // running nested-run agent can both get callIndex 0 and collide in
+    // SharedStore.agentDeltas — whichever commits last steals/overwrites the
+    // other's journaled delta. Composing the run's own runId (unique per
+    // top-level run AND per nested run, see `${runId}-nested${shared.depth}`
+    // below) with callIndex makes the key unique across the whole store.
+    const deltaKey = `${runId}:${callIndex}`;
 
     // Reserve the agent slot synchronously — atomic with the limit/budget gate
     // above (no await in between) — so a parallel() fan-out can't all observe the
@@ -414,6 +442,10 @@ export async function runWorkflow<T = unknown>(
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
       options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
       options.onAgentEnd?.({ label, phase: assignedPhase, result: cached.result, tokens: 0, model: displayModel });
+      // Apply this agent's write delta so live agents later in the run see a
+      // consistent store. Additive apply preserves parallel-agent writes that
+      // came from higher-callIndex agents finishing before this one.
+      if (cached.storeDelta) store.applyDelta(cached.storeDelta);
       return cached.result;
     }
     // A genuine miss (no journal entry, or the hash changed) marks where the
@@ -471,6 +503,8 @@ export async function runWorkflow<T = unknown>(
             const result = await withTimeout(
               agentRunner.run(prompt, {
                 label,
+                // Identifiable name for persisted sessions (persistAgentSessions).
+                sessionName: `workflow:${runId} ${label}`,
                 schema: agentOptions.schema,
                 signal: options.signal,
                 instructions: buildAgentInstructions(
@@ -486,6 +520,11 @@ export async function runWorkflow<T = unknown>(
                 modelRegistry: options.modelRegistry,
                 toolNames: agentDef?.tools,
                 disallowedToolNames: agentDef?.disallowedTools,
+                // Per-agent store tools track this agent's writes by the
+                // run-unique deltaKey so the delta can be journaled and replayed
+                // correctly on resume, even when a nested workflow() run shares
+                // this store concurrently with the parent run.
+                systemTools: createAgentStoreTools(store, deltaKey),
                 cwd: runCwd,
                 onModelResolved: (id: string) => {
                   displayModel = id;
@@ -514,7 +553,12 @@ export async function runWorkflow<T = unknown>(
             }
 
             const tokens = recordTokens(result);
-            options.onAgentJournal?.({ index: callIndex, hash: callHash, result });
+            options.onAgentJournal?.({
+              index: callIndex,
+              hash: callHash,
+              result,
+              storeDelta: store.commitDelta(deltaKey),
+            });
             options.onAgentEnd?.({
               label,
               phase: assignedPhase,
@@ -639,6 +683,8 @@ export async function runWorkflow<T = unknown>(
         ...options,
         args: childArgs,
         sharedRuntime: shared,
+        // Propagate the parent's store so nested agents share the same key-value space.
+        sharedStore: store,
         // A nested run is its own script; never reuse the parent's resume journal.
         resumeJournal: undefined,
         resumeFromRunId: undefined,
@@ -878,27 +924,33 @@ export async function runWorkflow<T = unknown>(
   });
 
   const wrapped = `${DETERMINISM_PRELUDE}\n(async () => {\n${body}\n})()`;
-  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
+  try {
+    const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
 
-  // Persist logs
-  const logFile = logger.persist();
-  if (logFile) {
-    log(`Logs persisted to ${logFile}`);
+    // Persist logs
+    const logFile = logger.persist();
+    if (logFile) {
+      log(`Logs persisted to ${logFile}`);
+    }
+
+    // Emit final token usage
+    options.onTokenUsage?.(shared.tokenUsage);
+
+    return {
+      meta,
+      result: result as T,
+      logs: state.logs,
+      phases: state.phases,
+      agentCount: shared.agentCount,
+      durationMs: Date.now() - started,
+      runId,
+      tokenUsage: shared.tokenUsage,
+    };
+  } finally {
+    // Dispose the store only when this run created it; nested runs inherit the
+    // parent's store and must not tear it down while the parent is still running.
+    if (!options.sharedStore) store.dispose();
   }
-
-  // Emit final token usage
-  options.onTokenUsage?.(shared.tokenUsage);
-
-  return {
-    meta,
-    result: result as T,
-    logs: state.logs,
-    phases: state.phases,
-    agentCount: shared.agentCount,
-    durationMs: Date.now() - started,
-    runId,
-    tokenUsage: shared.tokenUsage,
-  };
 }
 
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {

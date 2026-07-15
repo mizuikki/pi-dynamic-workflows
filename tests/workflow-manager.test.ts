@@ -1372,6 +1372,28 @@ test(
 // ─── Event tests ───────────────────────────────────────────────────────────────
 
 test(
+  "listRuns reflects running status immediately after resume",
+  withTempCwd(async (cwd) => {
+    const da = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: da.runner });
+    manager.on("error", () => {});
+
+    const { runId, promise } = manager.startInBackground(oneAgentScript);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    manager.pause(runId);
+
+    const resumed = await manager.resume(runId);
+    const persisted = manager.listRuns().find((run) => run.runId === runId);
+
+    assert.equal(resumed, true);
+    assert.equal(persisted?.status, "running", "listRuns should show running status after resume");
+
+    da.resolve("done");
+    await promise.catch(() => {});
+  }),
+);
+
+test(
   "manager emits 'resumed' event on resume",
   withTempCwd(async (cwd) => {
     const da = deferredAgent();
@@ -1869,5 +1891,45 @@ return results`;
     assert.ok(Array.isArray(result.result), "result should be an array");
     assert.equal(result.result.length, 0, "empty parallel should return empty array");
     assert.equal(result.agentCount, 0, "no agents should run with empty parallel");
+  }),
+);
+
+test(
+  "persistAgentSessions plumbs through the manager into runWorkflow options",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), persistAgentSessions: true });
+    // The manager forwards the flag on every runWorkflow call; the flag is
+    // captured at construction and defaults to false when omitted.
+    assert.equal((manager as unknown as { persistAgentSessions: boolean }).persistAgentSessions, true);
+
+    const defaulted = new WorkflowManager({ cwd, agent: fakeAgent() });
+    assert.equal((defaulted as unknown as { persistAgentSessions: boolean }).persistAgentSessions, false);
+
+    // The run still completes normally with the flag set (injected agent
+    // runner, so no real session is created here).
+    const result = await manager.runSync(oneAgentScript);
+    assert.equal(result.agentCount, 1);
+  }),
+);
+
+test(
+  "agents receive an identifiable sessionName (workflow:<runId> <label>) for persisted sessions",
+  withTempCwd(async (cwd) => {
+    const seen: Array<{ label?: string; sessionName?: string }> = [];
+    const manager = new WorkflowManager({
+      cwd,
+      persistAgentSessions: true,
+      agent: {
+        async run(_prompt: string, options?: { label?: string; sessionName?: string }) {
+          seen.push({ label: options?.label, sessionName: options?.sessionName });
+          return "ok";
+        },
+      },
+    });
+    const result = await manager.runSync(oneAgentScript);
+    assert.equal(result.agentCount, 1);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].label, "a");
+    assert.match(seen[0].sessionName ?? "", /^workflow:run-[a-z0-9]+ a$/);
   }),
 );
