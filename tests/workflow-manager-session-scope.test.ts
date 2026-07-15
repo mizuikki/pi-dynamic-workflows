@@ -80,6 +80,30 @@ test(
 );
 
 test(
+  "WorkflowManager refuses to resume a persisted run owned by another session",
+  withTempCwd(async (cwd) => {
+    const owner = new WorkflowManager({ cwd, sessionId: "session-a" });
+    const runId = "persisted-session-a";
+    owner.getPersistence().save({
+      runId,
+      workflowName: "session_owned",
+      script: oneAgentScript,
+      sessionId: "session-a",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const other = new WorkflowManager({ cwd, sessionId: "session-b" });
+    assert.equal(await other.resume(runId), false);
+    assert.equal(other.getPersistence().load(runId)?.sessionId, "session-a");
+  }),
+);
+
+test(
   "installResultDelivery suppresses background delivery after switching to another session",
   withTempCwd(async (cwd) => {
     let releaseAgentRun: (() => void) | undefined;

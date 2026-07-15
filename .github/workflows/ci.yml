@@ -11,26 +11,62 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  upstream-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
-      - name: Prepare Pi workspace dependency
-        run: |
-          PI_REPO_REF="${PI_REPO_REF:-v0.80.3}"
-          git clone --filter=blob:none https://github.com/earendil-works/pi.git ../pi
-          git -C ../pi checkout "$PI_REPO_REF"
-          npm --prefix ../pi ci --ignore-scripts
-          npm --prefix ../pi/packages/tui run build
-          npm --prefix ../pi/packages/ai run build
-          npm --prefix ../pi/packages/agent run build
-          npm --prefix ../pi/packages/coding-agent run build
       - name: Install dependencies
         run: npm ci
       - name: Lint, build, and test
         run: npm test
+      - name: Assert isolated standard Pi resolution
+        run: |
+          node --input-type=module -e '
+            for (const specifier of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+              const resolved = await import.meta.resolve(specifier);
+              if (!resolved.startsWith(`file://${process.cwd()}/node_modules/`)) throw new Error(`${specifier} resolved to ${resolved}`);
+              console.log(`${specifier}: ${resolved}`);
+            }
+          '
+
+  fork-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Checkout fixed Pi fork contract
+        run: |
+          git clone --filter=blob:none https://github.com/mizuikki/pi.git ../pi
+          git -C ../pi checkout 4a4a2ab3630a0a6f65ad655e07d6f3babe4e07f5
+      - name: Build isolated fork tarballs and test the project copy
+        run: PI_FORK_DIR=../pi PI_FORK_REF=4a4a2ab3 npm run test:pi-fork
+
+  package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify clean package installation and consumer types
+        run: npm run test:package-smoke

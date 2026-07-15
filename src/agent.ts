@@ -1,8 +1,12 @@
+import { randomUUID } from "node:crypto";
+import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model, Models, ProviderEnv, ProviderHeaders, TextContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import {
   AuthStorage,
+  type CreateAgentSessionOptions,
+  createAgentSession,
+  createCodingTools,
   DefaultResourceLoader,
   getAgentDir,
   type LoadExtensionsResult,
@@ -17,13 +21,18 @@ import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
 import { applyToolPolicy } from "./agent-registry.js";
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
+import { canonicalModelSpec, resolveModelSpecWithThinking } from "./model-spec.js";
 import {
   loadModelTierConfig,
   type ModelTierConfig,
   resolveTierModel,
   resolveTierThinkingLevel,
 } from "./model-tier-config.js";
-import { type CreateAgentSessionOptions, createAgentSession, createCodingTools } from "./pi-coding-agent-sdk.js";
+import {
+  listAvailableModelSpecsAsync as listAvailableModelSpecsAsyncCompat,
+  listAvailableModelSpecs as listAvailableModelSpecsCompat,
+  type ModelAvailabilitySource,
+} from "./pi-compat.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
 /**
@@ -44,6 +53,38 @@ function findJsonBlock(text: string): string | undefined {
     else if (text[i] === close && --depth === 0) return text.slice(start, i + 1);
   }
   return undefined;
+}
+
+const WORKFLOW_EXTENSION_SUFFIXES = ["extensions/workflow.ts", "extensions/workflow.js"] as const;
+
+function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
+  const normalized = pathValue.replace(/\\/g, "/");
+  return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+function filterWorkflowExtensions(result: LoadExtensionsResult): LoadExtensionsResult {
+  return {
+    ...result,
+    extensions: result.extensions.filter(
+      (extension) => !shouldFilterWorkflowExtensionPath(extension.resolvedPath ?? extension.path),
+    ),
+    errors: result.errors.filter((error) => !shouldFilterWorkflowExtensionPath(error.path)),
+  };
+}
+
+/** Keep host resources while preventing workflow.ts from recursively loading itself. */
+export function wrapResourceLoaderForWorkflowSubagents(resourceLoader: ResourceLoader): ResourceLoader {
+  return {
+    getExtensions: () => filterWorkflowExtensions(resourceLoader.getExtensions()),
+    getSkills: () => resourceLoader.getSkills(),
+    getPrompts: () => resourceLoader.getPrompts(),
+    getThemes: () => resourceLoader.getThemes(),
+    getAgentsFiles: () => resourceLoader.getAgentsFiles(),
+    getSystemPrompt: () => resourceLoader.getSystemPrompt(),
+    getAppendSystemPrompt: () => resourceLoader.getAppendSystemPrompt(),
+    extendResources: (paths) => resourceLoader.extendResources(paths),
+    reload: (options) => resourceLoader.reload(options),
+  };
 }
 
 /**
@@ -67,41 +108,6 @@ export function extractValidated<T>(text: string, schema: TSchema): T | undefine
     // typebox can throw on exotic schemas; treat as no match.
   }
   return undefined;
-}
-
-const WORKFLOW_EXTENSION_SUFFIXES = ["extensions/workflow.ts", "extensions/workflow.js"] as const;
-
-function normalizeExtensionPath(pathValue: string): string {
-  return pathValue.replace(/\\/g, "/");
-}
-
-function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
-  const normalizedPath = normalizeExtensionPath(pathValue);
-  return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalizedPath.endsWith(suffix));
-}
-
-function filterWorkflowExtensions(result: LoadExtensionsResult): LoadExtensionsResult {
-  return {
-    ...result,
-    extensions: result.extensions.filter(
-      (extension) => !shouldFilterWorkflowExtensionPath(extension.resolvedPath ?? extension.path),
-    ),
-    errors: result.errors.filter((error) => !shouldFilterWorkflowExtensionPath(error.path)),
-  };
-}
-
-export function wrapResourceLoaderForWorkflowSubagents(resourceLoader: ResourceLoader): ResourceLoader {
-  return {
-    getExtensions: () => filterWorkflowExtensions(resourceLoader.getExtensions()),
-    getSkills: () => resourceLoader.getSkills(),
-    getPrompts: () => resourceLoader.getPrompts(),
-    getThemes: () => resourceLoader.getThemes(),
-    getAgentsFiles: () => resourceLoader.getAgentsFiles(),
-    getSystemPrompt: () => resourceLoader.getSystemPrompt(),
-    getAppendSystemPrompt: () => resourceLoader.getAppendSystemPrompt(),
-    extendResources: (paths) => resourceLoader.extendResources(paths),
-    reload: () => resourceLoader.reload(),
-  };
 }
 
 /**
@@ -230,216 +236,21 @@ export function resolveAgentModelSpec(
   return undefined;
 }
 
-/**
- * Resolve the explicit thinking level to use for a tier, if one was configured.
- * Undefined means "inherit the current session thinking level".
- */
 export function resolveAgentTierThinkingLevel(
   options: { tier?: string },
   loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
-): ThinkingLevel | undefined {
+): CreateAgentSessionOptions["thinkingLevel"] | undefined {
   if (!options.tier) return undefined;
   const config = loadConfig();
   return config ? resolveTierThinkingLevel(options.tier, config) : undefined;
-}
-
-type AvailableModelList = readonly Model<any>[] | Model<any>[] | Promise<readonly Model<any>[] | Model<any>[]>;
-
-export type AvailableModelsSource =
-  | { getAvailableSync(): readonly Model<any>[] | Model<any>[] }
-  | { getAvailable(): AvailableModelList; getAvailableSync?(): readonly Model<any>[] | Model<any>[] };
-
-type CompatibleResolvedRequestAuth =
-  | { ok: true; apiKey?: string; headers?: ProviderHeaders; env?: ProviderEnv }
-  | { ok: false; error: string };
-
-type CompatibleModelRegistry = AvailableModelsSource & {
-  authStorage?: AuthStorage;
-  find(provider: string, modelId: string): Model<any> | undefined;
-  getAll(): Model<any>[];
-  hasConfiguredAuth?(model: Model<any>): boolean | Promise<boolean>;
-  hasConfiguredAuthSync?(model: Model<any>): boolean;
-  getApiKeyAndHeaders?(model: Model<any>): Promise<CompatibleResolvedRequestAuth>;
-  isUsingOAuth?(model: Model<any>): boolean;
-  getProviderDisplayName?(provider: string): string;
-  getProviderAuthStatus?(provider: string): unknown;
-  getApiKeyForProvider?(provider: string): Promise<string | undefined>;
-  registerProvider?(...args: unknown[]): void;
-  unregisterProvider?(...args: unknown[]): void;
-  refresh?(): void;
-  getError?(): string | undefined;
-  setExplicitModels?(explicitModels: Models | undefined): void;
-  getExplicitModelsSource?(): Models | undefined;
-};
-
-type WorkflowSessionOptions = Partial<CreateAgentSessionOptions> & {
-  modelRegistry?: CompatibleModelRegistry;
-  models?: Models;
-};
-
-function mergeModelLists(baseModels: readonly Model<any>[], overlayModels: readonly Model<any>[]): Model<any>[] {
-  const merged = [...baseModels];
-  for (const overlay of overlayModels) {
-    const existingIndex = merged.findIndex((model) => model.provider === overlay.provider && model.id === overlay.id);
-    if (existingIndex >= 0) {
-      merged[existingIndex] = overlay;
-    } else {
-      merged.push(overlay);
-    }
-  }
-  return merged;
-}
-
-function getExplicitModel(
-  explicitModels: Models | undefined,
-  provider: string,
-  modelId: string,
-): Model<any> | undefined {
-  return explicitModels?.getModel(provider, modelId);
-}
-
-export function getAvailableModelsSync(source?: AvailableModelsSource): Model<any>[] {
-  if (!source) return [];
-  if ("getAvailableSync" in source && typeof source.getAvailableSync === "function") {
-    return [...source.getAvailableSync()];
-  }
-  if ("getAvailable" in source) {
-    const available = source.getAvailable();
-    if (Array.isArray(available)) {
-      return [...available];
-    }
-  }
-  return [];
-}
-
-async function getAvailableModelsAsync(source: AvailableModelsSource): Promise<Model<any>[]> {
-  if ("getAvailableSync" in source && typeof source.getAvailableSync === "function" && !("getAvailable" in source)) {
-    return [...source.getAvailableSync()];
-  }
-  if ("getAvailable" in source) {
-    const available = source.getAvailable();
-    return Array.isArray(available) ? [...available] : [...(await available)];
-  }
-  return [];
-}
-
-function createCompatibleModelRegistry(
-  baseRegistry: CompatibleModelRegistry,
-  explicitModels: Models | undefined,
-): CompatibleModelRegistry {
-  if (!explicitModels) {
-    return baseRegistry;
-  }
-
-  let currentExplicitModels: Models | undefined = explicitModels;
-  const getExplicitProvider = (provider: string) => currentExplicitModels?.getProvider(provider);
-  const getMergedModels = () => mergeModelLists(baseRegistry.getAll(), currentExplicitModels?.getModels() ?? []);
-
-  const registry: CompatibleModelRegistry = {
-    authStorage: baseRegistry.authStorage,
-    find(provider, modelId) {
-      return getExplicitModel(currentExplicitModels, provider, modelId) ?? baseRegistry.find(provider, modelId);
-    },
-    getAll() {
-      return getMergedModels();
-    },
-    async getAvailable() {
-      const baseAvailable = "getAvailable" in baseRegistry ? await getAvailableModelsAsync(baseRegistry) : [];
-      const explicitAvailability = await Promise.all(
-        (currentExplicitModels?.getModels() ?? []).map(async (model) => ({
-          model,
-          auth: await currentExplicitModels?.getAuth(model).catch(() => undefined),
-        })),
-      );
-      return mergeModelLists(
-        baseAvailable,
-        explicitAvailability.filter((entry) => entry.auth !== undefined).map((entry) => entry.model),
-      );
-    },
-    getAvailableSync() {
-      const baseAvailable = getAvailableModelsSync(baseRegistry);
-      return mergeModelLists(baseAvailable, currentExplicitModels?.getModels() ?? []);
-    },
-    hasConfiguredAuth(model) {
-      if (getExplicitModel(currentExplicitModels, model.provider, model.id)) {
-        return getExplicitProvider(model.provider) !== undefined;
-      }
-      if (typeof baseRegistry.hasConfiguredAuth === "function") {
-        return baseRegistry.hasConfiguredAuth(model);
-      }
-      return getAvailableModelsSync(baseRegistry).some(
-        (availableModel) => availableModel.provider === model.provider && availableModel.id === model.id,
-      );
-    },
-    hasConfiguredAuthSync(model) {
-      if (getExplicitModel(currentExplicitModels, model.provider, model.id)) {
-        return getExplicitProvider(model.provider) !== undefined;
-      }
-      if (typeof baseRegistry.hasConfiguredAuthSync === "function") {
-        return baseRegistry.hasConfiguredAuthSync(model);
-      }
-      return getAvailableModelsSync(baseRegistry).some(
-        (availableModel) => availableModel.provider === model.provider && availableModel.id === model.id,
-      );
-    },
-    async getApiKeyAndHeaders(model) {
-      const explicitModel = getExplicitModel(currentExplicitModels, model.provider, model.id);
-      const explicitSource = currentExplicitModels;
-      if (explicitModel && explicitSource) {
-        try {
-          const auth = await explicitSource.getAuth(explicitModel);
-          if (!auth) {
-            return { ok: false, error: `No API key found for "${model.provider}"` };
-          }
-          return {
-            ok: true,
-            apiKey: auth.auth.apiKey,
-            headers: auth.auth.headers,
-            env: auth.env,
-          };
-        } catch (error) {
-          return {
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          };
-        }
-      }
-      if (typeof baseRegistry.getApiKeyAndHeaders === "function") {
-        return baseRegistry.getApiKeyAndHeaders(model);
-      }
-      return { ok: false, error: `No auth resolver found for "${model.provider}"` };
-    },
-    isUsingOAuth(model) {
-      if (getExplicitModel(currentExplicitModels, model.provider, model.id)) {
-        return getExplicitProvider(model.provider)?.auth.oauth !== undefined;
-      }
-      return baseRegistry.isUsingOAuth?.(model) ?? false;
-    },
-    getProviderDisplayName: baseRegistry.getProviderDisplayName?.bind(baseRegistry),
-    getProviderAuthStatus: baseRegistry.getProviderAuthStatus?.bind(baseRegistry),
-    getApiKeyForProvider: baseRegistry.getApiKeyForProvider?.bind(baseRegistry),
-    registerProvider: baseRegistry.registerProvider?.bind(baseRegistry),
-    unregisterProvider: baseRegistry.unregisterProvider?.bind(baseRegistry),
-    refresh: baseRegistry.refresh?.bind(baseRegistry),
-    getError: baseRegistry.getError?.bind(baseRegistry),
-    setExplicitModels(nextExplicitModels) {
-      currentExplicitModels = nextExplicitModels;
-      baseRegistry.setExplicitModels?.(nextExplicitModels);
-    },
-    getExplicitModelsSource() {
-      return currentExplicitModels;
-    },
-  };
-
-  return registry;
 }
 
 export interface WorkflowAgentOptions {
   cwd?: string;
   /** Extra tools available to the subagent in addition to the structured output tool. */
   tools?: ToolDefinition[];
-  /** Override any createAgentSession option (model, models, authStorage, resourceLoader, etc.). */
-  session?: WorkflowSessionOptions;
+  /** Override any createAgentSession option (model, authStorage, resourceLoader, etc.). */
+  session?: Partial<CreateAgentSessionOptions>;
   /** Extra system guidance prepended to every subagent task. */
   instructions?: string;
   /**
@@ -456,46 +267,29 @@ export interface WorkflowAgentOptions {
    * this, the agent builds an isolated registry from disk and may miss models
    * that are only available via extension registration.
    */
-  modelRegistry?: CompatibleModelRegistry;
+  modelRegistry?: ModelRegistry;
+  /**
+   * Persist each subagent transcript as a real pi session file under the
+   * standard sessions directory (keyed by the runner's project cwd), instead
+   * of the default in-memory session that is discarded when the run ends.
+   * Default: false (current behavior).
+   */
+  persistAgentSessions?: boolean;
 }
 
 /**
  * List the user's currently available models (those with auth configured) as
- * `provider/modelId` specs. Used by synchronous call sites such as default tier
- * bootstrapping. Best-effort: returns [] if the registry can't be built.
+ * `provider/modelId` specs. Used to tell the workflow author which models it may
+ * route agents to. Best-effort: returns [] if the registry can't be built.
  */
-export function listAvailableModelSpecs(modelRegistry?: AvailableModelsSource): string[] {
-  try {
-    const registry =
-      modelRegistry ??
-      (() => {
-        const dir = getAgentDir();
-        const auth = AuthStorage.create(join(dir, "auth.json"));
-        return ModelRegistry.create(auth, join(dir, "models.json"));
-      })();
-    return getAvailableModelsSync(registry).map((m) => `${m.provider}/${m.id}`);
-  } catch {
-    return [];
-  }
+export type AvailableModelsSource = ModelAvailabilitySource;
+
+export function listAvailableModelSpecs(registry?: ModelAvailabilitySource): string[] {
+  return listAvailableModelSpecsCompat(registry);
 }
 
-/**
- * Async availability list for UI/prompt surfaces that need auth-verified model
- * specs, including explicit Models providers whose auth resolves asynchronously.
- */
-export async function listAvailableModelSpecsAsync(modelRegistry?: AvailableModelsSource): Promise<string[]> {
-  try {
-    const registry =
-      modelRegistry ??
-      (() => {
-        const dir = getAgentDir();
-        const auth = AuthStorage.create(join(dir, "auth.json"));
-        return ModelRegistry.create(auth, join(dir, "models.json"));
-      })();
-    return (await getAvailableModelsAsync(registry)).map((m) => `${m.provider}/${m.id}`);
-  } catch {
-    return [];
-  }
+export async function listAvailableModelSpecsAsync(registry?: ModelAvailabilitySource): Promise<string[]> {
+  return listAvailableModelSpecsAsyncCompat(registry);
 }
 
 /** Real token/cost usage for a single subagent run, read from the SDK session. */
@@ -510,6 +304,13 @@ export interface AgentUsage {
 
 export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefined> {
   label?: string;
+  /**
+   * Display name recorded on the persisted session (session_info entry) when
+   * `persistAgentSessions` is enabled, so transcripts are identifiable in
+   * session pickers (e.g. `workflow:<runId> <label>`). Ignored for in-memory
+   * sessions or when an explicit session.sessionManager override is injected.
+   */
+  sessionName?: string;
   schema?: TSchemaDef;
   tools?: ToolDefinition[];
   instructions?: string;
@@ -535,8 +336,6 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * caring which concrete model backs that tier.
    */
   tier?: string;
-  /** Explicit thinking level for this subagent session. Undefined inherits the session default. */
-  thinkingLevel?: ThinkingLevel;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
   /** Called when `model`/`tier`/phase resolved to a spec that wasn't found (fell back to session default). */
@@ -561,13 +360,22 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    */
   maxSchemaRetries?: number;
   /**
+   * Tools that are always injected AFTER the tool-policy filter (`toolNames` /
+   * `disallowedToolNames`), so they are available even under a restrictive
+   * allowlist. Used by the workflow runtime to inject shared-store tools into
+   * every agent regardless of its agentType definition.
+   */
+  systemTools?: ToolDefinition[];
+  /**
    * Per-run model registry override. Takes precedence over the constructor's
    * `modelRegistry` (WorkflowAgentOptions.modelRegistry) for both model
    * resolution and the `createAgentSession` call this run makes. Falls back to
    * the constructor's shared registry, then a lazily-built disk registry, when
    * omitted.
    */
-  modelRegistry?: CompatibleModelRegistry;
+  modelRegistry?: ModelRegistry;
+  /** Explicit thinking override for this run; otherwise the host setting applies. */
+  thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -577,75 +385,79 @@ export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef 
 export class WorkflowAgent {
   private readonly cwd: string;
   private readonly baseTools: ToolDefinition[];
-  private readonly sessionOptions: WorkflowSessionOptions;
+  private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
+  private readonly persistAgentSessions: boolean;
   private readonly instructions?: string;
   private readonly mainModel?: string;
   /** Shared registry from the host session, when provided. */
-  private readonly sharedRegistry?: CompatibleModelRegistry;
-  /** Lazily built once; shares the SDK's agentDir/auth/models so lookup matches session creation. */
-  private registry?: CompatibleModelRegistry;
-  /** Wrapped host registries by identity, so repeated run() calls don't rebuild the same adapter. */
-  private wrappedRegistryCache = new WeakMap<
-    CompatibleModelRegistry,
-    { explicitModels: Models | undefined; registry: CompatibleModelRegistry }
-  >();
+  private readonly sharedRegistry?: ModelRegistry;
+  /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
+  private registry?: ModelRegistry;
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
     this.baseTools = options.tools ?? createCodingTools(this.cwd);
     this.sessionOptions = options.session ?? {};
+    this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.instructions = options.instructions;
     this.mainModel = options.mainModel;
     this.sharedRegistry = options.modelRegistry;
   }
 
-  private getExplicitModelsSource(activeRegistry?: CompatibleModelRegistry): Models | undefined {
-    return (
-      this.sessionOptions.models ??
-      activeRegistry?.getExplicitModelsSource?.() ??
-      this.sessionOptions.modelRegistry?.getExplicitModelsSource?.()
-    );
-  }
-
-  private getRegistry(perRunRegistry?: CompatibleModelRegistry): CompatibleModelRegistry {
+  /**
+   * Resolve the registry for a run: an explicit per-run registry wins, then the
+   * constructor's shared registry, then a lazily-built disk registry (shared
+   * across calls once built).
+   */
+  private getRegistry(perRunRegistry?: ModelRegistry): ModelRegistry {
     const providedRegistry = perRunRegistry ?? this.sharedRegistry ?? this.sessionOptions.modelRegistry;
-    const explicitModels = this.getExplicitModelsSource(providedRegistry);
     if (providedRegistry) {
-      let wrapped = this.wrappedRegistryCache.get(providedRegistry);
-      if (!wrapped || wrapped.explicitModels !== explicitModels) {
-        wrapped = {
-          explicitModels,
-          registry: createCompatibleModelRegistry(providedRegistry, explicitModels),
-        };
-        this.wrappedRegistryCache.set(providedRegistry, wrapped);
-      }
-      return wrapped.registry;
+      return providedRegistry;
     }
     if (!this.registry) {
-      const dir = this.sessionOptions.agentDir ?? getAgentDir();
+      const dir = getAgentDir();
       // Same agentDir/auth files createAgentSession uses by default, so a model
-      // resolved here carries valid credentials and explicit-model wiring when
-      // the host Pi runtime exposes the explicit Models surface.
-      const auth = this.sessionOptions.authStorage ?? AuthStorage.create(join(dir, "auth.json"));
-      const baseRegistry = ModelRegistry.create(auth, join(dir, "models.json"));
-      this.registry = createCompatibleModelRegistry(baseRegistry, this.getExplicitModelsSource(baseRegistry));
+      // resolved here carries valid credentials.
+      const auth = AuthStorage.create(join(dir, "auth.json"));
+      this.registry = ModelRegistry.create(auth, join(dir, "models.json"));
     }
     return this.registry;
   }
 
   /**
-   * Resolve a model spec to a Model. Accepts `provider/modelId` (unambiguous)
-   * or a bare `modelId` (prefers auth-configured models, then any known model).
-   * Returns undefined when nothing matches.
+   * Session manager for one subagent run. File-backed (persisted under the
+   * standard sessions dir, keyed by the runner's project cwd — never a
+   * per-call worktree cwd) when persistAgentSessions is on; in-memory otherwise.
+   *
+   * SessionManager.create() only creates the session directory — the SDK writes
+   * the session file lazily (synchronous fs calls, uncaught) on the first
+   * assistant message, deep inside session.prompt(). A failure there would
+   * otherwise throw mid-run and abort this subagent. Probe writability up front
+   * so any create/write failure (permissions, disk full) degrades this single
+   * agent to an in-memory session instead — the run continues, just without a
+   * persisted transcript.
    */
-  private async resolveModel(spec: string, perRunRegistry?: CompatibleModelRegistry): Promise<Model<any> | undefined> {
-    const registry = this.getRegistry(perRunRegistry);
-    const slash = spec.indexOf("/");
-    if (slash > 0) {
-      return registry.find(spec.slice(0, slash), spec.slice(slash + 1));
+  private createSessionManager(): SessionManager {
+    if (!this.persistAgentSessions) return SessionManager.inMemory();
+    try {
+      const manager = SessionManager.create(this.cwd);
+      this.assertSessionDirWritable(manager.getSessionDir());
+      return manager;
+    } catch (error) {
+      console.warn(
+        `[workflow] persistAgentSessions: could not persist this agent's session (${
+          error instanceof Error ? error.message : String(error)
+        }); continuing with an in-memory session`,
+      );
+      return SessionManager.inMemory();
     }
-    const available = await getAvailableModelsAsync(registry);
-    return available.find((m) => m.id === spec) ?? registry.getAll().find((m) => m.id === spec);
+  }
+
+  /** Best-effort write probe: throws if the session directory isn't actually writable. */
+  private assertSessionDirWritable(dir: string): void {
+    const probePath = join(dir, `.write-probe-${randomUUID()}`);
+    writeFileSync(probePath, "");
+    unlinkSync(probePath);
   }
 
   async run<TSchemaDef extends TSchema | undefined = undefined>(
@@ -665,6 +477,11 @@ export class WorkflowAgent {
       options.disallowedToolNames,
     );
 
+    // System tools bypass the allowlist/denylist filter (e.g. shared-store tools).
+    if (options.systemTools?.length) {
+      customTools.push(...options.systemTools);
+    }
+
     if (options.schema) {
       customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
     }
@@ -674,13 +491,20 @@ export class WorkflowAgent {
     // options.model when a phase pattern matches — so an explicit model wins.
     const modelSpec = resolveAgentModelSpec(options, this.mainModel);
 
-    // Resolve a requested model spec to a Model object. A given-but-unresolved
-    // spec falls back to the session default (with a warning) rather than failing.
+    // Resolve a requested model spec to a Model object. Specs use Pi CLI-style
+    // parsing, including an optional :thinking suffix such as gpt-5.5:xhigh.
+    // A given-but-unresolved spec falls back to the session default (with a
+    // warning) rather than failing.
+    const modelRegistry = this.getRegistry(options.modelRegistry);
     let resolvedModel: Model<any> | undefined;
+    let resolvedThinkingLevel: CreateAgentSessionOptions["thinkingLevel"] | undefined;
     if (modelSpec) {
-      resolvedModel = await this.resolveModel(modelSpec, options.modelRegistry);
-      if (resolvedModel) {
-        options.onModelResolved?.(`${resolvedModel.provider}/${resolvedModel.id}`);
+      const resolved = resolveModelSpecWithThinking(modelSpec, modelRegistry);
+      if (resolved.warning) console.warn(`[workflow] ${resolved.warning}`);
+      if (resolved.model) {
+        resolvedModel = resolved.model;
+        resolvedThinkingLevel = resolved.thinkingLevel;
+        options.onModelResolved?.(resolved.resolvedSpec ?? canonicalModelSpec(resolved.model));
       } else {
         console.warn(`[workflow] model "${modelSpec}" not found; using session default`);
         options.onModelFallback?.(modelSpec);
@@ -688,35 +512,39 @@ export class WorkflowAgent {
     }
 
     const agentDir = this.sessionOptions.agentDir ?? getAgentDir();
+    // Key persisted sessions by the runner's project cwd (this.cwd), NOT the
+    // per-call runCwd: agents working in short-lived git worktrees should still
+    // group under the project's session dir instead of scattering across
+    // temporary worktree paths.
     const {
       resourceLoader: providedResourceLoader,
       settingsManager: providedSettingsManager,
-      models: _explicitModels,
       modelRegistry: _sessionModelRegistry,
-      ...sessionOptions
+      ...baseSessionOptions
     } = this.sessionOptions;
-    // Use real SettingsManager to inherit user's default provider/model settings.
-    // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
-    // would fall back to the first available model (e.g. openai-codex) which may
-    // not have valid auth, causing silent empty responses.
     const settingsManager = providedSettingsManager ?? SettingsManager.create(runCwd, agentDir);
     const baseResourceLoader =
       providedResourceLoader ?? new DefaultResourceLoader({ cwd: runCwd, agentDir, settingsManager });
     const resourceLoader = wrapResourceLoaderForWorkflowSubagents(baseResourceLoader);
     await resourceLoader.reload();
-
+    const sessionManager = this.sessionOptions.sessionManager ?? this.createSessionManager();
+    const hostRegistry = modelRegistry;
     const { session } = await createAgentSession({
       cwd: runCwd,
       agentDir,
-      sessionManager: SessionManager.inMemory(),
+      sessionManager,
       settingsManager,
       customTools,
-      ...sessionOptions,
-      modelRegistry: this.getRegistry(options.modelRegistry) as CreateAgentSessionOptions["modelRegistry"],
+      ...baseSessionOptions,
+      ...(hostRegistry ? { modelRegistry: hostRegistry } : {}),
       resourceLoader,
-      // Per-call model wins over any sessionOptions.model.
+      // Per-call model/thinking wins over any sessionOptions defaults.
       ...(resolvedModel ? { model: resolvedModel } : {}),
-      ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
+      ...(options.thinkingLevel
+        ? { thinkingLevel: options.thinkingLevel }
+        : resolvedThinkingLevel
+          ? { thinkingLevel: resolvedThinkingLevel }
+          : {}),
     });
 
     await session.bindExtensions({
@@ -735,20 +563,20 @@ export class WorkflowAgent {
       },
     });
 
+    // Name the persisted session so it's identifiable in session pickers.
+    // Skip when an injected session.sessionManager override won (tests/embedders).
+    if (this.persistAgentSessions && !this.sessionOptions.sessionManager && options.sessionName) {
+      try {
+        sessionManager.appendSessionInfo(options.sessionName);
+      } catch {
+        // Naming is best-effort; never fail the run over it.
+      }
+    }
+
     let removeAbortListener: (() => void) | undefined;
     let removeHistoryListener: (() => void) | undefined;
     let lastHistoryEmit = 0;
-    let turnStarted = false;
-    let messagesSnapshot: unknown[] = structuredClone(session.messages) as unknown[];
-    let terminalMessagesSnapshot: unknown[] | undefined;
-    let resolveTerminalTurn: (() => void) | undefined;
-    const terminalTurn = new Promise<void>((resolve) => {
-      resolveTerminalTurn = resolve;
-    });
-    const refreshMessagesSnapshot = () => {
-      messagesSnapshot = structuredClone(session.messages) as unknown[];
-    };
-    const emitHistory = () => options.onHistory?.(compactAgentHistory(messagesSnapshot));
+    const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
     const maybeEmitHistory = () => {
       if (!options.onHistory) return;
       const now = Date.now();
@@ -763,27 +591,19 @@ export class WorkflowAgent {
         options.signal.addEventListener("abort", onAbort, { once: true });
         removeAbortListener = () => options.signal?.removeEventListener("abort", onAbort);
       }
-      removeHistoryListener = session.subscribe((event) => {
-        if (event.type === "agent_end" && turnStarted) {
-          terminalMessagesSnapshot = structuredClone(event.messages) as unknown[];
-          resolveTerminalTurn?.();
-        }
-        refreshMessagesSnapshot();
-        maybeEmitHistory();
-      });
+      if (options.onHistory) {
+        removeHistoryListener = session.subscribe(() => maybeEmitHistory());
+      }
 
-      turnStarted = true;
       await session.prompt(this.buildPrompt(prompt, options as AgentRunOptions<any>, Boolean(options.schema)));
-      await terminalTurn;
-      refreshMessagesSnapshot();
-      const messagesAfterPrompt = terminalMessagesSnapshot ?? messagesSnapshot;
+
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
 
       // The SDK buries a provider usage/quota limit in the assistant message rather
       // than throwing; detect it here (before the schema/empty-text branches) so it
       // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
       // (schema path) or a silent empty-output null (non-schema path).
-      throwIfProviderLimit(messagesAfterPrompt, options.label);
+      throwIfProviderLimit(session.messages, options.label);
 
       if (options.schema) {
         return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
@@ -791,7 +611,7 @@ export class WorkflowAgent {
         )) as AgentRunResult<TSchemaDef>;
       }
 
-      const text = this.lastAssistantText(messagesAfterPrompt);
+      const text = this.lastAssistantText(session.messages);
       if (!text.trim()) {
         throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
           recoverable: true,

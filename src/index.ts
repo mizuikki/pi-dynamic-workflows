@@ -7,6 +7,7 @@ export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
+export { generateCodeReviewWorkflow, MAX_DIFF_CHARS } from "./code-review.js";
 export * from "./config.js";
 export type { DeepResearchConfig } from "./deep-research.js";
 export { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
@@ -46,6 +47,15 @@ export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";
 export { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+export type { ModelThinkingLevel, ResolvedModelSpec } from "./model-spec.js";
+export {
+  canonicalModelSpec,
+  formatModelSpecWithThinking,
+  isThinkingLevel,
+  resolveModelSpecWithThinking,
+  splitModelSpecThinking,
+  THINKING_LEVELS,
+} from "./model-spec.js";
 export type { ModelTierConfig } from "./model-tier-config.js";
 export {
   buildDefaultTierConfig,
@@ -56,6 +66,13 @@ export {
   saveModelTierConfig,
   sortedTierNames,
 } from "./model-tier-config.js";
+export type { ModelAvailabilitySource } from "./pi-compat.js";
+export {
+  getAvailableModels,
+  getAvailableModelsSync,
+  listAvailableModelSpecs as listAvailableModelSpecsCompat,
+  listAvailableModelSpecsAsync as listAvailableModelSpecsAsyncCompat,
+} from "./pi-compat.js";
 export type { PersistedRunState, RunPersistence, RunStatus } from "./run-persistence.js";
 export { createRunPersistence, generateRunId } from "./run-persistence.js";
 export {
@@ -63,6 +80,7 @@ export {
   registerAllSavedWorkflows,
   registerSavedWorkflow,
 } from "./saved-commands.js";
+export { createSharedStoreTools, SharedStore } from "./shared-store.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
 export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";

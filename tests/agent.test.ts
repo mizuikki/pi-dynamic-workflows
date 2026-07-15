@@ -1,23 +1,91 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
-import type { Model } from "@earendil-works/pi-ai";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
-import {
-  listAvailableModelSpecs,
-  listAvailableModelSpecsAsync,
-  resolveAgentModelSpec,
-  resolveAgentTierThinkingLevel,
-  WorkflowAgent,
-} from "../src/agent.js";
+import { listAvailableModelSpecs, resolveAgentModelSpec, WorkflowAgent } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
+import { resolveModelSpecWithThinking } from "../src/model-spec.js";
 import type { ModelTierConfig } from "../src/model-tier-config.js";
 import { runWorkflow } from "../src/workflow.js";
+import { withFakeHome } from "./helpers/fake-home.js";
 
 // Private methods used for testing - cast to this type to access them without `any`
 type WorkflowAgentPrivates = {
   buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string;
   lastAssistantText(messages: unknown[]): string;
+  createSessionManager(): { isPersisted(): boolean; getCwd(): string };
 };
+
+// ═══════════════════════════════════════════════════════════════════════
+// persistAgentSessions — in-memory by default, file-backed keyed by project cwd
+// ═══════════════════════════════════════════════════════════════════════
+
+test("WorkflowAgent uses an in-memory session manager by default", () => {
+  const agent = new WorkflowAgent({ cwd: "/tmp" });
+  const manager = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
+  assert.equal(manager.isPersisted(), false, "default must stay in-memory (back-compat)");
+});
+
+test("WorkflowAgent with persistAgentSessions=false explicitly stays in-memory", () => {
+  const agent = new WorkflowAgent({ cwd: "/tmp", persistAgentSessions: false });
+  const manager = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
+  assert.equal(manager.isPersisted(), false);
+});
+
+test("WorkflowAgent with persistAgentSessions=true creates a file-backed manager keyed by the project cwd", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-persist-agent-"));
+  const projectCwd = join(dir, "project");
+  const fakeHome = join(dir, "home");
+  try {
+    withFakeHome(fakeHome, () => {
+      const agent = new WorkflowAgent({ cwd: projectCwd, persistAgentSessions: true });
+      const manager = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
+      assert.equal(manager.isPersisted(), true, "flag must yield a file-backed session manager");
+      // Sessions must be keyed by the runner's project cwd — never a per-call
+      // worktree cwd — so transcripts group under the project's session dir.
+      // createSessionManager() takes no per-call cwd by design; assert the
+      // manager saw the project cwd.
+      assert.equal(manager.getCwd(), projectCwd);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowAgent degrades to in-memory when the session directory can't be created", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-persist-agent-fail-"));
+  const projectCwd = join(dir, "project");
+  const fakeHome = join(dir, "home");
+  try {
+    withFakeHome(fakeHome, () => {
+      // Pre-occupy the sessions directory with a plain file so the SDK's
+      // mkdirSync(recursive) inside SessionManager.create() throws ENOTDIR —
+      // simulating a permissions/disk-full failure at session-creation time.
+      const sessionsPath = join(fakeHome, ".pi", "agent", "sessions");
+      mkdirSync(dirname(sessionsPath), { recursive: true });
+      writeFileSync(sessionsPath, "not a directory");
+
+      const originalWarn = console.warn;
+      const warnings: unknown[][] = [];
+      console.warn = (...args: unknown[]) => warnings.push(args);
+      try {
+        const agent = new WorkflowAgent({ cwd: projectCwd, persistAgentSessions: true });
+        const manager = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
+        assert.equal(manager.isPersisted(), false, "must degrade to in-memory rather than throw");
+        assert.ok(
+          warnings.some((args) => String(args[0]).includes("persistAgentSessions")),
+          "should log a warning about the degradation",
+        );
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("listAvailableModelSpecs returns an array (empty when no auth configured)", () => {
   const result = listAvailableModelSpecs();
@@ -36,54 +104,12 @@ test("listAvailableModelSpecs entries have provider/model format when non-empty"
   }
 });
 
-test("listAvailableModelSpecs uses the current session registry", () => {
-  const explicitModel = {
-    provider: "explicit-faux",
-    id: "faux-1",
-    api: "faux",
-    name: "Explicit Faux",
-    baseUrl: "http://localhost:0",
-    input: ["text"],
-    reasoning: false,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
-    maxTokens: 8192,
-  } satisfies Model<"faux">;
-
-  const result = listAvailableModelSpecs({ getAvailableSync: () => [explicitModel] });
-
-  assert.deepEqual(result, ["explicit-faux/faux-1"]);
-});
-
-test("listAvailableModelSpecsAsync uses the current session registry", async () => {
-  const explicitModel = {
-    provider: "explicit-faux",
-    id: "faux-1",
-    api: "faux",
-    name: "Explicit Faux",
-    baseUrl: "http://localhost:0",
-    input: ["text"],
-    reasoning: false,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
-    maxTokens: 8192,
-  } satisfies Model<"faux">;
-
-  const result = await listAvailableModelSpecsAsync({ getAvailable: async () => [explicitModel] });
-
-  assert.deepEqual(result, ["explicit-faux/faux-1"]);
-});
-
 // ═══════════════════════════════════════════════════════════════════════════
 // resolveAgentModelSpec — model precedence: explicit model > tier > main model
 // ═══════════════════════════════════════════════════════════════════════════
 
 const tierConfig: ModelTierConfig = {
-  tiers: {
-    small: { model: "vendor/small", thinkingLevel: "low" },
-    medium: { model: "vendor/medium" },
-    big: { model: "vendor/big", thinkingLevel: "high" },
-  },
+  tiers: { small: "vendor/small", medium: "vendor/medium", big: "vendor/big" },
 };
 const loadCfg = () => tierConfig;
 const noCfg = () => null;
@@ -123,23 +149,12 @@ test("resolveAgentModelSpec: untagged agent with NO config falls through to sess
 });
 
 test("resolveAgentModelSpec: untagged agent with a config lacking a medium tier => session default", () => {
-  const noMedium = () => ({ tiers: { small: { model: "vendor/small" } } });
+  const noMedium = () => ({ tiers: { small: "vendor/small" } });
   assert.equal(resolveAgentModelSpec({}, "main/model", noMedium), undefined);
 });
 
 test("resolveAgentModelSpec: tier with no main model and no config yields undefined", () => {
   assert.equal(resolveAgentModelSpec({ tier: "small" }, undefined, noCfg), undefined);
-});
-
-test("resolveAgentTierThinkingLevel returns explicit thinking when configured", () => {
-  assert.equal(resolveAgentTierThinkingLevel({ tier: "small" }, loadCfg), "low");
-  assert.equal(resolveAgentTierThinkingLevel({ tier: "big" }, loadCfg), "high");
-});
-
-test("resolveAgentTierThinkingLevel returns undefined when tier inherits the session default", () => {
-  assert.equal(resolveAgentTierThinkingLevel({ tier: "medium" }, loadCfg), undefined);
-  assert.equal(resolveAgentTierThinkingLevel({}, loadCfg), undefined);
-  assert.equal(resolveAgentTierThinkingLevel({ tier: "small" }, noCfg), undefined);
 });
 
 test("WorkflowAgent constructor accepts all option shapes without throwing", () => {
@@ -165,17 +180,7 @@ test("WorkflowAgent constructor accepts all option shapes without throwing", () 
   }
 });
 
-function makeExplicitModelSource(model: Model<any>) {
-  return {
-    getModel: (provider: string, modelId: string) =>
-      provider === model.provider && modelId === model.id ? model : undefined,
-    getModels: () => [model],
-    getProvider: (provider: string) => (provider === model.provider ? { id: provider, auth: {} } : undefined),
-    getAuth: async () => ({ auth: {} }),
-  } as any;
-}
-
-test("WorkflowAgent reuses an injected ModelRegistry instead of building its own", async () => {
+test("WorkflowAgent reuses an injected ModelRegistry instead of building its own", () => {
   const mockModel = { provider: "mock", id: "shared" } as any;
   const registry = {
     find: (provider: string, id: string) => (provider === "mock" && id === "shared" ? mockModel : undefined),
@@ -184,8 +189,8 @@ test("WorkflowAgent reuses an injected ModelRegistry instead of building its own
   } as any;
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: registry });
-  const resolved = await (agent as any).resolveModel("mock/shared");
-  assert.equal(resolved, mockModel, "should resolve via the injected registry");
+  const resolved = resolveModelSpecWithThinking("mock/shared", (agent as any).getRegistry());
+  assert.equal(resolved.model, mockModel, "should resolve via the injected registry");
 });
 
 test("WorkflowAgent falls back to building a disk registry when no registry is injected", () => {
@@ -194,7 +199,7 @@ test("WorkflowAgent falls back to building a disk registry when no registry is i
   assert.doesNotThrow(() => (agent as any).getRegistry());
 });
 
-test("WorkflowAgent.resolveModel resolves via a per-run registry when the constructor got none", async () => {
+test("WorkflowAgent.resolveModel resolves via a per-run registry when the constructor got none", () => {
   // Regression test for the per-run `modelRegistry` AgentRunOptions field: a
   // model present only in a registry passed to run() (not the constructor)
   // must still resolve.
@@ -206,59 +211,11 @@ test("WorkflowAgent.resolveModel resolves via a per-run registry when the constr
   } as any;
 
   const agent = new WorkflowAgent({ cwd: "/tmp" });
-  const resolved = await (agent as any).resolveModel("router/per-run-only", perRunRegistry);
-  assert.equal(resolved, perRunModel, "should resolve via the per-run registry, not a disk registry");
+  const resolved = resolveModelSpecWithThinking("router/per-run-only", (agent as any).getRegistry(perRunRegistry));
+  assert.equal(resolved.model, perRunModel, "should resolve via the per-run registry, not a disk registry");
 });
 
-test("WorkflowAgent.resolveModel uses explicit models from the active per-run registry", async () => {
-  const explicitModel = { provider: "explicit", id: "per-run" } as Model<any>;
-  const explicitModels = makeExplicitModelSource(explicitModel);
-  const perRunRegistry = {
-    find: () => undefined,
-    getAvailable: () => [],
-    getAll: () => [],
-    getExplicitModelsSource: () => explicitModels,
-  } as any;
-
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
-  const resolved = await (agent as any).resolveModel("explicit/per-run", perRunRegistry);
-  assert.equal(resolved, explicitModel, "per-run registry explicit models should be preserved");
-});
-
-test("WorkflowAgent.resolveModel uses explicit models from the shared constructor registry", async () => {
-  const explicitModel = { provider: "explicit", id: "shared" } as Model<any>;
-  const explicitModels = makeExplicitModelSource(explicitModel);
-  const sharedRegistry = {
-    find: () => undefined,
-    getAvailable: () => [],
-    getAll: () => [],
-    getExplicitModelsSource: () => explicitModels,
-  } as any;
-
-  const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: sharedRegistry });
-  const resolved = await (agent as any).resolveModel("explicit/shared");
-  assert.equal(resolved, explicitModel, "shared registry explicit models should be preserved");
-});
-
-test("WorkflowAgent.getRegistry refreshes a cached wrapper when the active explicit model source changes", async () => {
-  const firstModel = { provider: "explicit", id: "first" } as Model<any>;
-  const secondModel = { provider: "explicit", id: "second" } as Model<any>;
-  let explicitModels = makeExplicitModelSource(firstModel);
-  const sharedRegistry = {
-    find: () => undefined,
-    getAvailable: () => [],
-    getAll: () => [],
-    getExplicitModelsSource: () => explicitModels,
-  } as any;
-
-  const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: sharedRegistry });
-  assert.equal(await (agent as any).resolveModel("explicit/first"), firstModel);
-
-  explicitModels = makeExplicitModelSource(secondModel);
-  assert.equal(await (agent as any).resolveModel("explicit/second"), secondModel);
-});
-
-test("WorkflowAgent.resolveModel: per-run registry takes precedence over the constructor's shared registry", async () => {
+test("WorkflowAgent.resolveModel: per-run registry takes precedence over the constructor's shared registry", () => {
   const constructorModel = { provider: "ctor", id: "shared" } as any;
   const constructorRegistry = {
     find: (provider: string, id: string) => (provider === "ctor" && id === "shared" ? constructorModel : undefined),
@@ -275,11 +232,11 @@ test("WorkflowAgent.resolveModel: per-run registry takes precedence over the con
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: constructorRegistry });
   // The per-run registry, not the constructor's, is consulted when both are set.
-  const resolved = await (agent as any).resolveModel("run/override", perRunRegistry);
-  assert.equal(resolved, perRunModel, "per-run registry should win over the constructor's shared registry");
+  const resolved = resolveModelSpecWithThinking("run/override", (agent as any).getRegistry(perRunRegistry));
+  assert.equal(resolved.model, perRunModel, "per-run registry should win over the constructor's shared registry");
   // And the constructor registry is still used when no per-run registry is given.
-  const fallback = await (agent as any).resolveModel("ctor/shared");
-  assert.equal(fallback, constructorModel, "constructor registry should still apply without a per-run override");
+  const fallback = resolveModelSpecWithThinking("ctor/shared", (agent as any).getRegistry());
+  assert.equal(fallback.model, constructorModel, "constructor registry should still apply without a per-run override");
 });
 
 test("WorkflowAgent.getRegistry: per-run registry wins, then constructor's shared registry, then disk", () => {
@@ -496,6 +453,20 @@ test("agent() in workflow passes model spec to runner", async () => {
   );
   assert.equal(rec.calls.length, 1);
   assert.equal((rec.calls[0].options as { model?: string }).model, "fast-llm/model");
+});
+
+test("agent() in workflow forwards modelRegistry for CLI-style model parsing", async () => {
+  const rec = new CallRecordingAgent();
+  const modelRegistry = { getAll: () => [] };
+  await runWorkflow(
+    `export const meta = { name: 'test', description: 't' }
+     const r = await agent('task', { label: 't', model: 'fast-llm/model:xhigh' })
+     return r`,
+    { agent: rec, modelRegistry: modelRegistry as never, persistLogs: false },
+  );
+  assert.equal(rec.calls.length, 1);
+  assert.equal((rec.calls[0].options as { modelRegistry?: unknown }).modelRegistry, modelRegistry);
+  assert.equal((rec.calls[0].options as { model?: string }).model, "fast-llm/model:xhigh");
 });
 
 test("agent() in workflow fires onAgentStart and onAgentEnd callbacks", async () => {

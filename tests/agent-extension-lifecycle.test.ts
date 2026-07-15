@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,7 +16,7 @@ import {
 import { Type } from "typebox";
 import { WorkflowAgent, wrapResourceLoaderForWorkflowSubagents } from "../src/agent.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
-import { createExplicitFauxModels } from "./helpers/faux-models.js";
+import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
 
 test("WorkflowAgent binds extensions so session_start-initialized tools work in subagents", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-ext-home-"));
@@ -75,9 +75,9 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
 
       const agent = new WorkflowAgent({
         cwd,
+        modelRegistry: createFauxModelRegistry(faux),
         session: {
           model: faux.model,
-          models: faux.models,
           resourceLoader,
           sessionManager: SessionManager.inMemory(),
           settingsManager,
@@ -123,8 +123,8 @@ test("WorkflowAgent uses the per-run cwd when loading default project settings u
 
       const agent = new WorkflowAgent({
         cwd,
+        modelRegistry: createFauxModelRegistry(faux),
         session: {
-          models: faux.models,
           sessionManager: SessionManager.inMemory(),
         },
       });
@@ -139,6 +139,42 @@ test("WorkflowAgent uses the per-run cwd when loading default project settings u
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
     rmSync(runCwd, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowAgent does not initialize persistence when a session manager is injected", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-injected-session-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-injected-session-cwd-"));
+  const faux = createExplicitFauxModels({
+    provider: "deepseek",
+    models: [{ id: "injected-session", name: "Injected Session Faux" }],
+  });
+
+  try {
+    await withFakeHomeAsync(home, async () => {
+      faux.setResponses([fauxAssistantMessage("injected session works")]);
+      const agentDir = join(home, ".pi", "agent");
+      const agent = new WorkflowAgent({
+        cwd,
+        modelRegistry: createFauxModelRegistry(faux),
+        persistAgentSessions: true,
+        session: {
+          model: faux.model,
+          sessionManager: SessionManager.inMemory(),
+          settingsManager: SettingsManager.create(cwd, agentDir),
+        },
+      });
+
+      assert.equal(
+        await agent.run("Use the injected session manager.", { label: "injected-session" }),
+        "injected session works",
+      );
+      assert.equal(existsSync(join(agentDir, "sessions")), false);
+    });
+  } finally {
+    faux.dispose();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 

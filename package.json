@@ -1,6 +1,6 @@
 {
   "name": "@quintinshaw/pi-dynamic-workflows",
-  "version": "2.10.0",
+  "version": "2.13.1",
   "description": "Claude-Code-style dynamic workflows for Pi — fan a task out across 100s of subagents with real model routing, token/cost accounting, resume, git-worktree isolation, an interactive /workflows TUI, and a real /deep-research.",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,9 +21,10 @@
     "README.md"
   ],
   "scripts": {
-    "test": "npm run check && npm run typecheck && npm run build && npm run test:unit",
+    "test": "npm run check && npm run build && npm run test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.check.json",
+    "test:pi-fork": "bash scripts/test-pi-fork.sh",
+    "test:package-smoke": "bash scripts/test-package-smoke.sh",
     "check": "biome check .",
     "format": "biome format --write .",
     "lint": "biome lint .",
@@ -61,28 +62,37 @@
   },
   "author": "QuintinShaw",
   "contributors": [
-    "michaelliv (original author)"
+    {
+      "name": "michaelliv",
+      "url": "original author"
+    }
   ],
   "license": "MIT",
   "dependencies": {
     "acorn": "^8.16.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": ">=0.80.6",
+    "@earendil-works/pi-coding-agent": ">=0.80.6",
+    "@earendil-works/pi-tui": ">=0.80.6",
     "typebox": "*"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
-    "@types/node": "^24.0.0",
-    "@earendil-works/pi-agent-core": "file:../pi/packages/agent",
-    "@earendil-works/pi-ai": "file:../pi/packages/ai",
-    "@earendil-works/pi-coding-agent": "file:../pi/packages/coding-agent",
-    "@earendil-works/pi-tui": "file:../pi/packages/tui",
+    "@earendil-works/pi-ai": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
+    "fast-check": "^4.8.0",
     "tsx": "latest",
     "typebox": "latest",
     "typescript": "latest"
-  }
+  },
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "bugs": {
+    "url": "https://github.com/QuintinShaw/pi-dynamic-workflows/issues"
+  },
+  "homepage": "https://github.com/QuintinShaw/pi-dynamic-workflows#readme"
 }

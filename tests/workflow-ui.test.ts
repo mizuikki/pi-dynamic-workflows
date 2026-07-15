@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { WorkflowSnapshot } from "../src/display.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import type { PersistedRunState } from "../src/run-persistence.js";
@@ -425,6 +426,15 @@ test("renderNavigator shows phases view", () => {
   assert.match(text, /Report/);
 });
 
+test("renderNavigator clamps the two-pane header at narrow widths", () => {
+  const model = new NavigatorModel(fakeManager());
+  const state = new NavigatorState();
+  assert.ok(state.drill(model));
+
+  const lines = renderNavigator(state, model, 21);
+  assert.ok(visibleWidth(lines[1] ?? "") <= 21, "header status must fit the requested width");
+});
+
 test("renderNavigator shows agents view", () => {
   const model = new NavigatorModel(fakeManager());
   const state = new NavigatorState();
@@ -432,8 +442,8 @@ test("renderNavigator shows agents view", () => {
   state.drill(model);
   const lines = renderNavigator(state, model, 80);
   const text = lines.join("\n");
-  assert.match(text, /audit › Scan/);
-  assert.match(text, /❯ ✓ scan a/);
+  assert.match(text, /Scan · 2 agents/);
+  assert.match(text, /› ● scan a/);
   assert.match(text, /scan b/);
   assert.match(text, /enter open/);
 });
