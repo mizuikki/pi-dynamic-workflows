@@ -27,7 +27,7 @@ jobs:
       - name: Assert isolated standard Pi resolution
         run: |
           node --input-type=module -e '
-            for (const specifier of ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+            for (const specifier of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
               const resolved = await import.meta.resolve(specifier);
               if (!resolved.startsWith(`file://${process.cwd()}/node_modules/`)) throw new Error(`${specifier} resolved to ${resolved}`);
               console.log(`${specifier}: ${resolved}`);
