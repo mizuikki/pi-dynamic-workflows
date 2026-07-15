@@ -6,12 +6,18 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  createCodingTools,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow, MAX_DIFF_CHARS } from "./code-review.js";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
 import { createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import type { WorkflowManager } from "./workflow-manager.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,12 +39,67 @@ function alreadyRegistered(pi: ExtensionAPI, name: string): boolean {
 }
 
 /** Split a command argument string into tokens, respecting single/double quotes. */
-function tokenizeArgs(input: string): string[] {
+export function tokenizeArgs(input: string): string[] {
   const tokens: string[] = [];
   for (const m of input.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
     tokens.push(m[1] ?? m[2] ?? m[3] ?? "");
   }
   return tokens;
+}
+
+const MAX_BUILTIN_COMMAND_ITEMS = 10;
+
+function capCommandItems(items: string[], label: string, ctx: ExtensionCommandContext): string[] {
+  if (items.length <= MAX_BUILTIN_COMMAND_ITEMS) return items;
+  ctx.ui.notify(
+    `Using the first ${MAX_BUILTIN_COMMAND_ITEMS} ${label}; ${items.length - MAX_BUILTIN_COMMAND_ITEMS} extra ${label} omitted.`,
+    "warning",
+  );
+  return items.slice(0, MAX_BUILTIN_COMMAND_ITEMS);
+}
+
+function currentModelSpec(ctx: ExtensionCommandContext): string | undefined {
+  return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+}
+
+function syncManagerFromContext(pi: ExtensionAPI, manager: WorkflowManager, ctx: ExtensionCommandContext): void {
+  manager.setSessionOptions({ modelRegistry: ctx.modelRegistry, model: ctx.model });
+  manager.setModelRegistry(ctx.modelRegistry);
+  manager.setMainModel(currentModelSpec(ctx));
+  manager.setThinkingLevel(pi.getThinkingLevel());
+  try {
+    manager.setSessionId(ctx.sessionManager?.getSessionId());
+  } catch {
+    // Headless command contexts may not expose a session manager.
+  }
+}
+
+async function runBuiltinWorkflow(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  script: string,
+  args: unknown,
+  options: {
+    cwd: string;
+    tools: ToolDefinition[];
+    manager?: WorkflowManager;
+    onPhase: (title: string) => void;
+  },
+): Promise<WorkflowRunResult> {
+  if (options.manager) {
+    syncManagerFromContext(pi, options.manager, ctx);
+    return options.manager.runSync(script, args, { tools: options.tools, onPhase: options.onPhase });
+  }
+  return runWorkflow(script, {
+    cwd: options.cwd,
+    args,
+    tools: options.tools,
+    session: { modelRegistry: ctx.modelRegistry, model: ctx.model },
+    modelRegistry: ctx.modelRegistry,
+    mainModel: currentModelSpec(ctx),
+    currentThinkingLevel: pi.getThinkingLevel(),
+    onPhase: options.onPhase,
+  });
 }
 
 function reportText(result: WorkflowRunResult): string {
@@ -47,7 +108,7 @@ function reportText(result: WorkflowRunResult): string {
   return JSON.stringify(result.result, null, 2);
 }
 
-export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }): void {
+export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; manager?: WorkflowManager }): void {
   const cwd = opts.cwd;
 
   if (!alreadyRegistered(pi, "deep-research")) {
@@ -58,13 +119,18 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         if (!question) return ctx.ui.notify("Usage: /deep-research <question>", "warning");
         ctx.ui.notify("Researching — running web searches across several angles…", "info");
         try {
-          const result = await runWorkflow(generateDeepResearchWorkflow(), {
-            cwd,
-            args: { question },
-            // Research agents need real web access on top of the coding tools.
-            tools: [...createCodingTools(cwd), ...createWebTools()],
-            onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
-          });
+          const result = await runBuiltinWorkflow(
+            pi,
+            ctx,
+            generateDeepResearchWorkflow(),
+            { question },
+            {
+              cwd,
+              tools: [...createCodingTools(cwd), ...createWebTools()],
+              manager: opts.manager,
+              onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
+            },
+          );
           ctx.ui.setStatus("deep-research", undefined);
           await pi.sendMessage({ customType: "deep-research", content: reportText(result), display: true });
         } catch (error) {
@@ -83,12 +149,18 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         if (!task) return ctx.ui.notify("Usage: /adversarial-review <task or question>", "warning");
         ctx.ui.notify("Reviewing — investigating then refuting each finding…", "info");
         try {
-          const result = await runWorkflow(generateAdversarialReviewWorkflow(), {
-            cwd,
-            args: { task },
-            tools: createCodingTools(cwd),
-            onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),
-          });
+          const result = await runBuiltinWorkflow(
+            pi,
+            ctx,
+            generateAdversarialReviewWorkflow(),
+            { task },
+            {
+              cwd,
+              tools: createCodingTools(cwd),
+              manager: opts.manager,
+              onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),
+            },
+          );
           ctx.ui.setStatus("adversarial-review", undefined);
           await pi.sendMessage({ customType: "adversarial-review", content: reportText(result), display: true });
         } catch (error) {
@@ -166,12 +238,18 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
 
         ctx.ui.notify(`Reviewing diff (${diffSource}) — running 7 finder angles in parallel…`, "info");
         try {
-          const result = await runWorkflow(generateCodeReviewWorkflow(), {
-            cwd,
-            args: { diff, diffSource },
-            tools: createCodingTools(cwd),
-            onPhase: (title) => ctx.ui.setStatus("code-review", `review: ${title}`),
-          });
+          const result = await runBuiltinWorkflow(
+            pi,
+            ctx,
+            generateCodeReviewWorkflow(),
+            { diff, diffSource },
+            {
+              cwd,
+              tools: createCodingTools(cwd),
+              manager: opts.manager,
+              onPhase: (title) => ctx.ui.setStatus("code-review", `review: ${title}`),
+            },
+          );
           ctx.ui.setStatus("code-review", undefined);
           await pi.sendMessage({ customType: "code-review", content: reportText(result), display: true });
         } catch (error) {
@@ -192,14 +270,23 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         }
         // Fall back to a broadly-useful default set when fewer than two are given.
         const perspectives =
-          rest.length >= 2 ? rest : ["technical", "product", "security", "user experience", "maintainability"];
+          rest.length >= 2
+            ? capCommandItems(rest, "perspectives", ctx)
+            : ["technical", "product", "security", "user experience", "maintainability"];
         ctx.ui.notify(`Analyzing from ${perspectives.length} perspectives…`, "info");
         try {
-          const result = await runWorkflow(generateMultiPerspectiveWorkflow(topic, perspectives), {
-            cwd,
-            tools: createCodingTools(cwd),
-            onPhase: (title) => ctx.ui.setStatus("multi-perspective", `perspectives: ${title}`),
-          });
+          const result = await runBuiltinWorkflow(
+            pi,
+            ctx,
+            generateMultiPerspectiveWorkflow(topic, perspectives),
+            undefined,
+            {
+              cwd,
+              tools: createCodingTools(cwd),
+              manager: opts.manager,
+              onPhase: (title) => ctx.ui.setStatus("multi-perspective", `perspectives: ${title}`),
+            },
+          );
           ctx.ui.setStatus("multi-perspective", undefined);
           // This workflow returns its prose under `synthesis`, not `report`.
           const r = result.result as { synthesis?: unknown } | undefined;
@@ -221,13 +308,21 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
         if (!scope || checks.length === 0) {
           return ctx.ui.notify('Usage: /codebase-audit <scope> "<check1>" ["<check2>" …]', "warning");
         }
-        ctx.ui.notify(`Auditing ${scope} across ${checks.length} checks…`, "info");
+        const cappedChecks = capCommandItems(checks, "checks", ctx);
+        ctx.ui.notify(`Auditing ${scope} across ${cappedChecks.length} checks…`, "info");
         try {
-          const result = await runWorkflow(generateCodebaseAuditWorkflow(scope, checks), {
-            cwd,
-            tools: createCodingTools(cwd),
-            onPhase: (title) => ctx.ui.setStatus("codebase-audit", `audit: ${title}`),
-          });
+          const result = await runBuiltinWorkflow(
+            pi,
+            ctx,
+            generateCodebaseAuditWorkflow(scope, cappedChecks),
+            undefined,
+            {
+              cwd,
+              tools: createCodingTools(cwd),
+              manager: opts.manager,
+              onPhase: (title) => ctx.ui.setStatus("codebase-audit", `audit: ${title}`),
+            },
+          );
           ctx.ui.setStatus("codebase-audit", undefined);
           await pi.sendMessage({ customType: "codebase-audit", content: reportText(result), display: true });
         } catch (error) {

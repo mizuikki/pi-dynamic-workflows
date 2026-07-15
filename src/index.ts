@@ -66,6 +66,13 @@ export {
   saveModelTierConfig,
   sortedTierNames,
 } from "./model-tier-config.js";
+export type { ModelAvailabilitySource } from "./pi-compat.js";
+export {
+  getAvailableModels,
+  getAvailableModelsSync,
+  listAvailableModelSpecs as listAvailableModelSpecsCompat,
+  listAvailableModelSpecsAsync as listAvailableModelSpecsAsyncCompat,
+} from "./pi-compat.js";
 export type { PersistedRunState, RunPersistence, RunStatus } from "./run-persistence.js";
 export { createRunPersistence, generateRunId } from "./run-persistence.js";
 export {

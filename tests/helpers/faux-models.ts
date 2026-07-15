@@ -7,6 +7,7 @@ import {
   type Models,
 } from "@earendil-works/pi-ai";
 import { registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 export interface ExplicitFauxModels {
   models: Models;
@@ -46,4 +47,23 @@ export function createExplicitFauxModels(options: Parameters<typeof createFauxCo
       unregisterApiProviders(sourceId);
     },
   };
+}
+
+/** Build a registry that exercises fork explicit Models and standard Pi providers. */
+export function createFauxModelRegistry(faux: ExplicitFauxModels): ModelRegistry {
+  const inMemory = ModelRegistry.inMemory as unknown as (auth: AuthStorage, models?: Models) => ModelRegistry;
+  const registry = inMemory(AuthStorage.inMemory(), faux.models);
+  if (registry.find(faux.provider, faux.model.id)) return registry;
+
+  const provider = faux.models.getProvider(faux.provider);
+  if (!provider) throw new Error(`missing faux provider ${faux.provider}`);
+  registry.registerProvider(faux.provider, {
+    name: provider.name,
+    baseUrl: provider.baseUrl ?? "http://workflow-explicit.invalid",
+    apiKey: "workflow-explicit-model",
+    api: faux.model.api,
+    streamSimple: (model, context, options) => provider.streamSimple(model, context, options),
+    models: provider.getModels() as never,
+  });
+  return registry;
 }

@@ -168,6 +168,8 @@ Workflow state is stored under `~/.pi/workflows` so projects do not accumulate e
 
 Use `/workflows-models` to edit these in the TUI: choose the base model first, then choose `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or the session default.
 
+Older installations may still have object-valued tiers such as `{ "model": "provider/model", "thinkingLevel": "low" }`. They are read and migrated in memory to the string form above; saving the configuration writes the new format. Invalid tiers are skipped individually, so one damaged entry does not silently enable the default capability spread. Reading never rewrites the file. If the file does not exist, the initial defaults are spread across authenticated model capabilities rather than assigning every tier to the current model.
+
 To avoid accidental keyword triggers, configure a custom trigger word in `~/.pi/workflows/settings.json`:
 
 ```json
@@ -226,7 +228,13 @@ npm install
 npm test     # biome + tsc + unit tests
 ```
 
-Every feature is also verified end-to-end against a real Pi subagent session before release.
+The standard contract uses `@earendil-works/pi-*` `0.80.6` packages from the lockfile. The Pi fork contract is fixed to commit `4a4a2ab3630a0a6f65ad655e07d6f3babe4e07f5` (`0.80.7`) and is tested without changing this checkout's `node_modules`:
+
+```bash
+PI_FORK_DIR=../pi PI_FORK_REF=4a4a2ab3 npm run test:pi-fork
+```
+
+The fork verifier builds and packs `tui`, `ai`, `agent`, and `coding-agent` in temporary directories, installs those exact tarballs into an isolated project copy, checks module provenance and fork capabilities, then runs check, build, and unit tests. Do not add sibling `file:` dependencies to `package.json` or `package-lock.json`.
 
 ## Credits
 

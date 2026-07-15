@@ -23,7 +23,7 @@ import {
   Text,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { listAvailableModelSpecs } from "./agent.js";
+import { listAvailableModelSpecsAsync } from "./agent.js";
 import {
   formatModelSpecWithThinking,
   type ModelThinkingLevel,
@@ -50,7 +50,8 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
       // available models. If the model registry is empty, fall back to the
       // current Pi model so the tiers are still usable.
       const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-      let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, listAvailableModelSpecs());
+      const availableModelSpecs = await listAvailableModelSpecsAsync(ctx.modelRegistry);
+      let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, availableModelSpecs);
       let dirty = false;
 
       const ensureFresh = (cfg: typeof config) => {
@@ -94,7 +95,7 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
             "This will reset tiers from your available model list. Continue?",
           );
           if (confirmed) {
-            ensureFresh(buildDefaultTierConfig(currentModel, listAvailableModelSpecs()));
+            ensureFresh(buildDefaultTierConfig(currentModel, await listAvailableModelSpecsAsync(ctx.modelRegistry)));
             ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
           }
         }
@@ -134,7 +135,7 @@ export async function editSingleTier(
   tiers: Record<string, string>,
   tierName: string,
 ): Promise<Record<string, string> | null> {
-  const available = listAvailableModelSpecs(ctx.modelRegistry);
+  const available = await listAvailableModelSpecsAsync(ctx.modelRegistry);
   const knownSpecs = available.length > 0 ? available : undefined;
   const current = tiers[tierName];
   const currentParts = splitModelSpecThinking(current, knownSpecs);

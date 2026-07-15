@@ -23,6 +23,8 @@
   "scripts": {
     "test": "npm run check && npm run build && npm run test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
+    "test:pi-fork": "bash scripts/test-pi-fork.sh",
+    "test:package-smoke": "bash scripts/test-package-smoke.sh",
     "check": "biome check .",
     "format": "biome format --write .",
     "lint": "biome lint .",
@@ -60,13 +62,17 @@
   },
   "author": "QuintinShaw",
   "contributors": [
-    "michaelliv (original author)"
+    {
+      "name": "michaelliv",
+      "url": "original author"
+    }
   ],
   "license": "MIT",
   "dependencies": {
     "acorn": "^8.16.0"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.80.6",
     "@earendil-works/pi-coding-agent": ">=0.80.6",
     "@earendil-works/pi-tui": ">=0.80.6",
     "typebox": "*"
@@ -80,5 +86,13 @@
     "tsx": "latest",
     "typebox": "latest",
     "typescript": "latest"
-  }
+  },
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "bugs": {
+    "url": "https://github.com/QuintinShaw/pi-dynamic-workflows/issues"
+  },
+  "homepage": "https://github.com/QuintinShaw/pi-dynamic-workflows#readme"
 }

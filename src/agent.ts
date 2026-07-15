@@ -7,8 +7,11 @@ import {
   type CreateAgentSessionOptions,
   createAgentSession,
   createCodingTools,
+  DefaultResourceLoader,
   getAgentDir,
+  type LoadExtensionsResult,
   ModelRegistry,
+  type ResourceLoader,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
@@ -19,7 +22,17 @@ import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js"
 import { applyToolPolicy } from "./agent-registry.js";
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { canonicalModelSpec, resolveModelSpecWithThinking } from "./model-spec.js";
-import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
+import {
+  loadModelTierConfig,
+  type ModelTierConfig,
+  resolveTierModel,
+  resolveTierThinkingLevel,
+} from "./model-tier-config.js";
+import {
+  listAvailableModelSpecsAsync as listAvailableModelSpecsAsyncCompat,
+  listAvailableModelSpecs as listAvailableModelSpecsCompat,
+  type ModelAvailabilitySource,
+} from "./pi-compat.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
 /**
@@ -40,6 +53,38 @@ function findJsonBlock(text: string): string | undefined {
     else if (text[i] === close && --depth === 0) return text.slice(start, i + 1);
   }
   return undefined;
+}
+
+const WORKFLOW_EXTENSION_SUFFIXES = ["extensions/workflow.ts", "extensions/workflow.js"] as const;
+
+function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
+  const normalized = pathValue.replace(/\\/g, "/");
+  return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+function filterWorkflowExtensions(result: LoadExtensionsResult): LoadExtensionsResult {
+  return {
+    ...result,
+    extensions: result.extensions.filter(
+      (extension) => !shouldFilterWorkflowExtensionPath(extension.resolvedPath ?? extension.path),
+    ),
+    errors: result.errors.filter((error) => !shouldFilterWorkflowExtensionPath(error.path)),
+  };
+}
+
+/** Keep host resources while preventing workflow.ts from recursively loading itself. */
+export function wrapResourceLoaderForWorkflowSubagents(resourceLoader: ResourceLoader): ResourceLoader {
+  return {
+    getExtensions: () => filterWorkflowExtensions(resourceLoader.getExtensions()),
+    getSkills: () => resourceLoader.getSkills(),
+    getPrompts: () => resourceLoader.getPrompts(),
+    getThemes: () => resourceLoader.getThemes(),
+    getAgentsFiles: () => resourceLoader.getAgentsFiles(),
+    getSystemPrompt: () => resourceLoader.getSystemPrompt(),
+    getAppendSystemPrompt: () => resourceLoader.getAppendSystemPrompt(),
+    extendResources: (paths) => resourceLoader.extendResources(paths),
+    reload: (options) => resourceLoader.reload(options),
+  };
 }
 
 /**
@@ -191,6 +236,15 @@ export function resolveAgentModelSpec(
   return undefined;
 }
 
+export function resolveAgentTierThinkingLevel(
+  options: { tier?: string },
+  loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
+): CreateAgentSessionOptions["thinkingLevel"] | undefined {
+  if (!options.tier) return undefined;
+  const config = loadConfig();
+  return config ? resolveTierThinkingLevel(options.tier, config) : undefined;
+}
+
 export interface WorkflowAgentOptions {
   cwd?: string;
   /** Extra tools available to the subagent in addition to the structured output tool. */
@@ -228,19 +282,14 @@ export interface WorkflowAgentOptions {
  * `provider/modelId` specs. Used to tell the workflow author which models it may
  * route agents to. Best-effort: returns [] if the registry can't be built.
  */
-export function listAvailableModelSpecs(registry?: ModelRegistry): string[] {
-  try {
-    const modelRegistry =
-      registry ??
-      (() => {
-        const dir = getAgentDir();
-        const auth = AuthStorage.create(join(dir, "auth.json"));
-        return ModelRegistry.create(auth, join(dir, "models.json"));
-      })();
-    return modelRegistry.getAvailable().map(canonicalModelSpec);
-  } catch {
-    return [];
-  }
+export type AvailableModelsSource = ModelAvailabilitySource;
+
+export function listAvailableModelSpecs(registry?: ModelAvailabilitySource): string[] {
+  return listAvailableModelSpecsCompat(registry);
+}
+
+export async function listAvailableModelSpecsAsync(registry?: ModelAvailabilitySource): Promise<string[]> {
+  return listAvailableModelSpecsAsyncCompat(registry);
 }
 
 /** Real token/cost usage for a single subagent run, read from the SDK session. */
@@ -325,6 +374,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * omitted.
    */
   modelRegistry?: ModelRegistry;
+  /** Explicit thinking override for this run; otherwise the host setting applies. */
+  thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -359,11 +410,9 @@ export class WorkflowAgent {
    * across calls once built).
    */
   private getRegistry(perRunRegistry?: ModelRegistry): ModelRegistry {
-    if (perRunRegistry) {
-      return perRunRegistry;
-    }
-    if (this.sharedRegistry) {
-      return this.sharedRegistry;
+    const providedRegistry = perRunRegistry ?? this.sharedRegistry ?? this.sessionOptions.modelRegistry;
+    if (providedRegistry) {
+      return providedRegistry;
     }
     if (!this.registry) {
       const dir = getAgentDir();
@@ -462,31 +511,56 @@ export class WorkflowAgent {
       }
     }
 
-    const agentDir = getAgentDir();
+    const agentDir = this.sessionOptions.agentDir ?? getAgentDir();
     // Key persisted sessions by the runner's project cwd (this.cwd), NOT the
     // per-call runCwd: agents working in short-lived git worktrees should still
     // group under the project's session dir instead of scattering across
     // temporary worktree paths.
+    const {
+      resourceLoader: providedResourceLoader,
+      settingsManager: providedSettingsManager,
+      modelRegistry: _sessionModelRegistry,
+      ...baseSessionOptions
+    } = this.sessionOptions;
+    const settingsManager = providedSettingsManager ?? SettingsManager.create(runCwd, agentDir);
+    const baseResourceLoader =
+      providedResourceLoader ?? new DefaultResourceLoader({ cwd: runCwd, agentDir, settingsManager });
+    const resourceLoader = wrapResourceLoaderForWorkflowSubagents(baseResourceLoader);
+    await resourceLoader.reload();
     const sessionManager = this.createSessionManager();
+    const hostRegistry = modelRegistry;
     const { session } = await createAgentSession({
       cwd: runCwd,
       agentDir,
       sessionManager,
-      // Use real SettingsManager to inherit user's default provider/model settings.
-      // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
-      // would fall back to the first available model (e.g. openai-codex) which may
-      // not have valid auth, causing silent empty responses.
-      settingsManager: SettingsManager.create(this.cwd, agentDir),
+      settingsManager,
       customTools,
-      // Per-run modelRegistry wins over the constructor's shared registry
-      // (see getRegistry() precedence above).
-      ...(options.modelRegistry || this.sharedRegistry
-        ? { modelRegistry: options.modelRegistry ?? this.sharedRegistry }
-        : {}),
-      ...this.sessionOptions,
+      ...baseSessionOptions,
+      ...(hostRegistry ? { modelRegistry: hostRegistry } : {}),
+      resourceLoader,
       // Per-call model/thinking wins over any sessionOptions defaults.
       ...(resolvedModel ? { model: resolvedModel } : {}),
-      ...(resolvedThinkingLevel ? { thinkingLevel: resolvedThinkingLevel } : {}),
+      ...(options.thinkingLevel
+        ? { thinkingLevel: options.thinkingLevel }
+        : resolvedThinkingLevel
+          ? { thinkingLevel: resolvedThinkingLevel }
+          : {}),
+    });
+
+    await session.bindExtensions({
+      commandContextActions: {
+        waitForIdle: () => session.agent.waitForIdle(),
+        newSession: async () => ({ cancelled: true }),
+        fork: async () => ({ cancelled: true }),
+        navigateTree: async () => ({ cancelled: true }),
+        switchSession: async () => ({ cancelled: true }),
+        reload: async () => {
+          await session.reload();
+        },
+      },
+      onError: (error) => {
+        console.error(`Extension error (${error.extensionPath}): ${error.error}`);
+      },
     });
 
     // Name the persisted session so it's identifiable in session pickers.

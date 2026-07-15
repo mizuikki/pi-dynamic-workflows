@@ -3,8 +3,8 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import type { WorkflowAgent } from "./agent.js";
+import type { CreateAgentSessionOptions, ModelRegistry, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { WorkflowAgent, WorkflowAgentOptions } from "./agent.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import {
@@ -19,6 +19,8 @@ import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunRe
 
 export interface ManagedRun {
   runId: string;
+  sessionId?: string;
+  tools?: ToolDefinition[];
   status: RunStatus;
   snapshot: WorkflowSnapshot;
   result?: WorkflowRunResult;
@@ -53,6 +55,8 @@ export interface ExecOptions {
   externalSignal?: AbortSignal;
   /** Called with the live snapshot on every progress event. */
   onProgress?: (snapshot: WorkflowSnapshot) => void;
+  /** Called when the workflow enters a phase. */
+  onPhase?: (title: string) => void;
   /** Hard token budget for this run; once spent reaches it, agent() throws. */
   tokenBudget?: number | null;
   /** Max concurrent agents for this execution. */
@@ -61,6 +65,8 @@ export interface ExecOptions {
   agentRetries?: number;
   /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
   confirm?: (promptText: string, options: unknown) => Promise<unknown>;
+  /** Additional tools for built-in workflows and other manager-backed runs. */
+  tools?: import("@earendil-works/pi-coding-agent").ToolDefinition[];
 }
 
 export interface WorkflowManagerOptions {
@@ -78,6 +84,10 @@ export interface WorkflowManagerOptions {
    * extension-registered providers such as ollama-cloud.
    */
   modelRegistry?: ModelRegistry;
+  /** Base host session options used by subagents; per-run model overrides win. */
+  session?: WorkflowAgentOptions["session"];
+  /** Current host thinking level, snapshotted when a run starts. */
+  thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
   /** The pi session id to tag runs with (see setSessionId). */
   sessionId?: string;
   /** Default per-agent timeout when a run does not pass agentTimeoutMs. null means no hard timeout. */
@@ -102,6 +112,8 @@ export class WorkflowManager extends EventEmitter {
   private mainModel?: string;
   /** The host Pi session's model registry, shared with subagents. */
   private modelRegistry?: ModelRegistry;
+  private sessionOptions?: WorkflowAgentOptions["session"];
+  private currentThinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
   /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
   private sessionId?: string;
   private defaultAgentTimeoutMs: number | null;
@@ -116,6 +128,8 @@ export class WorkflowManager extends EventEmitter {
     this.agent = options.agent;
     this.mainModel = options.mainModel;
     this.modelRegistry = options.modelRegistry;
+    this.sessionOptions = options.session;
+    this.currentThinkingLevel = options.thinkingLevel;
     this.sessionId = options.sessionId;
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
@@ -160,8 +174,17 @@ export class WorkflowManager extends EventEmitter {
   }
 
   /** Set the host session's model registry so subagents resolve models consistently. */
-  setModelRegistry(registry: ModelRegistry): void {
+  setModelRegistry(registry: ModelRegistry | undefined): void {
     this.modelRegistry = registry;
+  }
+
+  setSessionOptions(session: WorkflowAgentOptions["session"] | undefined): void {
+    this.sessionOptions = session;
+    if (session?.modelRegistry) this.modelRegistry = session.modelRegistry;
+  }
+
+  setThinkingLevel(level: CreateAgentSessionOptions["thinkingLevel"] | undefined): void {
+    this.currentThinkingLevel = level;
   }
 
   /**
@@ -198,6 +221,8 @@ export class WorkflowManager extends EventEmitter {
 
     const managed: ManagedRun = {
       runId,
+      sessionId: this.sessionId,
+      tools: exec.tools,
       status: "running",
       snapshot: {
         name: parsed.meta.name,
@@ -228,7 +253,7 @@ export class WorkflowManager extends EventEmitter {
         workflowName: parsed.meta.name,
         script,
         args,
-        sessionId: this.sessionId,
+        sessionId: managed.sessionId,
         status: "running",
         phases: managed.snapshot.phases,
         agents: [],
@@ -284,6 +309,7 @@ export class WorkflowManager extends EventEmitter {
     const runId = slug ? `${slug}-${generateRunId()}` : generateRunId();
     return {
       runId,
+      sessionId: this.sessionId,
       status: "running",
       snapshot: {
         name: parsed.meta.name,
@@ -321,7 +347,10 @@ export class WorkflowManager extends EventEmitter {
       concurrency,
       agentRetries,
       confirm,
+      tools,
+      onPhase,
     } = exec;
+    const runTools = tools ?? managed.tools;
     const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
     const resolvedConcurrency = concurrency ?? this.concurrency;
     const resolvedAgentRetries = agentRetries ?? this.defaultAgentRetries;
@@ -336,8 +365,17 @@ export class WorkflowManager extends EventEmitter {
         cwd: this.cwd,
         args,
         agent: this.agent,
+        tools: runTools,
         mainModel: this.mainModel,
         modelRegistry: this.modelRegistry,
+        session:
+          this.sessionOptions || this.currentThinkingLevel
+            ? {
+                ...this.sessionOptions,
+                ...(this.currentThinkingLevel ? { thinkingLevel: this.currentThinkingLevel } : {}),
+              }
+            : undefined,
+        currentThinkingLevel: this.currentThinkingLevel,
         persistAgentSessions: this.persistAgentSessions,
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
@@ -367,6 +405,7 @@ export class WorkflowManager extends EventEmitter {
           }
           this.emit("phase", { runId: managed.runId, title });
           progress();
+          onPhase?.(title);
         },
         onAgentStart: (event) => {
           managed.snapshot.agents.push({
@@ -482,7 +521,7 @@ export class WorkflowManager extends EventEmitter {
         // in workflow run storage — protect via directory permissions, not blanking.
         script: managed.script,
         args: managed.args,
-        sessionId: this.sessionId,
+        sessionId: managed.sessionId,
         journal: managed.journal,
         status: managed.status,
         // Why a usage-limit pause happened, so the navigator / a future cold start
@@ -531,7 +570,7 @@ export class WorkflowManager extends EventEmitter {
    * Pause a running workflow.
    */
   pause(runId: string): boolean {
-    const managed = this.runs.get(runId);
+    const managed = this.getRun(runId);
     if (managed?.status !== "running") return false;
 
     managed.controller.abort();
@@ -549,7 +588,7 @@ export class WorkflowManager extends EventEmitter {
   async resume(runId: string): Promise<boolean> {
     // Guard: refuse to resume a run that is already running, or one that was
     // intentionally aborted (pause/stop/Esc). Paused and failed runs can restart.
-    const active = this.runs.get(runId);
+    const active = this.getRun(runId);
     if (active?.status === "running") return false;
     if (active?.status === "aborted") return false;
 
@@ -561,6 +600,8 @@ export class WorkflowManager extends EventEmitter {
     const controller = new AbortController();
     const managed: ManagedRun = {
       runId,
+      sessionId: this.sessionId,
+      tools: active?.tools,
       status: "running",
       snapshot: {
         name: persisted.workflowName,
@@ -596,7 +637,7 @@ export class WorkflowManager extends EventEmitter {
    * Stop a running workflow.
    */
   stop(runId: string): boolean {
-    const managed = this.runs.get(runId);
+    const managed = this.getRun(runId);
     if (!managed || (managed.status !== "running" && managed.status !== "paused")) return false;
 
     managed.controller.abort();
@@ -611,7 +652,8 @@ export class WorkflowManager extends EventEmitter {
    * Get status of a specific run.
    */
   getRun(runId: string): ManagedRun | undefined {
-    return this.runs.get(runId);
+    const run = this.runs.get(runId);
+    return run && (!this.sessionId || run.sessionId === this.sessionId) ? run : undefined;
   }
 
   /**
@@ -636,14 +678,15 @@ export class WorkflowManager extends EventEmitter {
    * Get snapshot of a run.
    */
   getSnapshot(runId: string): WorkflowSnapshot | null {
-    return this.runs.get(runId)?.snapshot ?? null;
+    return this.getRun(runId)?.snapshot ?? null;
   }
 
   /**
    * Delete a persisted run.
    */
   deleteRun(runId: string): boolean {
-    const managed = this.runs.get(runId);
+    const managed = this.getRun(runId);
+    if (this.sessionId && !managed) return false;
     if (managed) this.releaseRunLease(managed);
     this.runs.delete(runId);
     return this.persistence.delete(runId);

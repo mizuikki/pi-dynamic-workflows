@@ -343,12 +343,42 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("returns null when a tier value is not a string", async () => {
+    it("skips a malformed tier without discarding other valid tiers", async () => {
       const { loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
       writeFileSync(cfgPath, '{"tiers": {"small": ["gpt-4.1-mini"]}}', "utf-8");
-      assert.equal(loadModelTierConfig(cfgPath), null, "array values should be rejected");
+      assert.deepEqual(loadModelTierConfig(cfgPath), { tiers: {} }, "array values should be skipped");
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("migrates legacy object tiers and preserves valid thinking suffixes", async () => {
+      const { loadModelTierConfig } = await loadModule();
+      const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
+      const cfgPath = join(tmpDir, "model-tiers.json");
+      writeFileSync(
+        cfgPath,
+        JSON.stringify({
+          tiers: {
+            small: { model: "provider/small", thinkingLevel: "low" },
+            medium: "provider/medium",
+            big: { model: "provider/big", thinkingLevel: "invalid" },
+          },
+        }),
+        "utf-8",
+      );
+      assert.deepEqual(loadModelTierConfig(cfgPath), {
+        tiers: { small: "provider/small:low", medium: "provider/medium", big: "provider/big" },
+      });
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("keeps an empty normalized config from falling back to capability defaults", async () => {
+      const { loadModelTierConfig } = await loadModule();
+      const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
+      const cfgPath = join(tmpDir, "model-tiers.json");
+      writeFileSync(cfgPath, JSON.stringify({ tiers: { small: { thinkingLevel: "high" } } }), "utf-8");
+      assert.deepEqual(loadModelTierConfig(cfgPath), { tiers: {} });
       rmSync(tmpDir, { recursive: true, force: true });
     });
 

@@ -16,7 +16,7 @@ import {
 import { Type } from "typebox";
 import { WorkflowAgent, wrapResourceLoaderForWorkflowSubagents } from "../src/agent.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
-import { createExplicitFauxModels } from "./helpers/faux-models.js";
+import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
 
 test("WorkflowAgent binds extensions so session_start-initialized tools work in subagents", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-ext-home-"));
@@ -75,9 +75,9 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
 
       const agent = new WorkflowAgent({
         cwd,
+        modelRegistry: createFauxModelRegistry(faux),
         session: {
           model: faux.model,
-          models: faux.models,
           resourceLoader,
           sessionManager: SessionManager.inMemory(),
           settingsManager,
@@ -123,8 +123,8 @@ test("WorkflowAgent uses the per-run cwd when loading default project settings u
 
       const agent = new WorkflowAgent({
         cwd,
+        modelRegistry: createFauxModelRegistry(faux),
         session: {
-          models: faux.models,
           sessionManager: SessionManager.inMemory(),
         },
       });

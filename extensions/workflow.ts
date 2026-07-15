@@ -6,6 +6,7 @@ import {
   installResultDelivery,
   installTaskPanel,
   installWorkflowEditor,
+  listAvailableModelSpecsAsync,
   loadWorkflowSettings,
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
@@ -31,15 +32,35 @@ export default function extension(pi: ExtensionAPI) {
     persistAgentSessions: settings.persistAgentSessions,
   });
 
-  const workflowTool = createWorkflowTool({ cwd, manager, storage });
+  let workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
+  const ensureWorkflowToolActive = () => {
+    const active = pi.getActiveTools();
+    if (!active.includes(workflowTool.name)) pi.setActiveTools([...active, workflowTool.name]);
+  };
+  const syncWorkflowRuntime = async (ctx: ExtensionContext, activateTool = false) => {
+    const wasActive = pi.getActiveTools().includes(workflowTool.name);
+    manager.setSessionOptions({ modelRegistry: ctx.modelRegistry, model: ctx.model });
+    manager.setModelRegistry(ctx.modelRegistry);
+    manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
+    manager.setThinkingLevel(pi.getThinkingLevel());
+    try {
+      manager.setSessionId(ctx.sessionManager?.getSessionId());
+    } catch {
+      // Some headless contexts do not expose a session manager.
+    }
+    const availableModelSpecs = await listAvailableModelSpecsAsync(ctx.modelRegistry);
+    workflowTool = createWorkflowTool({ cwd, manager, storage, modelRegistry: ctx.modelRegistry, availableModelSpecs });
+    pi.registerTool(workflowTool);
+    if (activateTool || wasActive) ensureWorkflowToolActive();
+  };
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
   // messages, like CC's ultracode. Shared with the editor's input hook below and
   // with the explicit /workflows run <prompt> manual trigger.
   const effort = createEffortState();
   registerWorkflowCommands(pi, manager, { storage, cwd, effort });
   registerWorkflowModelsCommand(pi);
-  registerBuiltinWorkflows(pi, { cwd });
+  registerBuiltinWorkflows(pi, { cwd, manager });
   registerAllSavedWorkflows(pi, cwd, storage, manager);
   registerEffortCommand(pi, effort);
   // "Workflows mode": type `workflow(s)` to arm a forced workflow (animated),
@@ -47,7 +68,8 @@ export default function extension(pi: ExtensionAPI) {
   // the editor itself is installed once the UI is available (session_start).
   let editorInstalled = false;
 
-  pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
+  pi.on("session_start", async (_event: unknown, ctx: ExtensionContext) => {
+    await syncWorkflowRuntime(ctx, true);
     // Tell the manager the session's main model so "explore" agents auto-tier
     // down to a lighter same-family sibling (e.g. Claude → Haiku).
     manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
@@ -86,5 +108,17 @@ export default function extension(pi: ExtensionAPI) {
       });
       editorInstalled = true;
     }
+  });
+
+  pi.on("input", async (_event, ctx) => {
+    await syncWorkflowRuntime(ctx);
+  });
+
+  pi.on("model_select", async (_event, ctx) => {
+    await syncWorkflowRuntime(ctx);
+  });
+
+  pi.on("thinking_level_select", (event) => {
+    manager.setThinkingLevel(event.level);
   });
 }

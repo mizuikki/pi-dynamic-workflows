@@ -11,7 +11,7 @@ import {
   saveWorkflowSettings,
   saveWorkflowSettingsForCwd,
 } from "../src/workflow-settings.js";
-import { withFakeHomeAsync } from "./helpers/fake-home.js";
+import { withFakeHome, withFakeHomeAsync } from "./helpers/fake-home.js";
 
 function withSettingsPath(fn: (settingsPath: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-settings-"));

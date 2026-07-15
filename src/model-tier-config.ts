@@ -16,8 +16,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { listAvailableModelSpecs } from "./agent.js";
 import { MODEL_TIERS_FILE } from "./config.js";
+import { formatModelSpecWithThinking, isThinkingLevel, type ModelThinkingLevel } from "./model-spec.js";
+import { listAvailableModelSpecs } from "./pi-compat.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -155,16 +156,54 @@ export function buildDefaultTierConfig(currentModelSpec?: string, _availableMode
 export function loadModelTierConfig(configPath?: string): ModelTierConfig | null {
   const path = configPath ?? getModelTierConfigPath();
   if (!existsSync(path)) return null;
+  const warnings: string[] = [];
+  const warn = (message: string) => warnings.push(message);
   try {
     const raw = readFileSync(path, "utf-8");
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    if (!parsed.tiers || typeof parsed.tiers !== "object") return null;
-    for (const val of Object.values(parsed.tiers)) {
-      if (typeof val !== "string") return null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      warn("root must be an object");
+      return null;
     }
-    return parsed as ModelTierConfig;
-  } catch {
+    if (!parsed.tiers || typeof parsed.tiers !== "object" || Array.isArray(parsed.tiers)) {
+      warn("tiers must be an object");
+      return null;
+    }
+
+    const tiers: Record<string, string> = {};
+    for (const [name, value] of Object.entries(parsed.tiers)) {
+      if (typeof value === "string") {
+        if (value.trim()) tiers[name] = value;
+        else warn(`tier "${name}" has an empty model spec and was skipped`);
+        continue;
+      }
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        warn(`tier "${name}" is not a model string or legacy object and was skipped`);
+        continue;
+      }
+      const model = (value as { model?: unknown }).model;
+      if (typeof model !== "string" || !model.trim()) {
+        warn(`tier "${name}" is missing a non-empty model and was skipped`);
+        continue;
+      }
+      const thinkingLevel = (value as { thinkingLevel?: unknown }).thinkingLevel;
+      if (thinkingLevel === undefined) {
+        tiers[name] = model;
+      } else if (typeof thinkingLevel === "string" && isThinkingLevel(thinkingLevel)) {
+        tiers[name] = formatModelSpecWithThinking(model, thinkingLevel as ModelThinkingLevel);
+      } else {
+        tiers[name] = model;
+        warn(`tier "${name}" has an invalid thinking level and the level was ignored`);
+      }
+    }
+    if (warnings.length > 0) {
+      console.warn(`[workflow] ignored model tier configuration issues in ${path}: ${warnings.join("; ")}`);
+    }
+    return { tiers };
+  } catch (error) {
+    console.warn(
+      `[workflow] could not load model tier config ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
     return null;
   }
 }
@@ -191,6 +230,13 @@ export function saveModelTierConfig(config: ModelTierConfig, configPath?: string
  */
 export function resolveTierModel(tier: string, config: ModelTierConfig): string | undefined {
   return config.tiers[tier];
+}
+
+export function resolveTierThinkingLevel(tier: string, config: ModelTierConfig): ModelThinkingLevel | undefined {
+  const spec = config.tiers[tier];
+  if (!spec) return undefined;
+  const suffix = spec.slice(spec.lastIndexOf(":") + 1);
+  return spec.includes(":") && isThinkingLevel(suffix) ? suffix : undefined;
 }
 
 /** Return all tier names sorted: small < medium < big, then alphabetically. */
