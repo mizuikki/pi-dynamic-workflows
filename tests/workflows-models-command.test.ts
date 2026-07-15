@@ -71,6 +71,22 @@ describe("workflows-models-command", () => {
       assert.equal(result, null);
     });
 
+    it("notifies and exits when no authenticated models are available", async () => {
+      const { editSingleTier } = await import("../src/workflows-models-command.js");
+      const custom = mock.fn(async () => "unexpected");
+      const notify = mock.fn();
+      const ctx = {
+        modelRegistry: { getAvailable: async () => [] },
+        ui: { custom, notify },
+      };
+
+      const result = await editSingleTier(ctx as never, {}, "small");
+      assert.equal(result, null);
+      assert.equal(custom.mock.callCount(), 0);
+      assert.equal(notify.mock.callCount(), 1);
+      assert.match(String(notify.mock.calls[0]?.arguments[0]), /No models available/);
+    });
+
     it("returns null when user selects the same model and default thinking (no change)", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       // Mock ctx.ui.custom to return the same model that's already selected

@@ -25,6 +25,16 @@ test("pi compatibility does not pretend an async source is synchronously availab
   assert.deepEqual(getAvailableModelsSync(source), []);
 });
 
+test("pi compatibility handles a rejecting async source in the sync path", async () => {
+  const source = {
+    getAvailable: async () => {
+      throw new Error("async auth failed");
+    },
+  };
+  assert.deepEqual(getAvailableModelsSync(source), []);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});
+
 test("pi compatibility awaits asynchronous availability and formats specs", async () => {
   const source = { getAvailable: async () => models };
   assert.deepEqual(await getAvailableModels(source), models);

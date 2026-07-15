@@ -527,7 +527,7 @@ export class WorkflowAgent {
       providedResourceLoader ?? new DefaultResourceLoader({ cwd: runCwd, agentDir, settingsManager });
     const resourceLoader = wrapResourceLoaderForWorkflowSubagents(baseResourceLoader);
     await resourceLoader.reload();
-    const sessionManager = this.createSessionManager();
+    const sessionManager = this.sessionOptions.sessionManager ?? this.createSessionManager();
     const hostRegistry = modelRegistry;
     const { session } = await createAgentSession({
       cwd: runCwd,

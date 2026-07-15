@@ -20,6 +20,10 @@ export function getAvailableModelsSync(source: ModelAvailabilitySource): readonl
       return Array.isArray(models) ? models : [];
     }
     const models = source.getAvailable();
+    if (models && typeof (models as PromiseLike<unknown>).then === "function") {
+      void Promise.resolve(models).catch(reportAvailabilityFailure);
+      return [];
+    }
     return Array.isArray(models) ? models : [];
   } catch (error) {
     reportAvailabilityFailure(error);

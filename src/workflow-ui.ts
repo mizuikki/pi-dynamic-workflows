@@ -878,7 +878,7 @@ function twoPaneHeader(
     const fill = " ".repeat(Math.max(gap, width - leftW - rightW));
     line1 = theme.fg("dim", leftText) + fill + theme.fg("dim", rightRaw);
   }
-  return [line0, line1];
+  return [line0, truncateToWidth(line1, width, "", true)];
 }
 
 function historyLabel(entry: NonNullable<WorkflowAgentSnapshot["history"]>[number]): string {

@@ -158,15 +158,22 @@ export function loadModelTierConfig(configPath?: string): ModelTierConfig | null
   if (!existsSync(path)) return null;
   const warnings: string[] = [];
   const warn = (message: string) => warnings.push(message);
+  const reportWarnings = () => {
+    if (warnings.length > 0) {
+      console.warn(`[workflow] ignored model tier configuration issues in ${path}: ${warnings.join("; ")}`);
+    }
+  };
   try {
     const raw = readFileSync(path, "utf-8");
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       warn("root must be an object");
+      reportWarnings();
       return null;
     }
     if (!parsed.tiers || typeof parsed.tiers !== "object" || Array.isArray(parsed.tiers)) {
       warn("tiers must be an object");
+      reportWarnings();
       return null;
     }
 
@@ -196,9 +203,7 @@ export function loadModelTierConfig(configPath?: string): ModelTierConfig | null
         warn(`tier "${name}" has an invalid thinking level and the level was ignored`);
       }
     }
-    if (warnings.length > 0) {
-      console.warn(`[workflow] ignored model tier configuration issues in ${path}: ${warnings.join("; ")}`);
-    }
+    reportWarnings();
     return { tiers };
   } catch (error) {
     console.warn(

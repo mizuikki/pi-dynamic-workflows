@@ -37,6 +37,7 @@ export function generateCodeReviewWorkflow(): string {
 }
 
 const MAX_DIFF_CHARS = ${MAX_DIFF_CHARS}
+const MAX_VERIFY_CANDIDATES = 30
 const rawDiff = (args && args.diff) || ''
 const diffSource = (args && args.diffSource) || 'git diff HEAD'
 const diffTruncated = rawDiff.length > MAX_DIFF_CHARS
@@ -131,6 +132,7 @@ const allCandidates = allRaw.filter((c) => {
   seen.add(key)
   return true
 })
+const candidatesToVerify = allCandidates.slice(0, MAX_VERIFY_CANDIDATES)
 
 phase('Verify')
 // NOTE: deliberately NOT using the verify() stdlib helper here. verify() only
@@ -140,8 +142,8 @@ phase('Verify')
 // below, verify()'s boolean would collapse CONFIRMED and PLAUSIBLE into one
 // bucket and lose that signal for no behavioral gain — verify({reviewers: 1})
 // is already a single agent() call under the hood, same as this.
-const verdicts = allCandidates.length > 0
-  ? await parallel(allCandidates.map((c, i) => () =>
+const verdicts = candidatesToVerify.length > 0
+  ? await parallel(candidatesToVerify.map((c, i) => () =>
       agent(
         'You are a verifier. Determine whether this code review finding is CONFIRMED, PLAUSIBLE, or REFUTED. ' +
         'CONFIRMED = you can trace the exact failure in the diff. PLAUSIBLE = concern is valid but not certain. ' +
@@ -150,6 +152,7 @@ const verdicts = allCandidates.length > 0
         'Failure scenario: ' + c.failure_scenario + diffBlock,
         {
           label: 'verify-' + (i + 1),
+          tier: 'small',
           schema: {
             type: 'object',
             properties: { verdict: { type: 'string', enum: ['CONFIRMED', 'PLAUSIBLE', 'REFUTED'] }, reason: { type: 'string' } },
@@ -160,7 +163,7 @@ const verdicts = allCandidates.length > 0
     ))
   : []
 
-const surviving = allCandidates
+const surviving = candidatesToVerify
   .map((c, i) => ({ ...c, verdict: (verdicts[i] && verdicts[i].verdict) || 'PLAUSIBLE', verifyReason: (verdicts[i] && verdicts[i].reason) || '' }))
   .filter((c) => c.verdict !== 'REFUTED')
 

@@ -136,6 +136,10 @@ export async function editSingleTier(
   tierName: string,
 ): Promise<Record<string, string> | null> {
   const available = await listAvailableModelSpecsAsync(ctx.modelRegistry);
+  if (available.length === 0) {
+    ctx.ui.notify("No models available to choose from. Authenticate a model first.", "warning");
+    return null;
+  }
   const knownSpecs = available.length > 0 ? available : undefined;
   const current = tiers[tierName];
   const currentParts = splitModelSpecThinking(current, knownSpecs);

@@ -594,6 +594,9 @@ export class WorkflowManager extends EventEmitter {
 
     const persisted = this.persistence.load(runId);
     if (!persisted?.script || persisted.status === "completed" || persisted.status === "aborted") return false;
+    // A session may resume its own persisted runs, while legacy runs without a
+    // session id remain globally resumable for backward compatibility.
+    if (this.sessionId && persisted.sessionId && persisted.sessionId !== this.sessionId) return false;
     const lease = this.persistence.acquireRunLease(runId);
     if (!lease) return false;
 

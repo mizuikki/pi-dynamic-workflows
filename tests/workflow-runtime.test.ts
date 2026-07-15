@@ -109,6 +109,43 @@ return a`,
   assert.equal(journal.length, 1, "only the final success is journaled");
 });
 
+test("runWorkflow discards shared-store writes from failed retry attempts", async () => {
+  let calls = 0;
+  const journal: JournalEntry[] = [];
+  const result = await runWorkflow(
+    `export const meta = { name: 'retry_store_cleanup', description: 'retry store cleanup' }
+const a = await agent('work', { label: 'a' })
+return a`,
+    {
+      agent: {
+        async run(
+          _prompt: string,
+          options: { systemTools?: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> },
+        ) {
+          calls++;
+          if (calls === 1) {
+            await options.systemTools
+              ?.find((tool) => tool.name === "store_put")
+              ?.execute("", {
+                key: "failed-attempt",
+                value: calls,
+              });
+            return "";
+          }
+          return "ok";
+        },
+      },
+      agentRetries: 1,
+      persistLogs: false,
+      onAgentJournal: (entry) => journal.push(entry),
+    },
+  );
+
+  assert.equal(result.result, "ok");
+  assert.equal(calls, 2);
+  assert.deepEqual(journal[0]?.storeDelta, {}, "only successful attempt writes should be journaled");
+});
+
 test("runWorkflow returns null when recoverable retries are exhausted", async () => {
   let calls = 0;
   const logs: string[] = [];

@@ -569,6 +569,7 @@ export async function runWorkflow<T = unknown>(
             });
             return result;
           } catch (error) {
+            store.commitDelta(deltaKey);
             if (options.signal?.aborted) throw error;
 
             const workflowError = wrapError(error, { agentLabel: label });

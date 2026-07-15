@@ -330,7 +330,15 @@ describe("model-tier-config", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
       writeFileSync(cfgPath, '"just a string"', "utf-8");
-      assert.equal(loadModelTierConfig(cfgPath), null);
+      const originalWarn = console.warn;
+      const warnings: unknown[][] = [];
+      console.warn = (...args: unknown[]) => warnings.push(args);
+      try {
+        assert.equal(loadModelTierConfig(cfgPath), null);
+      } finally {
+        console.warn = originalWarn;
+      }
+      assert.ok(warnings.some((args) => String(args[0]).includes("root must be an object")));
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
@@ -339,7 +347,15 @@ describe("model-tier-config", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
       writeFileSync(cfgPath, '{"tiers": "not-an-object"}', "utf-8");
-      assert.equal(loadModelTierConfig(cfgPath), null);
+      const originalWarn = console.warn;
+      const warnings: unknown[][] = [];
+      console.warn = (...args: unknown[]) => warnings.push(args);
+      try {
+        assert.equal(loadModelTierConfig(cfgPath), null);
+      } finally {
+        console.warn = originalWarn;
+      }
+      assert.ok(warnings.some((args) => String(args[0]).includes("tiers must be an object")));
       rmSync(tmpDir, { recursive: true, force: true });
     });
 

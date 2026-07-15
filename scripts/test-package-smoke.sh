@@ -12,8 +12,15 @@ TARBALL=$(find "$TEMP_ROOT" -maxdepth 1 -name '*.tgz' -print -quit)
 SMOKE_DIR="$TEMP_ROOT/consumer"
 mkdir -p "$SMOKE_DIR"
 
-if tar -tzf "$TARBALL" | rg -q '(^|/)(home|tmp)/|file:\.\./pi'; then
-  printf '%s\n' 'package tarball contains an absolute or sibling Pi path' >&2
+PACK_INSPECT_DIR="$TEMP_ROOT/inspect"
+mkdir -p "$PACK_INSPECT_DIR"
+tar -xzf "$TARBALL" -C "$PACK_INSPECT_DIR"
+if tar -tzf "$TARBALL" | rg -q '(^|/)(home|tmp)/'; then
+  printf '%s\n' 'package tarball contains an absolute path entry' >&2
+  exit 1
+fi
+if rg -q 'file:\.\./pi' "$PACK_INSPECT_DIR/package/package.json" 2>/dev/null; then
+  printf '%s\n' 'package tarball references a sibling Pi path via a file: specifier' >&2
   exit 1
 fi
 

@@ -57,29 +57,36 @@ async function withFauxSession(
   }) => Promise<void>,
 ): Promise<void> {
   const { registerFauxProvider, fauxAssistantMessage } = await loadFaux();
-  const home = mkdtempSync(join(tmpdir(), "pi-dw-i26-home-"));
-  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-i26-cwd-"));
   const prevKey = process.env.DEEPSEEK_API_KEY;
-  process.env.DEEPSEEK_API_KEY = "faux-dummy-key-not-used";
-  const faux = registerFauxProvider({
-    provider: "deepseek",
-    models: [{ id: "faux-deepseek", name: "Faux DeepSeek", contextWindow: 128000, maxTokens: 4096 }],
-  });
+  let home: string | undefined;
+  let cwd: string | undefined;
+  let faux: ReturnType<typeof registerFauxProvider> | undefined;
   try {
-    await withFakeHomeAsync(home, () =>
+    home = mkdtempSync(join(tmpdir(), "pi-dw-i26-home-"));
+    cwd = mkdtempSync(join(tmpdir(), "pi-dw-i26-cwd-"));
+    process.env.DEEPSEEK_API_KEY = "faux-dummy-key-not-used";
+    faux = registerFauxProvider({
+      provider: "deepseek",
+      models: [{ id: "faux-deepseek", name: "Faux DeepSeek", contextWindow: 128000, maxTokens: 4096 }],
+    });
+    const testHome = home;
+    const testCwd = cwd;
+    const testFaux = faux;
+    if (!testHome || !testCwd || !testFaux) throw new Error("faux session setup failed");
+    await withFakeHomeAsync(testHome, () =>
       fn({
-        cwd,
-        model: faux.getModel(),
-        setResponses: (msgs) => faux.setResponses(msgs as never),
+        cwd: testCwd,
+        model: testFaux.getModel(),
+        setResponses: (msgs) => testFaux.setResponses(msgs as never),
         fauxAssistantMessage,
       }),
     );
   } finally {
-    faux.unregister();
+    faux?.unregister();
     if (prevKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = prevKey;
-    rmSync(home, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    if (home) rmSync(home, { recursive: true, force: true });
+    if (cwd) rmSync(cwd, { recursive: true, force: true });
   }
 }
 
