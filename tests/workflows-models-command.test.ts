@@ -17,6 +17,14 @@ async function loadCommand() {
   return mod;
 }
 
+const availableModelRegistry = {
+  getAvailable: async () =>
+    ["gpt-4.1-mini", "gpt-5", "openai-codex/gpt-5.5", "openai-codex/gpt-5.6-sol", "openai/gpt-4.1-mini"].map((spec) => {
+      const [provider, ...idParts] = spec.split("/");
+      return { provider: idParts.length > 0 ? provider : "openai", id: idParts.join("/") || provider };
+    }),
+} as never;
+
 describe("workflows-models-command", () => {
   describe("registerWorkflowModelsCommand", () => {
     it("registers the workflows-models command with Pi", async () => {
@@ -60,6 +68,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       // Mock ctx.ui.custom to return null (simulating user cancelling)
       const ctx = {
+        modelRegistry: availableModelRegistry,
         ui: {
           custom: mock.fn(async () => null),
           notify: mock.fn(),
@@ -91,6 +100,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       // Mock ctx.ui.custom to return the same model that's already selected
       const ctx = {
+        modelRegistry: availableModelRegistry,
         ui: {
           custom: mock.fn(async () => "gpt-4.1-mini"),
           select: mock.fn(async () => "Default thinking (session setting)"),
@@ -107,6 +117,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       // Mock ctx.ui.custom to return a different model
       const ctx = {
+        modelRegistry: availableModelRegistry,
         ui: {
           custom: mock.fn(async () => "gpt-5"),
           select: mock.fn(async () => "Default thinking (session setting)"),
@@ -125,6 +136,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       let thinkingOptions: string[] = [];
       const ctx = {
+        modelRegistry: availableModelRegistry,
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.5"),
           select: mock.fn(async (_title: string, options: string[]) => {
@@ -146,6 +158,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       let thinkingOptions: string[] = [];
       const ctx = {
+        modelRegistry: availableModelRegistry,
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.6-sol"),
           select: mock.fn(async (_title: string, options: string[]) => {
@@ -166,6 +179,7 @@ describe("workflows-models-command", () => {
     it("preselects the base model when the current tier has a thinking suffix", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       const ctx = {
+        modelRegistry: availableModelRegistry,
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.5"),
           select: mock.fn(async () => "xhigh"),
@@ -181,6 +195,7 @@ describe("workflows-models-command", () => {
     it("selects a model when no current model exists", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       const ctx = {
+        modelRegistry: availableModelRegistry,
         ui: {
           custom: mock.fn(async () => "openai/gpt-4.1-mini"),
           select: mock.fn(async () => "Default thinking (session setting)"),
