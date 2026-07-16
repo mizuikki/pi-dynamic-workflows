@@ -6,8 +6,6 @@
  * Registers only when the adapter is enabled and no native Trellis tool is present.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   defineTool,
   type ExtensionAPI,
@@ -17,14 +15,14 @@ import {
 import { Type } from "typebox";
 import type { WorkflowAgent } from "../agent.js";
 import type { AgentHistoryEntry } from "../agent-history.js";
-import { loadAgentRegistry, resolveAgentType } from "../agent-registry.js";
+import { parseAgentDefinition } from "../agent-registry.js";
 import { isThinkingLevel, type ModelThinkingLevel } from "../model-spec.js";
-import type { SubagentContextLoader } from "../subagent-context.js";
+import { mergeSubagentEnv, type SubagentContextLoader } from "../subagent-context.js";
 import {
   buildTrellisTaskContext,
-  isTrellisAgent,
   normalizeTrellisAgentName,
   parseActiveTaskLine,
+  readTrellisAgentDefinition,
   resolveActiveTaskPath,
   resolveTrellisContextKey,
   type TrellisAdapterSettings,
@@ -163,9 +161,14 @@ function stripFrontmatter(raw: string): string {
   return raw.slice(end + 4).trim();
 }
 
-function buildDelegatedPrompt(cwd: string, agentName: string, delegatedTask: string, taskDir?: string): string {
-  const agentPath = join(cwd, ".pi", "agents", `${agentName}.md`);
-  const agentBody = existsSync(agentPath) ? stripFrontmatter(readFileSync(agentPath, "utf-8")) : "(missing)";
+function buildDelegatedPrompt(
+  cwd: string,
+  agentName: string,
+  agentDefinition: string,
+  delegatedTask: string,
+  taskDir?: string,
+): string {
+  const agentBody = stripFrontmatter(agentDefinition);
   const taskContext = taskDir
     ? buildTrellisTaskContext(cwd, taskDir, agentName)
     : ["## Trellis Task Context", "Task directory: (unresolved)", "", "### prd.md", "(missing)"].join("\n");
@@ -224,7 +227,8 @@ export function createTrellisSubagentTool(
     parameters: trellisSubagentSchema,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const agentName = normalizeTrellisAgentName(params.agent);
-      if (!isTrellisAgent(cwd, agentName)) {
+      const agentDefinition = readTrellisAgentDefinition(cwd, agentName);
+      if (agentDefinition === undefined) {
         return {
           content: [{ type: "text", text: notTrellisAgentText(agentName) }],
           details: {
@@ -263,8 +267,7 @@ export function createTrellisSubagentTool(
           }
         })();
 
-      const registry = loadAgentRegistry(cwd);
-      const agentDef = resolveAgentType(agentName, registry);
+      const agentDef = parseAgentDefinition(agentDefinition, "project", `${agentName}.md`) ?? undefined;
       // Hard shared-cwd for implement/check: ignore worktree isolation from the def.
       const forceSharedCwd =
         agentName === "trellis-implement" ||
@@ -341,7 +344,7 @@ export function createTrellisSubagentTool(
 
         // Pre-build the full prompt so context participates even when loader is skipped later.
         // Still pass contextLoader so env (TRELLIS_CONTEXT_ID) is applied by the runner.
-        const fullPrompt = buildDelegatedPrompt(cwd, agentName, taskPrompt, taskDir);
+        const fullPrompt = buildDelegatedPrompt(cwd, agentName, agentDefinition, taskPrompt, taskDir);
         const contextLoader: SubagentContextLoader = async (args) => {
           const base = options.contextLoader ? await options.contextLoader(args) : undefined;
           const key = contextKey ?? resolveTrellisContextKey(args.cwd, args.sessionId);
@@ -349,7 +352,7 @@ export function createTrellisSubagentTool(
           // Prompt already includes task context; only inject env (+ optional instructions).
           return {
             instructions: base?.instructions,
-            env: env ?? base?.env,
+            env: mergeSubagentEnv(base?.env, env),
           };
         };
 
@@ -422,6 +425,7 @@ export function createTrellisSubagentTool(
           const results = await Promise.all(details.runs.map((run, i) => runOne(run, list[i] ?? "")));
           details.final = true;
           details.updatedAt = Date.now();
+          emit(true);
           const failed = results.some((r) => r.failed);
           const text = results.map((r) => r.output).join("\n\n---\n\n");
           return {
@@ -454,6 +458,7 @@ export function createTrellisSubagentTool(
           }
           details.final = true;
           details.updatedAt = Date.now();
+          emit(true);
           return {
             content: [{ type: "text", text: prev }],
             details: cloneDetails(details),
@@ -473,6 +478,7 @@ export function createTrellisSubagentTool(
         const result = await runOne(run, prompt ?? "");
         details.final = true;
         details.updatedAt = Date.now();
+        emit(true);
         return {
           content: [{ type: "text", text: result.output }],
           details: cloneDetails(details),
@@ -487,6 +493,7 @@ export function createTrellisSubagentTool(
         }
         details.final = true;
         details.updatedAt = Date.now();
+        emit(true);
         return {
           content: [{ type: "text", text: message }],
           details: cloneDetails(details),

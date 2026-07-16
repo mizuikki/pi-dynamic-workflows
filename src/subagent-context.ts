@@ -79,9 +79,13 @@ export function shellQuoteEnvValue(value: string): string {
  */
 export function prependEnvExports(command: string, env: Record<string, string>): string {
   if (!command || !Object.keys(env).length) return command;
-  if (commandAlreadySetsEnv(command, env)) return command;
   const exports = Object.entries(env)
-    .filter(([key, value]) => key && typeof value === "string")
+    .filter(
+      ([key, value]) =>
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) &&
+        typeof value === "string" &&
+        !commandAlreadySetsEnv(command, { [key]: value }),
+    )
     .map(([key, value]) => `export ${key}=${shellQuoteEnvValue(value)}`)
     .join("; ");
   return exports ? `${exports}; ${command}` : command;

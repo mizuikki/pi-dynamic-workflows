@@ -11,7 +11,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import type { SubagentContextLoader } from "../subagent-context.js";
 
@@ -222,9 +222,9 @@ export function buildTrellisTaskContext(cwd: string, taskDir: string, agentType?
   if (!dir) {
     return ["## Trellis Task Context", "Task directory: (unresolved)", "", "### prd.md", "(missing)"].join("\n");
   }
-  const prd = readText(join(dir, "prd.md"));
-  const design = readText(join(dir, "design.md"));
-  const impl = readText(join(dir, "implement.md"));
+  const prd = readSafeProjectText(cwd, join(dir, "prd.md"));
+  const design = readSafeProjectText(cwd, join(dir, "design.md"));
+  const impl = readSafeProjectText(cwd, join(dir, "implement.md"));
   const jsonlName = agentType
     ? (TRELLIS_AGENT_JSONL[agentType] ?? TRELLIS_AGENT_JSONL[normalizeAgentName(agentType)])
     : undefined;
@@ -232,7 +232,7 @@ export function buildTrellisTaskContext(cwd: string, taskDir: string, agentType?
   let spec = "";
   if (jsonlName) {
     const chunks: string[] = [];
-    for (const line of readText(join(dir, jsonlName)).split(/\r?\n/)) {
+    for (const line of readSafeProjectText(cwd, join(dir, jsonlName)).split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
@@ -242,7 +242,7 @@ export function buildTrellisTaskContext(cwd: string, taskDir: string, agentType?
         if (!file) continue;
         const abs = resolveSafeProjectPath(cwd, file);
         if (!abs) continue;
-        const content = readText(abs);
+        const content = readSafeProjectText(cwd, abs);
         if (content) chunks.push(`## ${toRepoRelativePath(cwd, abs)}\n\n${content}`);
       } catch {
         // Skip illegal JSON lines; never block context expansion.
@@ -265,16 +265,30 @@ export function buildTrellisTaskContext(cwd: string, taskDir: string, agentType?
 
 /** True when `.pi/agents/<agent>.md` exists (native isTrellisAgent parity). */
 export function isTrellisAgent(cwd: string, agent: string): boolean {
-  const name = normalizeAgentName(agent);
-  return existsSync(join(cwd, ".pi", "agents", `${name}.md`));
+  return readTrellisAgentDefinition(cwd, agent) !== undefined;
 }
 
 export function normalizeTrellisAgentName(agent: string | undefined): string {
   return normalizeAgentName(agent ?? "trellis-implement");
 }
 
+/** Read a validated project-local Trellis agent definition without following escapes. */
+export function readTrellisAgentDefinition(cwd: string, agent: string): string | undefined {
+  const name = normalizeAgentName(agent);
+  if (!/^trellis-[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) return undefined;
+  const path = canonicalProjectPath(cwd, join(cwd, ".pi", "agents", `${name}.md`));
+  if (!path) return undefined;
+  try {
+    if (!statSync(path).isFile()) return undefined;
+    return readFileSync(path, "utf-8");
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizeAgentName(agent: string): string {
-  return agent.startsWith("trellis-") ? agent : `trellis-${agent}`;
+  const trimmed = agent.trim();
+  return trimmed.startsWith("trellis-") ? trimmed : `trellis-${trimmed}`;
 }
 
 function defaultResolveTaskPyCurrent(cwd: string): string | undefined {
@@ -358,7 +372,8 @@ function adoptSingleSessionKey(cwd: string, warn: (message: string) => void = ()
 
 function readTaskDirFromSessionKey(cwd: string, key: string): string | undefined {
   try {
-    const raw = readFileSync(join(cwd, ".trellis", ".runtime", "sessions", `${key}.json`), "utf-8");
+    const raw = readSafeProjectText(cwd, join(cwd, ".trellis", ".runtime", "sessions", `${key}.json`));
+    if (!raw) return undefined;
     const parsed = JSON.parse(raw) as { current_task?: unknown };
     const ref = typeof parsed.current_task === "string" ? parsed.current_task.trim() : "";
     if (!ref) return undefined;
@@ -385,11 +400,13 @@ function resolveTaskDirectory(cwd: string, ref: string): string | undefined {
     candidate = join(cwd, ".trellis", "tasks", cleaned);
   }
 
-  const resolved = resolve(candidate);
-  if (!existsSync(resolved)) return undefined;
-  // Fail closed: only accept task dirs inside the project cwd.
-  if (!isPathInside(cwd, resolved)) return undefined;
-  return resolved;
+  const resolved = canonicalProjectPath(cwd, candidate);
+  if (!resolved) return undefined;
+  try {
+    return statSync(resolved).isDirectory() ? resolved : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -399,10 +416,17 @@ function resolveTaskDirectory(cwd: string, ref: string): string | undefined {
 function resolveSafeProjectPath(cwd: string, ref: string): string | undefined {
   const cleaned = ref.replace(/\\/g, "/").trim();
   if (!cleaned || isAbsolute(cleaned)) return undefined;
-  const resolved = resolve(cwd, cleaned);
-  if (!isPathInside(cwd, resolved)) return undefined;
-  if (!existsSync(resolved)) return undefined;
-  return resolved;
+  return canonicalProjectPath(cwd, resolve(cwd, cleaned));
+}
+
+function canonicalProjectPath(root: string, target: string): string | undefined {
+  try {
+    const canonicalRoot = realpathSync(root);
+    const canonicalTarget = realpathSync(target);
+    return isPathInside(canonicalRoot, canonicalTarget) ? canonicalTarget : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isPathInside(root: string, target: string): boolean {
@@ -431,9 +455,12 @@ function sanitizeContextKey(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 160) || "session";
 }
 
-function readText(path: string): string {
+function readSafeProjectText(cwd: string, path: string): string {
+  const safePath = canonicalProjectPath(cwd, path);
+  if (!safePath) return "";
   try {
-    return readFileSync(path, "utf-8");
+    if (!statSync(safePath).isFile()) return "";
+    return readFileSync(safePath, "utf-8");
   } catch {
     return "";
   }

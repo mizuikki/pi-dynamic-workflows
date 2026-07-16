@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,6 +7,7 @@ import {
   buildTrellisTaskContext,
   createTrellisContextLoader,
   hasTrellisProject,
+  isTrellisAgent,
   parseActiveTaskLine,
   resolveActiveTaskPath,
   shouldEnableTrellisAdapter,
@@ -303,6 +304,35 @@ test("path safety: jsonl file rows cannot escape project cwd", () => {
   }
 });
 
+test("path safety: canonical checks reject task, spec, and agent symlinks outside the project", () => {
+  const cwd = makeProject();
+  const outside = mkdtempSync(join(tmpdir(), "pi-dw-trellis-symlink-outside-"));
+  try {
+    mkdirSync(join(cwd, ".trellis", "tasks"), { recursive: true });
+    writeFileSync(join(outside, "prd.md"), "OUTSIDE TASK", "utf-8");
+    symlinkSync(outside, join(cwd, ".trellis", "tasks", "linked"));
+    assert.equal(
+      resolveActiveTaskPath(cwd, "Active task: .trellis/tasks/linked", undefined, {}, () => {}),
+      undefined,
+    );
+
+    const taskDir = writeTask(cwd);
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    writeFileSync(join(outside, "secret.md"), "OUTSIDE SPEC", "utf-8");
+    symlinkSync(join(outside, "secret.md"), join(cwd, "docs", "linked.md"));
+    writeFileSync(join(taskDir, "implement.jsonl"), JSON.stringify({ file: "docs/linked.md" }), "utf-8");
+    assert.doesNotMatch(buildTrellisTaskContext(cwd, taskDir, "trellis-implement"), /OUTSIDE SPEC/);
+
+    mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+    symlinkSync(join(outside, "secret.md"), join(cwd, ".pi", "agents", "trellis-linked.md"));
+    assert.equal(isTrellisAgent(cwd, "trellis-linked"), false);
+    assert.equal(isTrellisAgent(cwd, "../../secret"), false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("sessionId resolves pi_<id> Trellis session map key", async () => {
   const cwd = makeProject();
   try {
@@ -395,10 +425,16 @@ test("force shared cwd for trellis-implement even when def isolation is worktree
       ["---", "name: isolated-reviewer", "tools: read", "isolation: worktree", "---", "Review body."].join("\n"),
       "utf-8",
     );
+    writeFileSync(
+      join(cwd, ".pi", "agents", "implement.md"),
+      ["---", "name: implement", "tools: read", "isolation: worktree", "---", "Generic implement body."].join("\n"),
+      "utf-8",
+    );
     writeTask(cwd);
     await runWorkflow(
       `export const meta = { name: 'shared-cwd', description: 't' };
        await agent('Active task: .trellis/tasks/04-17-demo\\nimplement', { agentType: 'trellis-implement' });
+       await agent('generic implementation', { agentType: 'implement' });
        return await agent('review', { agentType: 'isolated-reviewer' });`,
       {
         cwd,
@@ -408,10 +444,16 @@ test("force shared cwd for trellis-implement even when def isolation is worktree
       },
     );
     const implement = seen.find((entry) => entry.agentType === "trellis-implement");
+    const genericImplement = seen.find((entry) => entry.agentType === "implement");
     const review = seen.find((entry) => entry.agentType === "isolated-reviewer");
     assert.ok(implement, "implement run should happen");
     assert.ok(review, "review run should happen");
+    assert.ok(genericImplement, "generic implement run should happen");
     assert.equal(implement?.cwd, undefined, "trellis-implement must stay on shared project cwd");
+    assert.ok(
+      genericImplement?.cwd && genericImplement.cwd !== cwd,
+      `generic implement should preserve worktree isolation; got ${genericImplement?.cwd}`,
+    );
     assert.ok(review?.cwd && review.cwd !== cwd, `isolated-reviewer should receive worktree cwd; got ${review?.cwd}`);
   } finally {
     rmSync(cwd, { recursive: true, force: true });

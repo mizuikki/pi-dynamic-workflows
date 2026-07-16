@@ -123,6 +123,35 @@ test("is live per turn and deduplicates marker, exact content, and APPEND_SYSTEM
   }
 });
 
+test("does not treat a short substring as an existing prompt block", async () => {
+  const cwd = project();
+  try {
+    writeFileSync(promptPath(cwd), "security");
+    const result = await loadWorkflowMainPrompt(cwd, "Base security guidance");
+    assert.equal(result.diagnostic.state, "injected");
+    assert.equal(result.systemPrompt, `Base security guidance\n\n${WORKFLOW_MAIN_MARKER}\nsecurity`);
+  } finally {
+    cleanup(cwd);
+  }
+});
+
+test("enabling preserves malformed project settings instead of overwriting them", async () => {
+  const cwd = project();
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-malformed-home-"));
+  try {
+    await withFakeHomeAsync(home, async () => {
+      enableWorkflowMainPrompt(cwd);
+      const settingsPath = getWorkflowMainPromptSettingsPath(cwd);
+      writeFileSync(settingsPath, "{ malformed");
+      assert.throws(() => enableWorkflowMainPrompt(cwd), /unreadable or malformed/);
+      assert.equal(readFileSync(settingsPath, "utf8"), "{ malformed");
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    cleanup(cwd);
+  }
+});
+
 test("prompt opt-in is exact-project scoped with no global or parent inheritance", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-scope-home-"));
   const parent = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-scope-parent-"));

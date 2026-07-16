@@ -6,6 +6,7 @@ import {
   AuthStorage,
   type CreateAgentSessionOptions,
   createAgentSession,
+  createSyntheticSourceInfo,
   DefaultResourceLoader,
   type Extension,
   getAgentDir,
@@ -36,6 +37,7 @@ import {
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 import {
   applySubagentContext,
+  mergeSubagentEnv,
   prependEnvExports,
   type SubagentContext,
   type SubagentContextLoader,
@@ -120,6 +122,40 @@ export function isKnownTrellisChild(env: NodeJS.ProcessEnv = process.env): boole
 export interface WrapResourceLoaderOptions {
   /** Additional path predicates that drop host extensions from child sessions. */
   extensionPathFilters?: ExtensionPathFilter[];
+  /** Per-run environment exported into nested bash calls. */
+  env?: Record<string, string>;
+}
+
+const SUBAGENT_ENV_EXTENSION_PATH = "<inline:pi-dynamic-workflows-env>";
+
+function rewriteSubagentBashEnv(event: { toolName?: string; input?: unknown }, env: Record<string, string>): void {
+  if (event.toolName !== "bash") return;
+  const input = event.input as { command?: unknown } | undefined;
+  if (!input || typeof input.command !== "string") return;
+  input.command = prependEnvExports(input.command, env);
+}
+
+function createSubagentEnvExtension(env: Record<string, string>): Extension {
+  const snapshot = { ...env };
+  const handlers: Extension["handlers"] = new Map();
+  handlers.set("tool_call", [
+    ((event: { toolName?: string; input?: unknown }) => {
+      rewriteSubagentBashEnv(event, snapshot);
+    }) as never,
+  ]);
+  return {
+    path: SUBAGENT_ENV_EXTENSION_PATH,
+    resolvedPath: SUBAGENT_ENV_EXTENSION_PATH,
+    sourceInfo: createSyntheticSourceInfo(SUBAGENT_ENV_EXTENSION_PATH, {
+      source: "pi-dynamic-workflows",
+    }),
+    handlers,
+    tools: new Map(),
+    messageRenderers: new Map(),
+    commands: new Map(),
+    flags: new Map(),
+    shortcuts: new Map(),
+  };
 }
 
 /** Keep host resources while preventing workflow.ts from recursively loading itself. */
@@ -128,8 +164,12 @@ export function wrapResourceLoaderForWorkflowSubagents(
   options: WrapResourceLoaderOptions = {},
 ): ResourceLoader {
   const extraFilters = options.extensionPathFilters ?? [];
+  const envExtension = options.env ? createSubagentEnvExtension(options.env) : undefined;
   return {
-    getExtensions: () => filterExtensions(resourceLoader.getExtensions(), extraFilters),
+    getExtensions: () => {
+      const result = filterExtensions(resourceLoader.getExtensions(), extraFilters);
+      return envExtension ? { ...result, extensions: [...result.extensions, envExtension] } : result;
+    },
     getSkills: () => resourceLoader.getSkills(),
     getPrompts: () => resourceLoader.getPrompts(),
     getThemes: () => resourceLoader.getThemes(),
@@ -152,10 +192,7 @@ export function createSubagentEnvInterceptorFactory(
   const snapshot = { ...env };
   return (pi) => {
     pi.on("tool_call", (event) => {
-      if (event.toolName !== "bash") return;
-      const input = event.input as { command?: unknown };
-      if (!input || typeof input.command !== "string") return;
-      input.command = prependEnvExports(input.command, snapshot);
+      rewriteSubagentBashEnv(event, snapshot);
     });
   };
 }
@@ -707,26 +744,18 @@ export class WorkflowAgent {
       finalInstructions = withContext.instructions;
     }
 
-    const runEnv =
-      options.env && Object.keys(options.env).length
-        ? options.env
-        : loadedContext?.env && Object.keys(loadedContext.env).length
-          ? loadedContext.env
-          : undefined;
-    const envInterceptorFactory = runEnv ? createSubagentEnvInterceptorFactory(runEnv) : undefined;
+    const runEnv = mergeSubagentEnv(loadedContext?.env, options.env);
 
-    // Env interception needs DefaultResourceLoader.extensionFactories. When a custom
-    // resourceLoader is injected (tests), bash env rewrite is unavailable for that run.
     const baseResourceLoader =
       providedResourceLoader ??
       new DefaultResourceLoader({
         cwd: runCwd,
         agentDir,
         settingsManager,
-        ...(envInterceptorFactory ? { extensionFactories: [envInterceptorFactory] } : {}),
       });
     const resourceLoader = wrapResourceLoaderForWorkflowSubagents(baseResourceLoader, {
       extensionPathFilters: this.extensionPathFilters,
+      env: runEnv,
     });
     await resourceLoader.reload(
       projectTrusted === undefined

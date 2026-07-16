@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   commandAlreadySetsEnv,
   createSubagentEnvInterceptorFactory,
@@ -32,6 +32,13 @@ test("prependEnvExports injects export and skips when already present", () => {
 
 test("mergeSubagentEnv later wins", () => {
   assert.deepEqual(mergeSubagentEnv({ A: "1" }, { A: "2", B: "3" }), { A: "2", B: "3" });
+});
+
+test("prependEnvExports preserves existing keys and injects each missing valid key", () => {
+  assert.equal(
+    prependEnvExports("export A='existing'; echo ok", { A: "loader", B: "missing", "BAD-KEY": "ignored" }),
+    "export B='missing'; export A='existing'; echo ok",
+  );
 });
 
 test("createSubagentEnvInterceptorFactory rewrites bash command via tool_call", () => {
@@ -121,11 +128,13 @@ test("WorkflowAgent applies env interceptor so bash sees TRELLIS_CONTEXT_ID", as
         fauxAssistantMessage("done"),
       ]);
       const settingsManager = SettingsManager.create(cwd, agentDir);
+      const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
       const agent = new WorkflowAgent({
         cwd,
         modelRegistry: createFauxModelRegistry(faux),
         session: {
           model: faux.model,
+          resourceLoader,
           sessionManager: SessionManager.inMemory(),
           settingsManager,
         },

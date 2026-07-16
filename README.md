@@ -358,7 +358,7 @@ Dispatch prompt protocol (same as native): the delegated prompt should start wit
 - Does **not** implement Trellis phase state machines, finish-work, or journal ownership
 - Does **not** fork a second workflow manager
 - Subagent child sessions filter the host workflow extension (and Trellis extension paths when the adapter is on) so they do not re-load host orchestration tools
-- **Shared cwd only for implement work**: `isolation: "worktree"` is still available for general workflows, but Trellis implement agents should run in the shared project cwd
+- **Shared cwd for implement/check work**: `isolation: "worktree"` remains available for general workflows, but Trellis implement and check agents run in the shared project cwd
 - In-process execution (not a `pi` CLI subprocess): shares host credentials/registry; differs from native subprocess isolation
 
 ### Examples

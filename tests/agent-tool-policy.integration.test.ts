@@ -545,6 +545,29 @@ test("T13/T14: context loader no-op by default; prefix changes prompt and resume
   assert.notEqual(journal[0]?.hash, journal2[0]?.hash, "prefix must change resume hash");
 });
 
+test("resume hash includes canonical context instructions and environment", async () => {
+  const { runWorkflow } = await import("../src/workflow.js");
+  const script = `export const meta = { name: 'ctx_hash', description: 'c' }; return await agent('TASK');`;
+  const runWithContext = async (instructions: string, env: Record<string, string>) => {
+    const journal: Array<{ hash: string }> = [];
+    await runWorkflow(script, {
+      agent: { run: async () => "ok" },
+      persistLogs: false,
+      contextLoader: async () => ({ instructions, env }),
+      onAgentJournal: (entry) => journal.push(entry),
+    });
+    return journal[0]?.hash;
+  };
+
+  const original = await runWithContext("ROLE A", { B: "2", A: "1" });
+  const reordered = await runWithContext("ROLE A", { A: "1", B: "2" });
+  const changedInstructions = await runWithContext("ROLE B", { A: "1", B: "2" });
+  const changedEnv = await runWithContext("ROLE A", { A: "1", B: "3" });
+  assert.equal(original, reordered, "environment key order must not affect resume identity");
+  assert.notEqual(original, changedInstructions);
+  assert.notEqual(original, changedEnv);
+});
+
 test("filterShadowingBuiltinCustomTools drops coding builtins but keeps extras", () => {
   assert.deepEqual(
     filterShadowingBuiltinCustomTools([

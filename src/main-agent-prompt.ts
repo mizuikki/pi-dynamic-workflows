@@ -139,6 +139,9 @@ function writeProjectPromptSettings(cwd: string, settings: Record<string, unknow
 /** Enable the exact-project prompt opt-in, preserving other project settings. */
 export function enableWorkflowMainPrompt(cwd: string): void {
   const current = readProjectSettingsObject(cwd);
+  if (current === undefined) {
+    throw new Error("Project workflow settings are unreadable or malformed");
+  }
   writeProjectPromptSettings(cwd, { ...current, [MAIN_PROMPT_ENABLED_KEY]: true });
 }
 
@@ -264,6 +267,18 @@ function hasWorkflowMainPromptAccess(cwd: string, access: WorkflowMainPromptAcce
   return access.allowHeadless === true || isWorkflowMainPromptEnabled(cwd);
 }
 
+function containsCompletePromptBlock(systemPrompt: string, promptText: string): boolean {
+  let offset = systemPrompt.indexOf(promptText);
+  while (offset !== -1) {
+    const end = offset + promptText.length;
+    const hasStartBoundary = offset === 0 || systemPrompt.slice(offset - 2, offset) === "\n\n";
+    const hasEndBoundary = end === systemPrompt.length || systemPrompt.slice(end, end + 2) === "\n\n";
+    if (hasStartBoundary && hasEndBoundary) return true;
+    offset = systemPrompt.indexOf(promptText, offset + 1);
+  }
+  return false;
+}
+
 /**
  * Read the project-local main-agent prompt with a bounded descriptor-based read.
  * This intentionally has no cache: each call represents one agent turn.
@@ -283,7 +298,7 @@ export async function loadWorkflowMainPrompt(
 
   const result = await readWorkflowMainPromptFile(cwd);
   if (!result.text) return { systemPrompt, diagnostic: result.diagnostic };
-  if (systemPrompt.includes(result.text)) {
+  if (containsCompletePromptBlock(systemPrompt, result.text)) {
     return {
       systemPrompt,
       diagnostic: { ...result.diagnostic, state: "skipped", reason: "content-present" },

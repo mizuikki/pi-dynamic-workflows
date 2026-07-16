@@ -309,6 +309,7 @@ test("D10: onUpdate receives running + final progress details", async () => {
     assert.equal(result.details?.final, true);
     assert.equal(result.details?.kind, "trellis-subagent-progress");
     assert.ok(last.details?.kind === "trellis-subagent-progress");
+    assert.equal(last.details?.final, true);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

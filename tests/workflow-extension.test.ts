@@ -248,6 +248,9 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
     handlers,
     registeredTools,
     getActiveTools: () => activeTools,
+    setActiveTools: (value: string[]) => {
+      activeTools = [...value];
+    },
     setWorkflowMainPromptFlag: (value: boolean) => {
       workflowMainPromptFlag = value;
     },
@@ -278,6 +281,37 @@ test("registers trellis_subagent on model_select when native extension is absent
     assert.ok(names.includes("workflow"), `expected workflow tool; got ${names.join(",")}`);
     assert.ok(names.includes("trellis_subagent"), `expected trellis_subagent; got ${names.join(",")}`);
     assert.ok(harness.getActiveTools().includes("trellis_subagent"));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("trellis_subagent remains inactive after explicit deactivation", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-trellis-inactive-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-trellis-inactive-cwd-"));
+  try {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(join(cwd, ".trellis"), { recursive: true });
+    const harness = makeExtensionHarness({ cwd });
+    await withFakeHomeAsync(home, async () => {
+      const originalCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      const modelSelect = harness.handlers.get("model_select");
+      const input = harness.handlers.get("input");
+      assert.ok(modelSelect);
+      assert.ok(input);
+      await modelSelect?.({ type: "model_select" }, harness.ctx);
+      assert.ok(harness.getActiveTools().includes("trellis_subagent"));
+      harness.setActiveTools(["read"]);
+      await input?.({ type: "input" }, harness.ctx);
+      assert.equal(harness.getActiveTools().includes("trellis_subagent"), false);
+    });
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

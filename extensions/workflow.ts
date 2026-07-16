@@ -162,6 +162,8 @@ export default function extension(pi: ExtensionAPI) {
       manager.setSessionId(hostSessionId);
     } catch {
       // Some headless contexts do not expose a session manager.
+      hostSessionId = undefined;
+      manager.setSessionId(undefined);
     }
     const availableModelSpecs = await listAvailableModelSpecsAsync(ctx.modelRegistry);
     workflowTool = createWorkflowTool({ cwd, manager, storage, modelRegistry: ctx.modelRegistry, availableModelSpecs });
@@ -169,7 +171,6 @@ export default function extension(pi: ExtensionAPI) {
     if (activateTool || wasActive) ensureWorkflowToolActive();
     // Register / re-check trellis_subagent after tools are live.
     tryRegisterTrellisSubagent(ctx);
-    ensureTrellisSubagentActive();
   };
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
   // messages, like CC's ultracode. Shared with the editor's input hook below and
