@@ -235,3 +235,67 @@ test("wrapResourceLoaderForWorkflowSubagents drops the local workflow extension"
     "workflow extension errors should be filtered out",
   );
 });
+
+test("wrapResourceLoader filters workflow path and tool/command identities", () => {
+  const extension = (path: string, resolvedPath: string, toolNames: string[] = [], commandNames: string[] = []) =>
+    ({
+      path,
+      resolvedPath,
+      sourceInfo: {} as never,
+      handlers: new Map(),
+      tools: new Map(toolNames.map((name) => [name, {} as never])),
+      messageRenderers: new Map(),
+      commands: new Map(commandNames.map((name) => [name, {} as never])),
+      flags: new Map(),
+      shortcuts: new Map(),
+    }) as Extension;
+  const baseResult = {
+    extensions: [
+      extension("extensions/workflow.mjs", "/tmp/project/extensions/safe.ts"),
+      extension("extensions/safe.ts", "C:\\PROJECT\\EXTENSIONS\\WORKFLOW.CJS"),
+      extension("extensions/safe-filter.ts", "/tmp/project/other-filter.ts"),
+      extension("<inline:workflow>", "<inline:workflow>", ["workflow"]),
+      extension("<inline:prompt>", "<inline:prompt>", [], ["workflows-prompt"]),
+      extension("extensions/other.ts", "/tmp/project/extensions/other.ts"),
+    ],
+    errors: [
+      { path: "extensions/safe-error.ts", resolvedPath: "/tmp/project/extensions/workflow.js", error: "workflow" },
+      { path: "extensions/other-error.ts", error: "other" },
+    ],
+    runtime: {} as never,
+  } as LoadExtensionsResult;
+  const baseLoader = {
+    getExtensions: () => baseResult,
+    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }),
+    getAgentsFiles: () => ({ agentsFiles: [] }),
+    getSystemPrompt: () => undefined,
+    getAppendSystemPrompt: () => [],
+    extendResources: () => {},
+    reload: async () => {},
+  } as ResourceLoader;
+  const seen: string[] = [];
+
+  const result = wrapResourceLoaderForWorkflowSubagents(baseLoader, {
+    extensionPathFilters: [
+      (pathValue) => {
+        seen.push(pathValue);
+        return pathValue.toLowerCase().includes("other");
+      },
+    ],
+  }).getExtensions();
+
+  assert.deepEqual(
+    result.extensions.map((entry) => entry.path),
+    [],
+    "workflow variants and custom-filtered extensions should all be removed",
+  );
+  assert.deepEqual(
+    result.errors.map((entry) => entry.path),
+    [],
+    "workflow variants and custom-filtered errors should all be removed",
+  );
+  assert.ok(seen.includes("extensions/safe-filter.ts"), "custom filters see the relative extension path");
+  assert.ok(seen.includes("/tmp/project/other-filter.ts"), "custom filters see resolved paths too");
+});

@@ -44,6 +44,7 @@ export type {
 export {
   createSubagentEnvInterceptorFactory,
   filterShadowingBuiltinCustomTools,
+  isKnownTrellisChild,
   listAvailableModelSpecs,
   listAvailableModelSpecsAsync,
   resolveSessionToolAllowlist,
@@ -93,6 +94,24 @@ export {
 } from "./errors.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
+export {
+  disableWorkflowMainPrompt,
+  enableWorkflowMainPrompt,
+  formatWorkflowMainPromptDiagnostic,
+  getWorkflowMainPromptSettingsPath,
+  inspectWorkflowMainPrompt,
+  isWorkflowMainPromptEnabled,
+  loadWorkflowMainPrompt,
+  MAX_WORKFLOW_MAIN_BYTES,
+  registerWorkflowMainPromptCommand,
+  registerWorkflowMainPromptFlag,
+  WORKFLOW_MAIN_MARKER,
+  WORKFLOW_MAIN_RELATIVE_PATH,
+  type WorkflowMainPromptAccessOptions,
+  type WorkflowMainPromptDiagnostic,
+  type WorkflowMainPromptResult,
+  type WorkflowMainPromptState,
+} from "./main-agent-prompt.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";
 export { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 export type { ModelThinkingLevel, ResolvedModelSpec } from "./model-spec.js";

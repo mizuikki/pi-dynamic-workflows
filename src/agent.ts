@@ -7,6 +7,7 @@ import {
   type CreateAgentSessionOptions,
   createAgentSession,
   DefaultResourceLoader,
+  type Extension,
   getAgentDir,
   type LoadExtensionsResult,
   ModelRegistry,
@@ -60,26 +61,60 @@ function findJsonBlock(text: string): string | undefined {
   return undefined;
 }
 
-const WORKFLOW_EXTENSION_SUFFIXES = ["extensions/workflow.ts", "extensions/workflow.js"] as const;
+const WORKFLOW_EXTENSION_SUFFIXES = [
+  "extensions/workflow.ts",
+  "extensions/workflow.js",
+  "extensions/workflow.mjs",
+  "extensions/workflow.cjs",
+] as const;
 
 export type ExtensionPathFilter = (pathValue: string) => boolean;
 
 function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
-  const normalized = pathValue.replace(/\\/g, "/");
+  const normalized = pathValue.replace(/\\/g, "/").toLowerCase();
   return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+function extensionPathValues(extension: { path: string; resolvedPath?: string }): string[] {
+  return [extension.path, extension.resolvedPath].filter((pathValue): pathValue is string => Boolean(pathValue));
+}
+
+/**
+ * The workflow extension is normally identified by its path. Inline extension
+ * factories have synthetic paths, so use the feature's own tool/command names
+ * as provenance-independent identity checks for child sessions. The tool check
+ * also covers a host command collision where command registration is skipped.
+ */
+function isWorkflowPolicyExtension(extension: Extension): boolean {
+  return extension.tools?.has("workflow") === true || extension.commands?.has("workflows-prompt") === true;
+}
+
+function configuredFilterMatches(pathValues: string[], filters: ExtensionPathFilter[]): boolean {
+  return filters.some((filter) => pathValues.some((pathValue) => filter(pathValue)));
 }
 
 function filterExtensions(
   result: LoadExtensionsResult,
   extraFilters: ExtensionPathFilter[] = [],
 ): LoadExtensionsResult {
-  const shouldDrop = (pathValue: string) =>
-    shouldFilterWorkflowExtensionPath(pathValue) || extraFilters.some((filter) => filter(pathValue));
+  const shouldDrop = (pathValues: string[]) =>
+    pathValues.some((pathValue) => shouldFilterWorkflowExtensionPath(pathValue)) ||
+    configuredFilterMatches(pathValues, extraFilters);
   return {
     ...result,
-    extensions: result.extensions.filter((extension) => !shouldDrop(extension.resolvedPath ?? extension.path)),
-    errors: result.errors.filter((error) => !shouldDrop(error.path)),
+    extensions: result.extensions.filter(
+      (extension) => !isWorkflowPolicyExtension(extension) && !shouldDrop(extensionPathValues(extension)),
+    ),
+    errors: result.errors.filter((error) => {
+      const errorWithResolvedPath = error as { path: string; resolvedPath?: string };
+      return !shouldDrop(extensionPathValues(errorWithResolvedPath));
+    }),
   };
+}
+
+/** True only for explicit child-process markers used by supported launchers. */
+export function isKnownTrellisChild(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.TRELLIS_SUBAGENT_CHILD === "1" || env.PI_DYNAMIC_WORKFLOWS_CHILD === "1";
 }
 
 export interface WrapResourceLoaderOptions {
@@ -702,7 +737,7 @@ export class WorkflowAgent {
     );
     const sessionManager = this.sessionOptions.sessionManager ?? this.createSessionManager();
     const hostRegistry = modelRegistry;
-    const { session } = await createAgentSession({
+    const childSessionOptions: CreateAgentSessionOptions = {
       cwd: runCwd,
       agentDir,
       sessionManager,
@@ -721,7 +756,8 @@ export class WorkflowAgent {
       customTools,
       ...(sessionToolAllowlist ? { tools: sessionToolAllowlist } : {}),
       ...(excludeTools.length ? { excludeTools } : {}),
-    });
+    };
+    const { session } = await createAgentSession(childSessionOptions);
 
     await session.bindExtensions({
       commandContextActions: {

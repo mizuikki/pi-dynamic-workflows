@@ -114,6 +114,9 @@ The same model — on Pi, plus the production pieces a real run needs:
                             per-phase/per-agent view (with tokens, cost, and a live tok/s rate)
 /workflows-progress-max <N> cap agents shown per phase in detailed mode (1-1000, default 8)
 /workflows-models           map the small / medium / big tiers to real models, optionally with thinking levels
+/workflows-prompt enable    confirm and enable the project-local main-agent prompt
+/workflows-prompt disable   disable the project-local main-agent prompt
+/workflows-prompt status    inspect project prompt metadata (path, state, size, and hash only)
 /ultracode [off]            ultracode: auto-arm an exhaustive workflow for every substantive message
 /effort off|high|ultra      finer control over the standing opt-in (high = thorough, ultra = ultracode)
 
@@ -179,6 +182,53 @@ To avoid accidental keyword triggers, configure a custom trigger word in `~/.pi/
 ```
 
 The default `"workflow"` preserves the legacy behavior and also matches `"workflows"`. Custom trigger words are literal, case-insensitive terms with no spaces and no leading slash; for example, `"pi-workflow"` does not match `"workflow"`, `"workflows"`, or `"pi-workflows"`.
+
+## Main-agent project prompt
+
+Create `.pi/WORKFLOW_MAIN.md` when a project needs instructions for the main Pi
+agent only. The file is the single source of truth for this feature. It is read
+live once per agent turn and appended after the system prompt with a stable
+marker, so edits take effect without `/reload` and an already-marked prompt is
+never duplicated. Empty, whitespace-only, missing, oversized, invalid UTF-8,
+symlink, directory, and unreadable files are ignored safely. The maximum file
+size is 64 KiB.
+
+Loading requires both Pi project trust and an extension-owned, exact-project
+opt-in. Pi's implicit trust/default-trust settings alone never authorize this
+file. In an interactive session, run `/workflows-prompt enable` and confirm the
+dialog. The opt-in is stored outside the repository at
+`~/.pi/workflows/projects/<project-key>/settings.json`; there is no global or
+parent-directory inheritance. `/workflows-prompt disable` removes the project
+entry. In headless modes, the extension never prompts or writes authorization.
+Use the explicit per-run `--workflow-main-prompt` flag for a headless run; it
+does not persist. Pi's `--approve` remains only Pi's trust gate and does not
+replace this opt-in.
+The exported load/inspect helpers also fail closed unless the caller supplies
+the trust gate and either this persisted opt-in or the explicit per-run access
+option.
+
+Workflow child sessions do not receive this prompt. `WorkflowAgent` filters the
+host workflow extension by its known path and registered workflow tool/command,
+which also protects custom and inline resource loaders. Native Trellis children
+are recognized through `TRELLIS_SUBAGENT_CHILD=1`; package-owned launchers may
+use `PI_DYNAMIC_WORKFLOWS_CHILD=1`. `TRELLIS_CONTEXT_ID` alone is not a child
+identity signal.
+
+`/workflows-prompt status` is read-only and reports only the relative path,
+`project` source, state/reason, byte and character counts, and a short SHA-256
+hash. It never prints prompt contents or records a diagnostic session entry.
+
+### Migrating from `APPEND_SYSTEM.md`
+
+Pi continues to load `.pi/APPEND_SYSTEM.md` exactly as before. Move only the
+instructions that should apply to the main agent into `.pi/WORKFLOW_MAIN.md`;
+leave shared or child-session instructions in `.pi/APPEND_SYSTEM.md`. There is
+no automatic migration and this extension never reads `APPEND_SYSTEM.md`.
+If the exact same text is present in both files, it is injected only once.
+
+Custom resource loaders continue to provide `.pi/APPEND_SYSTEM.md` to child
+sessions, while the host workflow policy is filtered before child extensions
+bind. Inline resource-loader paths are covered by the extension identity check.
 
 ## Reference
 

@@ -9,12 +9,17 @@ import {
   installResultDelivery,
   installTaskPanel,
   installWorkflowEditor,
+  isKnownTrellisChild,
+  isWorkflowMainPromptEnabled,
   listAvailableModelSpecsAsync,
+  loadWorkflowMainPrompt,
   loadWorkflowSettings,
   registerAllSavedWorkflows,
   registerBuiltinWorkflows,
   registerEffortCommand,
   registerWorkflowCommands,
+  registerWorkflowMainPromptCommand,
+  registerWorkflowMainPromptFlag,
   registerWorkflowModelsCommand,
   saveWorkflowSettingsForCwd,
   shouldEnableTrellisAdapter,
@@ -58,6 +63,27 @@ export default function extension(pi: ExtensionAPI) {
 
   let workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (isKnownTrellisChild(process.env)) return;
+    let trusted = false;
+    try {
+      trusted = ctx.isProjectTrusted() === true;
+    } catch {
+      // A broken trust provider must not make project instructions executable.
+    }
+    if (!trusted) return;
+
+    const explicitlyEnabled = pi.getFlag?.("workflow-main-prompt") === true;
+    if (!explicitlyEnabled && !isWorkflowMainPromptEnabled(ctx.cwd)) return;
+
+    const result = await loadWorkflowMainPrompt(ctx.cwd, event.systemPrompt, {
+      projectTrusted: true,
+      allowHeadless: explicitlyEnabled,
+    });
+
+    return result.systemPrompt === event.systemPrompt ? undefined : { systemPrompt: result.systemPrompt };
+  });
 
   // Optional trellis_subagent: register only when adapter wants it, native
   // extension files are absent (auto), and no tool with that name exists yet.
@@ -150,6 +176,8 @@ export default function extension(pi: ExtensionAPI) {
   // with the explicit /workflows run <prompt> manual trigger.
   const effort = createEffortState();
   registerWorkflowCommands(pi, manager, { storage, cwd, effort });
+  registerWorkflowMainPromptFlag(pi);
+  registerWorkflowMainPromptCommand(pi);
   registerWorkflowModelsCommand(pi);
   registerBuiltinWorkflows(pi, { cwd, manager });
   registerAllSavedWorkflows(pi, cwd, storage, manager);
