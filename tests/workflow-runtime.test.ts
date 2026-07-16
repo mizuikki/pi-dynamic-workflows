@@ -538,6 +538,46 @@ test("callSeq is deterministic under parallel()", async () => {
   );
 });
 
+test("context loading reserves maxAgents quota before yielding", async () => {
+  const counter = countingAgent();
+  const script = `export const meta = { name: 'context_quota', description: 'quota' }
+const first = agent('first').catch(() => 'first blocked')
+const second = agent('second').catch(() => 'second blocked')
+return await Promise.all([first, second])`;
+  const result = await runWorkflow<string[]>(script, {
+    agent: counter.runner,
+    persistLogs: false,
+    maxAgents: 1,
+    contextLoader: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return undefined;
+    },
+  });
+  assert.equal(result.agentCount, 1);
+  assert.equal(counter.state.calls, 1);
+  assert.deepEqual(Array.from(result.result), ["ran:first", "second blocked"]);
+});
+
+test("context loader completion order does not reorder journal call indexes", async () => {
+  const journal: JournalEntry[] = [];
+  const script = `export const meta = { name: 'context_order', description: 'order' }
+return await parallel(['slow', 'medium', 'fast'].map((prompt) => () => agent(prompt)))`;
+  await runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+    contextLoader: async ({ prompt }) => {
+      const delay = prompt === "slow" ? 30 : prompt === "medium" ? 15 : 0;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return undefined;
+    },
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+  assert.deepEqual(
+    journal.sort((left, right) => left.index - right.index).map((entry) => entry.result),
+    ["ran:slow", "ran:medium", "ran:fast"],
+  );
+});
+
 test("workflow() runs a nested saved workflow and shares the global agent counter", async () => {
   const child = `export const meta = { name: 'child', description: 'c' }
 const r = await agent('child task', { label: 'c' })

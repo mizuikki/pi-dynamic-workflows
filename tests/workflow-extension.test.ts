@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import extension from "../extensions/workflow.js";
+import {
+  disableWorkflowMainPrompt,
+  enableWorkflowMainPrompt,
+  getWorkflowMainPromptSettingsPath,
+} from "../src/main-agent-prompt.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 test("workflow extension refreshes live model guidance on model_select without re-enabling the tool", async () => {
@@ -91,6 +96,253 @@ test("workflow extension refreshes live model guidance on model_select without r
       false,
       "model_select refresh should not re-enable the workflow tool",
     );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("workflow extension injects the live host prompt only for trusted host turns", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-home-"));
+  const hostCwd = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-host-"));
+  const runCwd = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-run-"));
+  const promptPath = join(runCwd, ".pi", "WORKFLOW_MAIN.md");
+  const originalChild = process.env.TRELLIS_SUBAGENT_CHILD;
+  const originalDynamicChild = process.env.PI_DYNAMIC_WORKFLOWS_CHILD;
+  const originalContextId = process.env.TRELLIS_CONTEXT_ID;
+  try {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(join(runCwd, ".pi"), { recursive: true });
+    writeFileSync(promptPath, "host-only instructions");
+    const harness = makeExtensionHarness({ cwd: runCwd });
+    await withFakeHomeAsync(home, async () => {
+      const originalCwd = process.cwd();
+      process.chdir(hostCwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      const handler = harness.handlers.get("before_agent_start");
+      assert.ok(handler, "before_agent_start handler should be registered");
+      assert.equal(
+        await handler({ type: "before_agent_start", systemPrompt: "base" }, harness.ctx),
+        undefined,
+        "missing opt-in must skip the prompt file",
+      );
+      enableWorkflowMainPrompt(runCwd);
+      const baseEvent = { type: "before_agent_start", systemPrompt: "earlier prompt" };
+      const injected = await handler(baseEvent, harness.ctx);
+      assert.equal(
+        (injected as { systemPrompt?: string } | undefined)?.systemPrompt,
+        "earlier prompt\n\n<!-- pi-dynamic-workflows:workflow-main -->\nhost-only instructions",
+      );
+
+      disableWorkflowMainPrompt(runCwd);
+      assert.equal(await handler(baseEvent, harness.ctx), undefined, "disable takes effect without a reload");
+      enableWorkflowMainPrompt(runCwd);
+
+      writeFileSync(promptPath, "rewritten instructions");
+      const rewritten = await handler(baseEvent, harness.ctx);
+      assert.match((rewritten as { systemPrompt?: string }).systemPrompt ?? "", /rewritten instructions/);
+
+      harness.ctx.isProjectTrusted = () => false;
+      assert.equal(await handler(baseEvent, harness.ctx), undefined, "untrusted projects fail closed");
+      harness.ctx.isProjectTrusted = () => true;
+
+      process.env.TRELLIS_CONTEXT_ID = "pi_session";
+      assert.notEqual(await handler(baseEvent, harness.ctx), undefined, "context id alone is not child identity");
+      process.env.TRELLIS_SUBAGENT_CHILD = "1";
+      assert.equal(await handler(baseEvent, harness.ctx), undefined);
+      delete process.env.TRELLIS_SUBAGENT_CHILD;
+      process.env.PI_DYNAMIC_WORKFLOWS_CHILD = "1";
+      assert.equal(await handler(baseEvent, harness.ctx), undefined);
+    });
+  } finally {
+    if (originalChild === undefined) delete process.env.TRELLIS_SUBAGENT_CHILD;
+    else process.env.TRELLIS_SUBAGENT_CHILD = originalChild;
+    if (originalDynamicChild === undefined) delete process.env.PI_DYNAMIC_WORKFLOWS_CHILD;
+    else process.env.PI_DYNAMIC_WORKFLOWS_CHILD = originalDynamicChild;
+    if (originalContextId === undefined) delete process.env.TRELLIS_CONTEXT_ID;
+    else process.env.TRELLIS_CONTEXT_ID = originalContextId;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(hostCwd, { recursive: true, force: true });
+    rmSync(runCwd, { recursive: true, force: true });
+  }
+});
+
+test("explicit workflow-main-prompt flag injects for one run without persistence", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-flag-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-flag-cwd-"));
+  try {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "WORKFLOW_MAIN.md"), "headless explicit prompt");
+    const harness = makeExtensionHarness({ cwd });
+    await withFakeHomeAsync(home, async () => {
+      extension(harness.pi);
+      const handler = harness.handlers.get("before_agent_start");
+      assert.ok(handler);
+      assert.equal(await handler({ type: "before_agent_start", systemPrompt: "base" }, harness.ctx), undefined);
+      harness.setWorkflowMainPromptFlag(true);
+      const result = await handler({ type: "before_agent_start", systemPrompt: "base" }, harness.ctx);
+      assert.match((result as { systemPrompt?: string }).systemPrompt ?? "", /headless explicit prompt/);
+      assert.equal(existsSync(getWorkflowMainPromptSettingsPath(cwd)), false);
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefinition[]; activeTools?: string[] }) {
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void> | void>();
+  const registeredTools = options.registeredTools ?? [];
+  let activeTools = options.activeTools ?? ["read"];
+  let workflowMainPromptFlag = false;
+  const pi = {
+    registerTool: (tool: ToolDefinition) => {
+      registeredTools.push(tool);
+    },
+    registerCommand: () => {},
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) => {
+      handlers.set(event, handler);
+    },
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (toolNames: string[]) => {
+      activeTools = [...toolNames];
+    },
+    getThinkingLevel: () => "medium",
+    getFlag: (name: string) => (name === "workflow-main-prompt" ? workflowMainPromptFlag : undefined),
+    getAllTools: () => registeredTools.map((tool) => ({ name: tool.name })),
+  } as unknown as ExtensionAPI;
+  const ctx = {
+    cwd: options.cwd,
+    hasUI: false,
+    mode: "print",
+    ui: {
+      setWidget: () => {},
+      setStatus: () => {},
+      setTitle: () => {},
+      notify: () => {},
+    },
+    modelRegistry: {
+      getAvailable: async () => [],
+    },
+    model: undefined,
+    sessionManager: {
+      getSessionId: () => "session-trellis",
+    },
+    isIdle: () => true,
+    isProjectTrusted: () => true,
+    signal: undefined,
+    abort: () => {},
+    hasPendingMessages: () => false,
+    shutdown: () => {},
+    getContextUsage: () => undefined,
+    compact: () => {},
+    getSystemPrompt: () => "",
+  } as unknown as ExtensionContext;
+  return {
+    pi,
+    handlers,
+    registeredTools,
+    getActiveTools: () => activeTools,
+    setActiveTools: (value: string[]) => {
+      activeTools = [...value];
+    },
+    setWorkflowMainPromptFlag: (value: boolean) => {
+      workflowMainPromptFlag = value;
+    },
+    ctx,
+  };
+}
+
+test("registers trellis_subagent on model_select when native extension is absent", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-trellis-ext-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-trellis-ext-cwd-"));
+  try {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(join(cwd, ".trellis"), { recursive: true });
+    const harness = makeExtensionHarness({ cwd });
+    await withFakeHomeAsync(home, async () => {
+      const originalCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      const modelSelect = harness.handlers.get("model_select");
+      assert.ok(modelSelect, "model_select handler should be registered");
+      await modelSelect?.({ type: "model_select" }, harness.ctx);
+    });
+    const names = harness.registeredTools.map((tool) => tool.name);
+    assert.ok(names.includes("workflow"), `expected workflow tool; got ${names.join(",")}`);
+    assert.ok(names.includes("trellis_subagent"), `expected trellis_subagent; got ${names.join(",")}`);
+    assert.ok(harness.getActiveTools().includes("trellis_subagent"));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("trellis_subagent remains inactive after explicit deactivation", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-trellis-inactive-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-trellis-inactive-cwd-"));
+  try {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(join(cwd, ".trellis"), { recursive: true });
+    const harness = makeExtensionHarness({ cwd });
+    await withFakeHomeAsync(home, async () => {
+      const originalCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      const modelSelect = harness.handlers.get("model_select");
+      const input = harness.handlers.get("input");
+      assert.ok(modelSelect);
+      assert.ok(input);
+      await modelSelect?.({ type: "model_select" }, harness.ctx);
+      assert.ok(harness.getActiveTools().includes("trellis_subagent"));
+      harness.setActiveTools(["read"]);
+      await input?.({ type: "input" }, harness.ctx);
+      assert.equal(harness.getActiveTools().includes("trellis_subagent"), false);
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("skips trellis_subagent registration when tool already registered", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-trellis-dup-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-trellis-dup-cwd-"));
+  try {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(join(cwd, ".trellis"), { recursive: true });
+    const harness = makeExtensionHarness({
+      cwd,
+      registeredTools: [{ name: "trellis_subagent" } as ToolDefinition],
+      activeTools: ["read", "trellis_subagent"],
+    });
+    await withFakeHomeAsync(home, async () => {
+      const originalCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      const modelSelect = harness.handlers.get("model_select");
+      assert.ok(modelSelect);
+      await modelSelect?.({ type: "model_select" }, harness.ctx);
+    });
+    const trellisRegs = harness.registeredTools.filter((tool) => tool.name === "trellis_subagent");
+    assert.equal(trellisRegs.length, 1, "must not double-register trellis_subagent");
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
