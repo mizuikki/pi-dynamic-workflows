@@ -18,6 +18,7 @@ import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 import { createAgentStoreTools, SharedStore } from "./shared-store.js";
+import { applySubagentContext } from "./subagent-context.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
@@ -409,10 +410,41 @@ export async function runWorkflow<T = unknown>(
     // onModelResolved once the subagent session is created.
     let displayModel = modelSpec ?? options.mainModel;
 
+    // Call-site isolation for resume hashing (requested value from options/def).
+    // Worktree success/fallback is decided later and does not rewrite this hash.
+    // Trellis implement/check agents always share the project cwd (native parity).
+    const forceSharedCwd = isTrellisSharedCwdAgent(agentOptions.agentType);
+    const requestedIsolation = forceSharedCwd ? undefined : (agentOptions.isolation ?? agentDef?.isolation);
+
+    // Apply optional context loaders (e.g. Trellis) before hashing so promptPrefix
+    // participates in resume identity. The agent runner skips re-loading.
+    let agentPrompt = prompt;
+    let contextInstructions: string | undefined;
+    let loadedEnv: Record<string, string> | undefined;
+    if (options.contextLoader) {
+      const loadedContext = await options.contextLoader({
+        cwd: baseCwd,
+        agentType: agentOptions.agentType,
+        prompt,
+        sessionId: options.sessionId,
+      });
+      const applied = applySubagentContext(prompt, undefined, loadedContext);
+      agentPrompt = applied.prompt;
+      contextInstructions = applied.instructions;
+      loadedEnv = loadedContext?.env;
+    }
+
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
-    const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef));
+    const callHash = hashAgentCall(
+      agentPrompt,
+      modelSpec,
+      assignedPhase,
+      agentOptions,
+      agentDefinitionKey(agentDef),
+      requestedIsolation,
+    );
     // Store delta key: callIndex alone is NOT run-unique. A nested workflow()
     // call (see workflowFn below) shares this run's SharedStore instance but
     // restarts its own callSeq at 0, so a parent agent and a concurrently
@@ -465,7 +497,7 @@ export async function runWorkflow<T = unknown>(
       // is no sentinel to suppress a def's isolation at the call site. Remove the agentType
       // or override with a def that has no isolation field if opt-out is needed.
       let worktree: Worktree | undefined;
-      const resolvedIsolation = agentOptions.isolation ?? agentDef?.isolation;
+      const resolvedIsolation = forceSharedCwd ? undefined : (agentOptions.isolation ?? agentDef?.isolation);
       if (resolvedIsolation === "worktree") {
         worktree = await createWorktree(baseCwd, `${runId}-${callIndex}-${label}`);
         if (!worktree.isolated) log(`isolation ignored for "${label}" (${worktree.reason})`);
@@ -500,20 +532,30 @@ export async function runWorkflow<T = unknown>(
             throwIfAborted();
 
             // Run agent with timeout
+            const baseInstructions = buildAgentInstructions(
+              assignedPhase,
+              agentOptions,
+              agentDef,
+              activeIsolation,
+              unavailableIsolation,
+            );
+            const mergedInstructions =
+              [baseInstructions, contextInstructions].filter(Boolean).join("\n\n") || undefined;
             const result = await withTimeout(
-              agentRunner.run(prompt, {
+              agentRunner.run(agentPrompt, {
                 label,
                 // Identifiable name for persisted sessions (persistAgentSessions).
                 sessionName: `workflow:${runId} ${label}`,
                 schema: agentOptions.schema,
                 signal: options.signal,
-                instructions: buildAgentInstructions(
-                  assignedPhase,
-                  agentOptions,
-                  agentDef,
-                  activeIsolation,
-                  unavailableIsolation,
-                ),
+                instructions: mergedInstructions,
+                agentType: agentOptions.agentType,
+                // Only skip when this run pre-applied context for the resume hash.
+                // Keeps constructor-level loaders working for custom agent runners.
+                // Pass env separately so nested bash still gets TRELLIS_CONTEXT_ID.
+                ...(options.contextLoader
+                  ? { skipContextLoading: true as const, ...(loadedEnv ? { env: loadedEnv } : {}) }
+                  : {}),
                 model: modelSpec,
                 tier: agentOptions.tier,
                 thinkingLevel: tierThinkingLevel,
@@ -1110,14 +1152,30 @@ function hashCheckpoint(promptText: string, options: CheckpointOptions): string 
   return createHash("sha256").update(identity).digest("hex");
 }
 
+function isTrellisSharedCwdAgent(agentType: string | undefined): boolean {
+  if (!agentType) return false;
+  const name = agentType.startsWith("trellis-") ? agentType : `trellis-${agentType}`;
+  return name === "trellis-implement" || name === "trellis-check";
+}
+
 function hashAgentCall(
   prompt: string,
   model: string | undefined,
   phase: string | undefined,
   options: AgentOptions,
   agentDefKey: string | null,
+  isolation?: "worktree",
 ): string {
-  const identity = JSON.stringify({
+  const identity: {
+    prompt: string;
+    model: string | null;
+    tier: string | null;
+    phase: string | null;
+    agentType: string | null;
+    agentDef: string | null;
+    schema: unknown;
+    isolation?: "worktree";
+  } = {
     prompt,
     model: model ?? null,
     tier: options.tier ?? null,
@@ -1127,8 +1185,12 @@ function hashAgentCall(
     // this call's cached result on a later resume.
     agentDef: agentDefKey,
     schema: options.schema ?? null,
-  });
-  return createHash("sha256").update(identity).digest("hex");
+  };
+  // Preserve pre-isolation serialized shape when isolation is absent so old
+  // journals without the field still replay. Call-site isolation (options or
+  // agentDef) intentionally changes the hash.
+  if (isolation) identity.isolation = isolation;
+  return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
 }
 
 function buildAgentInstructions(

@@ -10,6 +10,18 @@ import { dirname, join } from "node:path";
 import { MAX_AGENT_RETRIES, MAX_CONCURRENCY, normalizeKeywordTriggerWord } from "./config.js";
 import { workflowHomeDir, workflowProjectPaths } from "./workflow-paths.js";
 
+export interface TrellisAdapterSetting {
+  /** Default "auto": enable only when the project has a `.trellis/` directory. */
+  enabled?: "off" | "auto" | "on";
+  /** Auto-prepend `Active task: <path>` when resolved without that line. Default true. */
+  autoPrependActiveTaskLine?: boolean;
+  /**
+   * Register host `trellis_subagent` tool when native Trellis extension is absent.
+   * Default "auto".
+   */
+  registerSubagentTool?: "off" | "auto" | "on";
+}
+
 export interface WorkflowSettings {
   keywordTriggerEnabled?: boolean;
   /** Literal keyword that arms workflows mode from interactive input. */
@@ -35,6 +47,11 @@ export interface WorkflowSettings {
    * truncation (default 400). String/`verdict`/`summary` results are never truncated.
    */
   deliveredResultMaxChars?: number;
+  /**
+   * Optional Trellis context adapter. Read-only task context injection for
+   * subagents; never owns Trellis lifecycle (create/start/archive/phases).
+   */
+  trellisAdapter?: TrellisAdapterSetting;
 }
 
 export interface WorkflowSettingsStore {
@@ -151,7 +168,25 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   }
   const deliveredResultMaxChars = normalizeInteger(raw.deliveredResultMaxChars, 1, 1_000_000);
   if (deliveredResultMaxChars !== undefined) settings.deliveredResultMaxChars = deliveredResultMaxChars;
+  const trellisAdapter = normalizeTrellisAdapter(raw.trellisAdapter);
+  if (trellisAdapter) settings.trellisAdapter = trellisAdapter;
   return settings;
+}
+
+function normalizeTrellisAdapter(value: unknown): TrellisAdapterSetting | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const out: TrellisAdapterSetting = {};
+  if (raw.enabled === "off" || raw.enabled === "auto" || raw.enabled === "on") {
+    out.enabled = raw.enabled;
+  }
+  if (typeof raw.autoPrependActiveTaskLine === "boolean") {
+    out.autoPrependActiveTaskLine = raw.autoPrependActiveTaskLine;
+  }
+  if (raw.registerSubagentTool === "off" || raw.registerSubagentTool === "auto" || raw.registerSubagentTool === "on") {
+    out.registerSubagentTool = raw.registerSubagentTool;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function normalizeInteger(value: unknown, min: number, max: number): number | undefined {

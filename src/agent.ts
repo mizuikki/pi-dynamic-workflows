@@ -6,7 +6,6 @@ import {
   AuthStorage,
   type CreateAgentSessionOptions,
   createAgentSession,
-  createCodingTools,
   DefaultResourceLoader,
   getAgentDir,
   type LoadExtensionsResult,
@@ -34,6 +33,12 @@ import {
   type ModelAvailabilitySource,
 } from "./pi-compat.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
+import {
+  applySubagentContext,
+  prependEnvExports,
+  type SubagentContext,
+  type SubagentContextLoader,
+} from "./subagent-context.js";
 
 /**
  * Find a JSON object/array in free-form text: a fenced ```json block if present,
@@ -57,25 +62,39 @@ function findJsonBlock(text: string): string | undefined {
 
 const WORKFLOW_EXTENSION_SUFFIXES = ["extensions/workflow.ts", "extensions/workflow.js"] as const;
 
+export type ExtensionPathFilter = (pathValue: string) => boolean;
+
 function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
   const normalized = pathValue.replace(/\\/g, "/");
   return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
-function filterWorkflowExtensions(result: LoadExtensionsResult): LoadExtensionsResult {
+function filterExtensions(
+  result: LoadExtensionsResult,
+  extraFilters: ExtensionPathFilter[] = [],
+): LoadExtensionsResult {
+  const shouldDrop = (pathValue: string) =>
+    shouldFilterWorkflowExtensionPath(pathValue) || extraFilters.some((filter) => filter(pathValue));
   return {
     ...result,
-    extensions: result.extensions.filter(
-      (extension) => !shouldFilterWorkflowExtensionPath(extension.resolvedPath ?? extension.path),
-    ),
-    errors: result.errors.filter((error) => !shouldFilterWorkflowExtensionPath(error.path)),
+    extensions: result.extensions.filter((extension) => !shouldDrop(extension.resolvedPath ?? extension.path)),
+    errors: result.errors.filter((error) => !shouldDrop(error.path)),
   };
 }
 
+export interface WrapResourceLoaderOptions {
+  /** Additional path predicates that drop host extensions from child sessions. */
+  extensionPathFilters?: ExtensionPathFilter[];
+}
+
 /** Keep host resources while preventing workflow.ts from recursively loading itself. */
-export function wrapResourceLoaderForWorkflowSubagents(resourceLoader: ResourceLoader): ResourceLoader {
+export function wrapResourceLoaderForWorkflowSubagents(
+  resourceLoader: ResourceLoader,
+  options: WrapResourceLoaderOptions = {},
+): ResourceLoader {
+  const extraFilters = options.extensionPathFilters ?? [];
   return {
-    getExtensions: () => filterWorkflowExtensions(resourceLoader.getExtensions()),
+    getExtensions: () => filterExtensions(resourceLoader.getExtensions(), extraFilters),
     getSkills: () => resourceLoader.getSkills(),
     getPrompts: () => resourceLoader.getPrompts(),
     getThemes: () => resourceLoader.getThemes(),
@@ -83,8 +102,61 @@ export function wrapResourceLoaderForWorkflowSubagents(resourceLoader: ResourceL
     getSystemPrompt: () => resourceLoader.getSystemPrompt(),
     getAppendSystemPrompt: () => resourceLoader.getAppendSystemPrompt(),
     extendResources: (paths) => resourceLoader.extendResources(paths),
-    reload: (options) => resourceLoader.reload(options),
+    reload: (reloadOptions) => resourceLoader.reload(reloadOptions),
   };
+}
+
+/**
+ * Build an ephemeral inline extension that rewrites child bash commands to export
+ * the given env map (e.g. TRELLIS_CONTEXT_ID). Closure-captured per run so parallel
+ * agents never cross-contaminate via process.env.
+ */
+export function createSubagentEnvInterceptorFactory(
+  env: Record<string, string>,
+): (pi: import("@earendil-works/pi-coding-agent").ExtensionAPI) => void {
+  const snapshot = { ...env };
+  return (pi) => {
+    pi.on("tool_call", (event) => {
+      if (event.toolName !== "bash") return;
+      const input = event.input as { command?: unknown };
+      if (!input || typeof input.command !== "string") return;
+      input.command = prependEnvExports(input.command, snapshot);
+    });
+  };
+}
+
+/** Built-in coding-tool names owned by the SDK session (cwd-bound). */
+const SDK_BUILTIN_TOOL_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+
+/**
+ * Drop custom tools that only re-provide SDK built-ins. Callers historically
+ * passed `createCodingTools(cwd)` as `options.tools`; if those stay as
+ * customTools they shadow the session's cwd-bound built-ins and break worktree
+ * isolation (tools keep the host cwd). True extras (web tools, SharedStore)
+ * are kept.
+ */
+export function filterShadowingBuiltinCustomTools<T extends { name: string }>(tools: T[]): T[] {
+  return tools.filter((tool) => !SDK_BUILTIN_TOOL_NAMES.has(tool.name));
+}
+
+/**
+ * Resolve the SDK `tools` allowlist for a subagent session.
+ * When `toolNames` is set, system/schema tool names are merged so allowlists never
+ * strip SharedStore or structured_output. When unset, returns undefined so the SDK
+ * default active set is preserved.
+ */
+export function resolveSessionToolAllowlist(options: {
+  toolNames?: string[];
+  systemToolNames?: string[];
+  includeStructuredOutput?: boolean;
+}): string[] | undefined {
+  if (!options.toolNames?.length) return undefined;
+  const names = new Set(options.toolNames);
+  for (const name of options.systemToolNames ?? []) {
+    if (name) names.add(name);
+  }
+  if (options.includeStructuredOutput) names.add("structured_output");
+  return [...names];
 }
 
 /**
@@ -247,7 +319,10 @@ export function resolveAgentTierThinkingLevel(
 
 export interface WorkflowAgentOptions {
   cwd?: string;
-  /** Extra tools available to the subagent in addition to the structured output tool. */
+  /**
+   * Extra custom tools registered for every subagent in addition to SDK built-ins
+   * and any per-run tools. Not a base coding-tool set replacement.
+   */
   tools?: ToolDefinition[];
   /** Override any createAgentSession option (model, authStorage, resourceLoader, etc.). */
   session?: Partial<CreateAgentSessionOptions>;
@@ -275,6 +350,17 @@ export interface WorkflowAgentOptions {
    * Default: false (current behavior).
    */
   persistAgentSessions?: boolean;
+  /**
+   * Project trust flag forwarded to SettingsManager / resource-loader reload.
+   * When omitted, the SDK default (trusted) is preserved.
+   */
+  projectTrusted?: boolean;
+  /** Optional pluggable context loader (e.g. Trellis task context). */
+  contextLoader?: SubagentContextLoader;
+  /** Session id passed to context loaders (host Pi session when available). */
+  sessionId?: string;
+  /** Additional extension path filters for child sessions (default: workflow only). */
+  extensionPathFilters?: ExtensionPathFilter[];
 }
 
 /**
@@ -360,10 +446,9 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    */
   maxSchemaRetries?: number;
   /**
-   * Tools that are always injected AFTER the tool-policy filter (`toolNames` /
-   * `disallowedToolNames`), so they are available even under a restrictive
-   * allowlist. Used by the workflow runtime to inject shared-store tools into
-   * every agent regardless of its agentType definition.
+   * Tools always registered after the tool-policy filter and protected from
+   * `disallowedToolNames` / SDK `excludeTools`. Used by the workflow runtime to
+   * inject SharedStore tools into every agent regardless of agentType.
    */
   systemTools?: ToolDefinition[];
   /**
@@ -376,6 +461,23 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   modelRegistry?: ModelRegistry;
   /** Explicit thinking override for this run; otherwise the host setting applies. */
   thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
+  /** Optional per-run context loader override. */
+  contextLoader?: SubagentContextLoader;
+  /** Optional per-run session id for context loaders. */
+  sessionId?: string;
+  /** agentType name for context loaders (e.g. Trellis jsonl mapping). */
+  agentType?: string;
+  /**
+   * When true, skip constructor/per-run context loaders. Used when the caller
+   * (workflow.ts) already applied context before computing the resume hash.
+   */
+  skipContextLoading?: boolean;
+  /**
+   * Per-run environment map for the nested bash interceptor (e.g. TRELLIS_CONTEXT_ID).
+   * Preferred over re-loading context when skipContextLoading is true. Never mutates
+   * process.env — applied via a per-session tool_call rewrite.
+   */
+  env?: Record<string, string>;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -384,11 +486,16 @@ export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef 
 
 export class WorkflowAgent {
   private readonly cwd: string;
-  private readonly baseTools: ToolDefinition[];
+  /** Extra custom tools from the constructor (not a base coding-tool set). */
+  private readonly extraTools: ToolDefinition[];
   private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
   private readonly persistAgentSessions: boolean;
   private readonly instructions?: string;
   private readonly mainModel?: string;
+  private readonly projectTrusted?: boolean;
+  private readonly contextLoader?: SubagentContextLoader;
+  private readonly sessionId?: string;
+  private readonly extensionPathFilters: ExtensionPathFilter[];
   /** Shared registry from the host session, when provided. */
   private readonly sharedRegistry?: ModelRegistry;
   /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
@@ -396,12 +503,16 @@ export class WorkflowAgent {
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
-    this.baseTools = options.tools ?? createCodingTools(this.cwd);
+    this.extraTools = options.tools ?? [];
     this.sessionOptions = options.session ?? {};
     this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.instructions = options.instructions;
     this.mainModel = options.mainModel;
     this.sharedRegistry = options.modelRegistry;
+    this.projectTrusted = options.projectTrusted;
+    this.contextLoader = options.contextLoader;
+    this.sessionId = options.sessionId;
+    this.extensionPathFilters = options.extensionPathFilters ?? [];
   }
 
   /**
@@ -465,26 +576,31 @@ export class WorkflowAgent {
     options: AgentRunOptions<TSchemaDef> = {},
   ): Promise<AgentRunResult<TSchemaDef>> {
     const capture: StructuredOutputCapture<any> = { called: false, value: undefined };
-    // Per-call cwd (e.g. a worktree) needs coding tools bound to that directory,
-    // since tools capture their cwd at construction and can't be relocated.
     const runCwd = options.cwd ?? this.cwd;
-    const baseTools = runCwd === this.cwd ? this.baseTools : createCodingTools(runCwd);
-    // Apply the agentType tool policy BEFORE adding structured_output, so a
-    // restrictive allowlist never strips the schema tool.
-    const customTools: ToolDefinition[] = applyToolPolicy(
-      [...baseTools, ...(options.tools ?? [])],
-      options.toolNames,
-      options.disallowedToolNames,
-    );
 
-    // System tools bypass the allowlist/denylist filter (e.g. shared-store tools).
-    if (options.systemTools?.length) {
-      customTools.push(...options.systemTools);
-    }
-
-    if (options.schema) {
-      customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
-    }
+    // User/custom extras only. Built-in coding tools come from the SDK session
+    // (bound to runCwd). System + schema tools are appended AFTER policy so they
+    // always bypass agentType allow/deny lists (SharedStore contract).
+    const userCustomTools = filterShadowingBuiltinCustomTools([...this.extraTools, ...(options.tools ?? [])]);
+    const systemTools = options.systemTools ?? [];
+    const systemToolNames = systemTools.map((tool) => tool.name).filter(Boolean);
+    const filteredUserCustomTools = applyToolPolicy(userCustomTools, options.toolNames, options.disallowedToolNames);
+    const schemaTool = options.schema
+      ? (createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition)
+      : undefined;
+    const customTools: ToolDefinition[] = [
+      ...filteredUserCustomTools,
+      ...systemTools,
+      ...(schemaTool ? [schemaTool] : []),
+    ];
+    const sessionToolAllowlist = resolveSessionToolAllowlist({
+      toolNames: options.toolNames,
+      systemToolNames,
+      includeStructuredOutput: Boolean(options.schema),
+    });
+    // Denylist must not strip SharedStore / structured_output (system tools).
+    const systemNameSet = new Set([...systemToolNames, ...(schemaTool ? ["structured_output"] : [])]);
+    const excludeTools = (options.disallowedToolNames ?? []).filter((name) => !systemNameSet.has(name));
 
     // Resolve the model spec (explicit model > tier > session default). This
     // composes with phase-based routing in workflow.ts, which only supplies
@@ -522,11 +638,68 @@ export class WorkflowAgent {
       modelRegistry: _sessionModelRegistry,
       ...baseSessionOptions
     } = this.sessionOptions;
-    const settingsManager = providedSettingsManager ?? SettingsManager.create(runCwd, agentDir);
+    const projectTrusted = this.projectTrusted;
+    const settingsManager =
+      providedSettingsManager ??
+      SettingsManager.create(runCwd, agentDir, projectTrusted === undefined ? undefined : { projectTrusted });
+    if (projectTrusted !== undefined && providedSettingsManager) {
+      try {
+        providedSettingsManager.setProjectTrusted(projectTrusted);
+      } catch {
+        // Best-effort: older/injected managers may not expose setProjectTrusted.
+      }
+    }
+    // Load pluggable context (Trellis, etc.) before session creation so we can
+    // install a per-run bash env interceptor as an inline extension factory.
+    let loadedContext: SubagentContext | undefined;
+    let finalPrompt = prompt;
+    let finalInstructions = options.instructions;
+    if (!options.skipContextLoading) {
+      const contextLoader = options.contextLoader ?? this.contextLoader;
+      loadedContext = contextLoader
+        ? await contextLoader({
+            cwd: this.cwd,
+            agentType: options.agentType,
+            prompt,
+            sessionId: options.sessionId ?? this.sessionId,
+          })
+        : undefined;
+      // Task context is applied to the user prompt (and optional instructions), never
+      // into the system-prompt cache. When workflow.ts pre-applies context for resume
+      // hashing, it sets skipContextLoading to avoid double injection.
+      const withContext = applySubagentContext(prompt, options.instructions, loadedContext);
+      finalPrompt = withContext.prompt;
+      finalInstructions = withContext.instructions;
+    }
+
+    const runEnv =
+      options.env && Object.keys(options.env).length
+        ? options.env
+        : loadedContext?.env && Object.keys(loadedContext.env).length
+          ? loadedContext.env
+          : undefined;
+    const envInterceptorFactory = runEnv ? createSubagentEnvInterceptorFactory(runEnv) : undefined;
+
+    // Env interception needs DefaultResourceLoader.extensionFactories. When a custom
+    // resourceLoader is injected (tests), bash env rewrite is unavailable for that run.
     const baseResourceLoader =
-      providedResourceLoader ?? new DefaultResourceLoader({ cwd: runCwd, agentDir, settingsManager });
-    const resourceLoader = wrapResourceLoaderForWorkflowSubagents(baseResourceLoader);
-    await resourceLoader.reload();
+      providedResourceLoader ??
+      new DefaultResourceLoader({
+        cwd: runCwd,
+        agentDir,
+        settingsManager,
+        ...(envInterceptorFactory ? { extensionFactories: [envInterceptorFactory] } : {}),
+      });
+    const resourceLoader = wrapResourceLoaderForWorkflowSubagents(baseResourceLoader, {
+      extensionPathFilters: this.extensionPathFilters,
+    });
+    await resourceLoader.reload(
+      projectTrusted === undefined
+        ? undefined
+        : {
+            resolveProjectTrust: async () => projectTrusted,
+          },
+    );
     const sessionManager = this.sessionOptions.sessionManager ?? this.createSessionManager();
     const hostRegistry = modelRegistry;
     const { session } = await createAgentSession({
@@ -534,7 +707,6 @@ export class WorkflowAgent {
       agentDir,
       sessionManager,
       settingsManager,
-      customTools,
       ...baseSessionOptions,
       ...(hostRegistry ? { modelRegistry: hostRegistry } : {}),
       resourceLoader,
@@ -545,6 +717,10 @@ export class WorkflowAgent {
         : resolvedThinkingLevel
           ? { thinkingLevel: resolvedThinkingLevel }
           : {}),
+      // Re-assert after baseSessionOptions so caller overrides cannot drop the allowlist.
+      customTools,
+      ...(sessionToolAllowlist ? { tools: sessionToolAllowlist } : {}),
+      ...(excludeTools.length ? { excludeTools } : {}),
     });
 
     await session.bindExtensions({
@@ -595,7 +771,11 @@ export class WorkflowAgent {
         removeHistoryListener = session.subscribe(() => maybeEmitHistory());
       }
 
-      await session.prompt(this.buildPrompt(prompt, options as AgentRunOptions<any>, Boolean(options.schema)));
+      const promptOptions = {
+        ...(options as AgentRunOptions<any>),
+        instructions: finalInstructions,
+      };
+      await session.prompt(this.buildPrompt(finalPrompt, promptOptions, Boolean(options.schema)));
 
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
 

@@ -99,6 +99,12 @@ export interface WorkflowManagerOptions {
    * standard sessions directory. Default false (in-memory, discarded).
    */
   persistAgentSessions?: boolean;
+  /** Project trust flag forwarded to subagent SettingsManager (host inheritance). */
+  projectTrusted?: boolean;
+  /** Optional subagent context loader (e.g. Trellis read-only task context). */
+  contextLoader?: WorkflowAgentOptions["contextLoader"];
+  /** Extra extension path filters for child sessions. */
+  extensionPathFilters?: WorkflowAgentOptions["extensionPathFilters"];
 }
 
 export class WorkflowManager extends EventEmitter {
@@ -119,6 +125,9 @@ export class WorkflowManager extends EventEmitter {
   private defaultAgentTimeoutMs: number | null;
   private defaultAgentRetries: number;
   private persistAgentSessions: boolean;
+  private projectTrusted?: boolean;
+  private contextLoader?: WorkflowAgentOptions["contextLoader"];
+  private extensionPathFilters?: WorkflowAgentOptions["extensionPathFilters"];
 
   constructor(options: WorkflowManagerOptions = {}) {
     super();
@@ -134,6 +143,9 @@ export class WorkflowManager extends EventEmitter {
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
     this.persistAgentSessions = options.persistAgentSessions ?? false;
+    this.projectTrusted = options.projectTrusted;
+    this.contextLoader = options.contextLoader;
+    this.extensionPathFilters = options.extensionPathFilters;
     this.persistence = createRunPersistence(this.cwd);
     this.recoverStaleRuns();
   }
@@ -185,6 +197,18 @@ export class WorkflowManager extends EventEmitter {
 
   setThinkingLevel(level: CreateAgentSessionOptions["thinkingLevel"] | undefined): void {
     this.currentThinkingLevel = level;
+  }
+
+  setProjectTrusted(trusted: boolean | undefined): void {
+    this.projectTrusted = trusted;
+  }
+
+  setContextLoader(loader: WorkflowAgentOptions["contextLoader"] | undefined): void {
+    this.contextLoader = loader;
+  }
+
+  setExtensionPathFilters(filters: WorkflowAgentOptions["extensionPathFilters"] | undefined): void {
+    this.extensionPathFilters = filters;
   }
 
   /**
@@ -377,6 +401,10 @@ export class WorkflowManager extends EventEmitter {
             : undefined,
         currentThinkingLevel: this.currentThinkingLevel,
         persistAgentSessions: this.persistAgentSessions,
+        projectTrusted: this.projectTrusted,
+        contextLoader: this.contextLoader,
+        extensionPathFilters: this.extensionPathFilters,
+        sessionId: this.sessionId,
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRetries: resolvedAgentRetries,

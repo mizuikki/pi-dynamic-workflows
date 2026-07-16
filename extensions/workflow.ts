@@ -1,8 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   createEffortState,
+  createTrellisContextLoader,
+  createTrellisSubagentTool,
   createWorkflowStorage,
   createWorkflowTool,
+  hasRegisteredTrellisSubagentTool,
   installResultDelivery,
   installTaskPanel,
   installWorkflowEditor,
@@ -14,6 +17,10 @@ import {
   registerWorkflowCommands,
   registerWorkflowModelsCommand,
   saveWorkflowSettingsForCwd,
+  shouldEnableTrellisAdapter,
+  shouldRegisterTrellisSubagentTool,
+  trellisExtensionPathFilter,
+  WorkflowAgent,
   WorkflowManager,
 } from "../src/index.js";
 
@@ -23,6 +30,17 @@ export default function extension(pi: ExtensionAPI) {
   const cwd = process.cwd();
   const storage = createWorkflowStorage(cwd);
   const settings = loadWorkflowSettings({ cwd });
+  // Optional Trellis adapter: read-only context injection + optional host tool
+  // when the native Trellis extension is absent. Never owns create/start/archive
+  // or phase management.
+  const trellisEnabled = shouldEnableTrellisAdapter(cwd, settings.trellisAdapter);
+  const trellisContextLoader = trellisEnabled
+    ? createTrellisContextLoader({
+        enabled: settings.trellisAdapter?.enabled ?? "auto",
+        autoPrependActiveTaskLine: settings.trellisAdapter?.autoPrependActiveTaskLine,
+        registerSubagentTool: settings.trellisAdapter?.registerSubagentTool,
+      })
+    : undefined;
   const manager = new WorkflowManager({
     cwd,
     loadSavedWorkflow: (name) => storage.load(name)?.script,
@@ -30,22 +48,92 @@ export default function extension(pi: ExtensionAPI) {
     concurrency: settings.defaultConcurrency,
     defaultAgentRetries: settings.defaultAgentRetries,
     persistAgentSessions: settings.persistAgentSessions,
+    ...(trellisEnabled
+      ? {
+          contextLoader: trellisContextLoader,
+          extensionPathFilters: [trellisExtensionPathFilter],
+        }
+      : {}),
   });
 
   let workflowTool = createWorkflowTool({ cwd, manager, storage });
   pi.registerTool(workflowTool);
+
+  // Optional trellis_subagent: register only when adapter wants it, native
+  // extension files are absent (auto), and no tool with that name exists yet.
+  // Decision is deferred to session_start when getAllTools is reliably available.
+  let trellisSubagentRegistered = false;
+  let hostSessionId: string | undefined;
+  let hostProjectTrusted: boolean | undefined;
+  let hostThinkingLevel: string | undefined;
+
   const ensureWorkflowToolActive = () => {
     const active = pi.getActiveTools();
     if (!active.includes(workflowTool.name)) pi.setActiveTools([...active, workflowTool.name]);
   };
+  const ensureTrellisSubagentActive = () => {
+    if (!trellisSubagentRegistered) return;
+    const active = pi.getActiveTools();
+    if (!active.includes("trellis_subagent")) pi.setActiveTools([...active, "trellis_subagent"]);
+  };
+
+  let latestHostCtx: ExtensionContext | undefined;
+  const tryRegisterTrellisSubagent = (ctx?: ExtensionContext) => {
+    if (ctx) latestHostCtx = ctx;
+    if (trellisSubagentRegistered) return;
+    if (!shouldRegisterTrellisSubagentTool(cwd, settings.trellisAdapter)) return;
+    if (hasRegisteredTrellisSubagentTool(pi)) {
+      console.warn("[trellis-subagent-tool] skipped: tool already registered (native Trellis or another extension)");
+      return;
+    }
+    // Lazy agent: rebuild each run so model registry / trust / thinking stay current.
+    const agent: Pick<WorkflowAgent, "run"> = {
+      run: ((prompt, opts) => {
+        const host = latestHostCtx;
+        const runner = new WorkflowAgent({
+          cwd,
+          projectTrusted: hostProjectTrusted,
+          contextLoader: trellisContextLoader,
+          sessionId: hostSessionId,
+          extensionPathFilters: trellisEnabled ? [trellisExtensionPathFilter] : [],
+          session: {
+            modelRegistry: host?.modelRegistry,
+            model: host?.model,
+            ...(hostThinkingLevel ? { thinkingLevel: hostThinkingLevel as never } : {}),
+          },
+          modelRegistry: host?.modelRegistry,
+          mainModel: host?.model ? `${host.model.provider}/${host.model.id}` : undefined,
+        });
+        return runner.run(prompt, opts);
+      }) as WorkflowAgent["run"],
+    };
+    const tool = createTrellisSubagentTool({
+      cwd,
+      agent,
+      contextLoader: trellisContextLoader,
+      getSessionId: () => hostSessionId,
+      getProjectTrusted: () => hostProjectTrusted,
+      getThinkingLevel: () => hostThinkingLevel ?? pi.getThinkingLevel?.(),
+      settings: settings.trellisAdapter,
+    });
+    pi.registerTool(tool);
+    trellisSubagentRegistered = true;
+    ensureTrellisSubagentActive();
+  };
+
   const syncWorkflowRuntime = async (ctx: ExtensionContext, activateTool = false) => {
     const wasActive = pi.getActiveTools().includes(workflowTool.name);
     manager.setSessionOptions({ modelRegistry: ctx.modelRegistry, model: ctx.model });
     manager.setModelRegistry(ctx.modelRegistry);
     manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
     manager.setThinkingLevel(pi.getThinkingLevel());
+    hostThinkingLevel = pi.getThinkingLevel?.();
+    // Inherit host project trust; ExtensionContext always exposes isProjectTrusted.
+    hostProjectTrusted = ctx.isProjectTrusted();
+    manager.setProjectTrusted(hostProjectTrusted);
     try {
-      manager.setSessionId(ctx.sessionManager?.getSessionId());
+      hostSessionId = ctx.sessionManager?.getSessionId();
+      manager.setSessionId(hostSessionId);
     } catch {
       // Some headless contexts do not expose a session manager.
     }
@@ -53,6 +141,9 @@ export default function extension(pi: ExtensionAPI) {
     workflowTool = createWorkflowTool({ cwd, manager, storage, modelRegistry: ctx.modelRegistry, availableModelSpecs });
     pi.registerTool(workflowTool);
     if (activateTool || wasActive) ensureWorkflowToolActive();
+    // Register / re-check trellis_subagent after tools are live.
+    tryRegisterTrellisSubagent(ctx);
+    ensureTrellisSubagentActive();
   };
   // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
   // messages, like CC's ultracode. Shared with the editor's input hook below and
@@ -99,5 +190,6 @@ export default function extension(pi: ExtensionAPI) {
 
   pi.on("thinking_level_select", (event) => {
     manager.setThinkingLevel(event.level);
+    hostThinkingLevel = event.level;
   });
 }

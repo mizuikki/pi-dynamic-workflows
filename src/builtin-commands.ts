@@ -6,12 +6,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import {
-  createCodingTools,
-  type ExtensionAPI,
-  type ExtensionCommandContext,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow, MAX_DIFF_CHARS } from "./code-review.js";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
@@ -81,19 +76,23 @@ async function runBuiltinWorkflow(
   args: unknown,
   options: {
     cwd: string;
-    tools: ToolDefinition[];
+    /** Extra custom tools only (SDK built-ins are always present). */
+    tools?: ToolDefinition[];
     manager?: WorkflowManager;
     onPhase: (title: string) => void;
   },
 ): Promise<WorkflowRunResult> {
   if (options.manager) {
     syncManagerFromContext(pi, options.manager, ctx);
-    return options.manager.runSync(script, args, { tools: options.tools, onPhase: options.onPhase });
+    return options.manager.runSync(script, args, {
+      ...(options.tools ? { tools: options.tools } : {}),
+      onPhase: options.onPhase,
+    });
   }
   return runWorkflow(script, {
     cwd: options.cwd,
     args,
-    tools: options.tools,
+    ...(options.tools ? { tools: options.tools } : {}),
     session: { modelRegistry: ctx.modelRegistry, model: ctx.model },
     modelRegistry: ctx.modelRegistry,
     mainModel: currentModelSpec(ctx),
@@ -126,7 +125,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             { question },
             {
               cwd,
-              tools: [...createCodingTools(cwd), ...createWebTools()],
+              tools: createWebTools(),
               manager: opts.manager,
               onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
             },
@@ -156,7 +155,6 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             { task },
             {
               cwd,
-              tools: createCodingTools(cwd),
               manager: opts.manager,
               onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),
             },
@@ -245,7 +243,6 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             { diff, diffSource },
             {
               cwd,
-              tools: createCodingTools(cwd),
               manager: opts.manager,
               onPhase: (title) => ctx.ui.setStatus("code-review", `review: ${title}`),
             },
@@ -282,7 +279,6 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             undefined,
             {
               cwd,
-              tools: createCodingTools(cwd),
               manager: opts.manager,
               onPhase: (title) => ctx.ui.setStatus("multi-perspective", `perspectives: ${title}`),
             },
@@ -318,7 +314,6 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             undefined,
             {
               cwd,
-              tools: createCodingTools(cwd),
               manager: opts.manager,
               onPhase: (title) => ctx.ui.setStatus("codebase-audit", `audit: ${title}`),
             },

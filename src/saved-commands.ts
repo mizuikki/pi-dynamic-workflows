@@ -4,7 +4,6 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { createCodingTools } from "@earendil-works/pi-coding-agent";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
@@ -84,7 +83,6 @@ export function registerSavedWorkflow(
           result = await runWorkflow(wf.script, {
             cwd,
             args: parseCommandArgs(args, wf.parameters),
-            tools: createCodingTools(cwd),
             onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
           });
         }

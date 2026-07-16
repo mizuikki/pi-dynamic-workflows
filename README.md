@@ -221,6 +221,125 @@ Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()
 
 When no `~/.pi/workflows/model-tiers.json` exists, pi-dynamic-workflows builds a default config from the models you have authenticated. The registry returns models grouped by provider, not ranked by capability, so a naive positional spread (`first → small`, `last → big`) can put a mini or flash model in the big slot — or even collapse two tiers onto the same model. To avoid this, `buildDefaultTierConfig` first ranks every available model with a capability score based on well-known substrings: names containing `mini`, `flash`, `haiku`, `nano`, or `small` rank lowest, names containing `opus`, `pro`, `ultra`, `large`, or `plus` rank highest, and everything else ranks neutral (checks are case-insensitive; a name matching both hint sets ranks as small, so it can never outrank a bigger model). Models keep their registry order within the same rank. Tiers are then assigned from this single ranked pool — the least-capable model becomes `small`, the most-capable becomes `big`, and the middle-ranked one becomes `medium` — so distinct tiers never collapse onto the same model and a smaller model can never land in a higher tier than a bigger one. With fewer than 3 distinct models the assignment degrades gracefully: with 2 models the weaker one becomes `small` and the stronger one covers both `medium` and `big`; with 1 (or 0) models every tier resolves to that model (or the current Pi model / empty string as a last resort). You can review or override the assignment at any time with `/workflows-models`.
 
+## Optional Trellis adapter
+
+When a project contains a `.trellis/` directory, pi-dynamic-workflows can optionally:
+
+1. Inject **read-only Trellis task context** into workflow subagents (`agent()`), and
+2. Register a host-facing **`trellis_subagent`** tool (`single` / `parallel` / `chain`) when the **native** Trellis extension is **absent**.
+
+Both paths reuse the shared `WorkflowAgent` runtime. This package does **not** own Trellis lifecycle (`task.py create|start|archive`) or phase state.
+
+### Enablement
+
+Configured in `~/.pi/workflows/settings.json` (or a project override):
+
+```json
+{
+  "trellisAdapter": {
+    "enabled": "auto",
+    "autoPrependActiveTaskLine": true,
+    "registerSubagentTool": "auto"
+  }
+}
+```
+
+| `enabled` | Behavior |
+| --- | --- |
+| `"auto"` (default) | Enable context injection only when `<cwd>/.trellis/` exists |
+| `"on"` | Always attempt Trellis context resolution |
+| `"off"` | Never inject Trellis context (tool also stays off) |
+
+| `registerSubagentTool` | Behavior |
+| --- | --- |
+| `"auto"` (default) | Register `trellis_subagent` only when adapter is enabled, `.trellis/` exists, **no** native Trellis extension path is present, and `getAllTools()` does not already list `trellis_subagent` |
+| `"on"` | Force attempt to register; still **skips** with a warning if the tool name is already registered |
+| `"off"` | Context-only mode (previous v1 behavior) |
+
+### Duplicate registration / migration
+
+- **Native Trellis extension present** (`.pi/extensions/trellis*` or `extensions/trellis*`): adapter keeps **context injection** only; it does **not** register a second `trellis_subagent`.
+- **Native extension removed**: set `registerSubagentTool` to `"auto"` (default). On `session_start`, the workflow extension registers `trellis_subagent` if the public API reports no existing tool with that name.
+- Pi SDK has no official “unregister other extension’s tool” API and first registration per name wins. Fail closed: if `getAllTools()` throws or is unavailable, we **skip** registration rather than risk a silent dual tool.
+- Prefer installing **either** the native Trellis extension **or** this package’s tool — not both.
+
+### What context injection does
+
+For `agent(prompt, { agentType: "trellis-implement" })` (or `trellis-check` / short names), the loader may prepend:
+
+1. `Active task: <path>` when a task path was resolved without that line (`autoPrependActiveTaskLine`, default `true`)
+2. A `## Trellis Task Context` block with `prd.md`, optional `design.md` / `implement.md`, and curated `implement.jsonl` / `check.jsonl` file entries
+3. A per-run `env.TRELLIS_CONTEXT_ID` applied to nested **bash** tool calls via a session-local `tool_call` interceptor (does **not** mutate parent `process.env` under parallel runs)
+
+Resolution order (fail closed — never guess when ambiguous):
+
+1. Prompt line `Active task: <path>`
+2. `TRELLIS_CONTEXT_ID` / host session map under `.trellis/.runtime/sessions/*.json`
+3. Single-session adopt (multiple sessions with tasks → no path + warning)
+4. Read-only `python3 ./.trellis/scripts/task.py current --source`
+
+### Host tool: `trellis_subagent`
+
+Compatible surface with the native Trellis tool:
+
+| Arg | Notes |
+| --- | --- |
+| `agent` | Trellis agent name (`trellis-implement`, `trellis-check`, …). Hard-fails unless `.pi/agents/<name>.md` exists |
+| `mode` | `single` (default) / `parallel` / `chain` |
+| `prompt` | Required for `single` |
+| `prompts` | For `parallel` / `chain` (max **6**) |
+| `model` | Optional `provider/id[:thinking]` override |
+| `thinking` | Optional thinking level override |
+
+Semantics:
+
+- **single** — one `WorkflowAgent.run`
+- **parallel** — `Promise.all`, join outputs with `\n\n---\n\n`
+- **chain** — sequential; each step receives `Previous output:`; stop on first failure
+- **implement/check** — forced **shared project cwd** (no worktree isolation)
+- Progress: `details.kind === "trellis-subagent-progress"` with `runs[]` + throttled `onUpdate`
+
+Dispatch prompt protocol (same as native): the delegated prompt should start with
+`Active task: <path from task.py current>`.
+
+### Hard boundaries
+
+- Does **not** call `task.py create|start|finish|archive`
+- Does **not** implement Trellis phase state machines, finish-work, or journal ownership
+- Does **not** fork a second workflow manager
+- Subagent child sessions filter the host workflow extension (and Trellis extension paths when the adapter is on) so they do not re-load host orchestration tools
+- **Shared cwd only for implement work**: `isolation: "worktree"` is still available for general workflows, but Trellis implement agents should run in the shared project cwd
+- In-process execution (not a `pi` CLI subprocess): shares host credentials/registry; differs from native subprocess isolation
+
+### Examples
+
+```js
+// Workflow script in a Trellis project
+agent(
+  `Active task: .trellis/tasks/04-17-foo
+Implement the acceptance criteria.`,
+  { agentType: "trellis-implement" },
+)
+```
+
+```text
+# Host tool (when registered)
+trellis_subagent({
+  agent: "trellis-implement",
+  mode: "single",
+  prompt: "Active task: .trellis/tasks/04-17-foo\nImplement item 3."
+})
+```
+
+### Migration from native-only setups
+
+1. Keep `.trellis/` and `.pi/agents/trellis-*.md` as today.
+2. Install/enable this package’s workflow extension.
+3. Remove or disable `.pi/extensions/trellis` if you want this package to own dispatch.
+4. Leave `trellisAdapter.registerSubagentTool` at `"auto"`.
+5. Confirm the host tool list shows a single `trellis_subagent` (and `workflow`).
+
+
 ## Development
 
 ```bash

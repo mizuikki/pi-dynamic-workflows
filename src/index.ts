@@ -1,7 +1,55 @@
+export type {
+  TrellisAdapterEnabled,
+  TrellisAdapterSettings,
+  TrellisContextLoaderOptions,
+  TrellisSubagentToolSetting,
+} from "./adapters/trellis.js";
+export {
+  buildTrellisTaskContext,
+  createTrellisContextLoader,
+  hasNativeTrellisExtension,
+  hasTrellisProject,
+  isTrellisAgent,
+  normalizeTrellisAgentName,
+  parseActiveTaskLine,
+  resolveActiveTaskPath,
+  resolveTrellisContextKey,
+  shouldEnableTrellisAdapter,
+  shouldRegisterTrellisSubagentTool,
+  toRepoRelativePath,
+  trellisExtensionPathFilter,
+} from "./adapters/trellis.js";
+export type {
+  TrellisSubagentMode,
+  TrellisSubagentProgressDetails,
+  TrellisSubagentRunDetails,
+  TrellisSubagentToolInput,
+  TrellisSubagentToolOptions,
+} from "./adapters/trellis-subagent-tool.js";
+export {
+  createTrellisSubagentTool,
+  hasRegisteredTrellisSubagentTool,
+  MAX_TRELLIS_PARALLEL_PROMPTS,
+  TRELLIS_SUBAGENT_TOOL_NAME,
+} from "./adapters/trellis-subagent-tool.js";
 export type { AdversarialReviewConfig } from "./adversarial-review.js";
 export { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
-export type { AgentRunOptions, AgentRunResult, WorkflowAgentOptions } from "./agent.js";
-export { listAvailableModelSpecs, listAvailableModelSpecsAsync, WorkflowAgent } from "./agent.js";
+export type {
+  AgentRunOptions,
+  AgentRunResult,
+  ExtensionPathFilter,
+  WorkflowAgentOptions,
+  WrapResourceLoaderOptions,
+} from "./agent.js";
+export {
+  createSubagentEnvInterceptorFactory,
+  filterShadowingBuiltinCustomTools,
+  listAvailableModelSpecs,
+  listAvailableModelSpecsAsync,
+  resolveSessionToolAllowlist,
+  WorkflowAgent,
+  wrapResourceLoaderForWorkflowSubagents,
+} from "./agent.js";
 export type { AgentHistoryEntry, AgentHistoryKind, AgentHistoryRole } from "./agent-history.js";
 export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
@@ -83,6 +131,15 @@ export {
 export { createSharedStoreTools, SharedStore } from "./shared-store.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
+export type { SubagentContext, SubagentContextLoader } from "./subagent-context.js";
+export {
+  applySubagentContext,
+  commandAlreadySetsEnv,
+  mergeSubagentEnv,
+  noopSubagentContextLoader,
+  prependEnvExports,
+  shellQuoteEnvValue,
+} from "./subagent-context.js";
 export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
 export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
@@ -123,7 +180,12 @@ export {
 } from "./workflow-paths.js";
 export type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 export { assertSafeSavedWorkflowName, createWorkflowStorage, isSafeSavedWorkflowName } from "./workflow-saved.js";
-export type { WorkflowSettings, WorkflowSettingsOptions, WorkflowSettingsStore } from "./workflow-settings.js";
+export type {
+  TrellisAdapterSetting,
+  WorkflowSettings,
+  WorkflowSettingsOptions,
+  WorkflowSettingsStore,
+} from "./workflow-settings.js";
 export {
   getWorkflowProjectSettingsPath,
   getWorkflowSettingsPath,
