@@ -11,89 +11,66 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { WorkflowAgent } from "../src/agent.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
+import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
 
 const USAGE_LIMIT_MSG = "Codex usage limit reached (plus plan). Resets in ~3h.";
 
 /**
- * Load the faux provider from the SAME pi-ai instance that pi-coding-agent's
- * createAgentSession dispatches through. pi-coding-agent ships its own nested
- * pi-ai copy; registering on a different instance would be invisible to the
- * session ("No API provider registered"). Prefer the nested copy when present,
- * else fall back to the bare specifier — which, when npm has deduped to a single
- * copy, resolves to that same shared instance. Robust to both layouts.
- */
-async function loadFaux(): Promise<typeof import("@earendil-works/pi-ai/compat")> {
-  const nested = fileURLToPath(
-    new URL(
-      "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js",
-      import.meta.url,
-    ),
-  );
-  const entry = existsSync(nested) ? nested : "@earendil-works/pi-ai/compat";
-  return import(entry) as Promise<typeof import("@earendil-works/pi-ai/compat")>;
-}
-
-/**
- * Run `fn` with an isolated HOME and a dummy provider key so hasConfiguredAuth()
- * passes via env — no real credentials are touched, and the faux api means the
- * key is never actually used. A faux "deepseek" provider is registered/torn down
- * around `fn`; `setResponses` queues the scripted turns.
+ * Run `fn` with an isolated HOME and an explicitly injected faux registry. The
+ * shared helper binds the provider through both standard Pi's dynamic registry
+ * and the fork's explicit Models API, avoiding package-layout-dependent globals.
  */
 async function withFauxSession(
   fn: (ctx: {
     cwd: string;
     model: unknown;
+    modelRegistry: ReturnType<typeof createFauxModelRegistry>;
     setResponses: (msgs: unknown[]) => void;
-    fauxAssistantMessage: typeof import("@earendil-works/pi-ai").fauxAssistantMessage;
+    fauxAssistantMessage: typeof fauxAssistantMessage;
   }) => Promise<void>,
 ): Promise<void> {
-  const { registerFauxProvider, fauxAssistantMessage } = await loadFaux();
-  const prevKey = process.env.DEEPSEEK_API_KEY;
   let home: string | undefined;
   let cwd: string | undefined;
-  let faux: ReturnType<typeof registerFauxProvider> | undefined;
+  const faux = createExplicitFauxModels({
+    provider: "deepseek",
+    models: [{ id: "faux-deepseek", name: "Faux DeepSeek", contextWindow: 128000, maxTokens: 4096 }],
+  });
   try {
     home = mkdtempSync(join(tmpdir(), "pi-dw-i26-home-"));
     cwd = mkdtempSync(join(tmpdir(), "pi-dw-i26-cwd-"));
-    process.env.DEEPSEEK_API_KEY = "faux-dummy-key-not-used";
-    faux = registerFauxProvider({
-      provider: "deepseek",
-      models: [{ id: "faux-deepseek", name: "Faux DeepSeek", contextWindow: 128000, maxTokens: 4096 }],
-    });
     const testHome = home;
     const testCwd = cwd;
-    const testFaux = faux;
-    if (!testHome || !testCwd || !testFaux) throw new Error("faux session setup failed");
+    if (!testHome || !testCwd) throw new Error("faux session setup failed");
+    const modelRegistry = createFauxModelRegistry(faux);
     await withFakeHomeAsync(testHome, () =>
       fn({
         cwd: testCwd,
-        model: testFaux.getModel(),
-        setResponses: (msgs) => testFaux.setResponses(msgs as never),
+        model: faux.model,
+        modelRegistry,
+        setResponses: (msgs) => faux.setResponses(msgs as never),
         fauxAssistantMessage,
       }),
     );
   } finally {
-    faux?.unregister();
-    if (prevKey === undefined) delete process.env.DEEPSEEK_API_KEY;
-    else process.env.DEEPSEEK_API_KEY = prevKey;
+    faux.dispose();
     if (home) rmSync(home, { recursive: true, force: true });
     if (cwd) rmSync(cwd, { recursive: true, force: true });
   }
 }
 
 test("a real subagent session that hits a usage limit surfaces PROVIDER_USAGE_LIMIT (not SCHEMA_NONCOMPLIANCE/EMPTY)", () =>
-  withFauxSession(async ({ cwd, model, setResponses, fauxAssistantMessage }) => {
+  withFauxSession(async ({ cwd, model, modelRegistry, setResponses, fauxAssistantMessage }) => {
     setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: USAGE_LIMIT_MSG })]);
-    const agent = new WorkflowAgent({ cwd, session: { model: model as never } });
+    const agent = new WorkflowAgent({ cwd, modelRegistry, session: { model: model as never } });
     await assert.rejects(
       () => agent.run("do the task", { label: "probe" }),
       (err: unknown) => {
@@ -108,16 +85,16 @@ test("a real subagent session that hits a usage limit surfaces PROVIDER_USAGE_LI
   }));
 
 test("a successful real turn whose text merely mentions 'rate limit' is NOT misclassified", () =>
-  withFauxSession(async ({ cwd, model, setResponses, fauxAssistantMessage }) => {
+  withFauxSession(async ({ cwd, model, modelRegistry, setResponses, fauxAssistantMessage }) => {
     setResponses([fauxAssistantMessage("Done. I handled the rate limit gracefully.", { stopReason: "stop" })]);
-    const agent = new WorkflowAgent({ cwd, session: { model: model as never } });
+    const agent = new WorkflowAgent({ cwd, modelRegistry, session: { model: model as never } });
     const text = await agent.run("do the task", { label: "ok" });
     assert.ok(typeof text === "string" && text.includes("Done."), `expected normal text, got ${String(text)}`);
   }));
 
 test("through the manager: a usage limit pauses the run (not fails) and resume replays the journal", () =>
-  withFauxSession(async ({ cwd, model, setResponses, fauxAssistantMessage }) => {
-    const managerAgent = new WorkflowAgent({ cwd, session: { model: model as never } });
+  withFauxSession(async ({ cwd, model, modelRegistry, setResponses, fauxAssistantMessage }) => {
+    const managerAgent = new WorkflowAgent({ cwd, modelRegistry, session: { model: model as never } });
     const manager = new WorkflowManager({ cwd, agent: managerAgent });
     const pausedReasons: Array<string | undefined> = [];
     manager.on("paused", (e: { reason?: string }) => pausedReasons.push(e.reason));
