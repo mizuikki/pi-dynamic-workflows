@@ -292,9 +292,10 @@ function normalizeAgentName(agent: string): string {
 }
 
 function defaultResolveTaskPyCurrent(cwd: string): string | undefined {
-  const script = join(cwd, ".trellis", "scripts", "task.py");
-  if (!existsSync(script)) return undefined;
+  const script = canonicalProjectPath(cwd, join(cwd, ".trellis", "scripts", "task.py"));
+  if (!script) return undefined;
   try {
+    if (!statSync(script).isFile()) return undefined;
     const py = process.platform === "win32" ? "python" : "python3";
     const result = spawnSync(py, [script, "current", "--source"], {
       cwd,

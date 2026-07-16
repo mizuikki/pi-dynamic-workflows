@@ -259,6 +259,26 @@ test("single session adopt resolves task when prompt line missing", async () => 
   }
 });
 
+test("an invalid prompt task does not fall through to a valid session task", () => {
+  const cwd = makeProject();
+  try {
+    writeTask(cwd);
+    const sessions = join(cwd, ".trellis", ".runtime", "sessions");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(
+      join(sessions, "pi_abc123.json"),
+      JSON.stringify({ current_task: ".trellis/tasks/04-17-demo" }),
+      "utf-8",
+    );
+    assert.equal(
+      resolveActiveTaskPath(cwd, "Active task: ../unsafe-task", "abc123", {}, () => {}),
+      undefined,
+    );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("path safety: absolute and .. task refs outside cwd are rejected", () => {
   const cwd = makeProject();
   try {
@@ -327,6 +347,25 @@ test("path safety: canonical checks reject task, spec, and agent symlinks outsid
     symlinkSync(join(outside, "secret.md"), join(cwd, ".pi", "agents", "trellis-linked.md"));
     assert.equal(isTrellisAgent(cwd, "trellis-linked"), false);
     assert.equal(isTrellisAgent(cwd, "../../secret"), false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("path safety: default task.py resolution rejects scripts symlinked outside the project", async () => {
+  const cwd = makeProject();
+  const outside = mkdtempSync(join(tmpdir(), "pi-dw-trellis-script-outside-"));
+  try {
+    writeTask(cwd);
+    mkdirSync(join(cwd, ".trellis", "scripts"), { recursive: true });
+    const outsideScript = join(outside, "task.py");
+    writeFileSync(outsideScript, 'print("Current task: .trellis/tasks/04-17-demo")\n', "utf-8");
+    symlinkSync(outsideScript, join(cwd, ".trellis", "scripts", "task.py"));
+
+    const loader = createTrellisContextLoader({ enabled: "on" });
+    const ctx = await loader({ cwd, prompt: "work", agentType: "trellis-implement" });
+    assert.equal(ctx, undefined);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
