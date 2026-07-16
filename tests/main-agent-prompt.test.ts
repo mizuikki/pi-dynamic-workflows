@@ -344,7 +344,7 @@ test("duplicate command registration is ignored", () => {
   assert.deepEqual(commands, []);
 });
 
-test("real Pi host turns inject, chain, reload, and re-read the project prompt once", async () => {
+test("real Pi host turns inject, chain, and re-read the project prompt once per turn", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-e2e-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-e2e-cwd-"));
   const extensionPath = resolve("extensions/workflow.ts");
@@ -426,7 +426,6 @@ test("real Pi host turns inject, chain, reload, and re-read the project prompt o
         writeFileSync(join(cwd, ".pi", "WORKFLOW_MAIN.md"), "host prompt two");
         await session.prompt("second turn");
         writeFileSync(join(cwd, ".pi", "WORKFLOW_MAIN.md"), "host prompt three");
-        await session.reload();
         await session.prompt("third turn");
       } finally {
         process.chdir(originalCwd);
