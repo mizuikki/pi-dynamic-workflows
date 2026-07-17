@@ -318,8 +318,10 @@ Configured in `~/.pi/workflows/settings.json` (or a project override):
 For `agent(prompt, { agentType: "trellis-implement" })` (or `trellis-check` / short names), the loader may prepend:
 
 1. `Active task: <path>` when a task path was resolved without that line (`autoPrependActiveTaskLine`, default `true`)
-2. A `## Trellis Task Context` block with `prd.md`, optional `design.md` / `implement.md`, and curated `implement.jsonl` / `check.jsonl` file entries
+2. A bounded `## Trellis Task Context` block with `prd.md`, optional `design.md` / `implement.md`, and a read-on-demand index of curated `implement.jsonl` / `check.jsonl` entries; referenced files are never inlined
 3. A per-run `env.TRELLIS_CONTEXT_ID` applied to nested **bash** tool calls via a session-local `tool_call` interceptor (does **not** mutate parent `process.env` under parallel runs)
+
+The manifest index records each path, reason, byte size, and a short metadata revision so resume invalidation still notices referenced-file edits without reading or inlining their bodies. The complete task-context prefix is capped at 128 KiB, each directly included task artifact at 64 KiB, and the manifest index at 32 KiB. Source reads are bounded as well as prompt output. Oversized content is marked with its source path so the subagent can use targeted searches or ranged reads instead of paying for an unbounded first request.
 
 Resolution order (fail closed — never guess when ambiguous):
 
