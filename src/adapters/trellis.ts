@@ -261,14 +261,18 @@ export function buildTrellisTaskContext(cwd: string, taskDir: string, agentType?
 function buildTrellisManifestIndex(cwd: string, taskDir: string, jsonlName: string): string {
   const manifestPath = join(taskDir, jsonlName);
   const source = readBoundedProjectText(cwd, manifestPath, MAX_TRELLIS_MANIFEST_SOURCE_BYTES);
-  if (!source.text.trim()) return "";
+  if (!source.text.trim() && !source.truncated) return "";
 
   const entries: string[] = [];
   const seen = new Set<string>();
-  let omitted = source.truncated ? 1 : 0;
+  let omitted = source.truncated;
   for (const line of source.text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    if (entries.length >= MAX_TRELLIS_MANIFEST_ENTRIES) {
+      omitted = true;
+      break;
+    }
     try {
       const row = JSON.parse(trimmed) as Record<string, unknown>;
       if (row._example) continue;
@@ -279,10 +283,6 @@ function buildTrellisManifestIndex(cwd: string, taskDir: string, jsonlName: stri
       const stats = statSync(abs);
       if (!stats.isFile()) continue;
       seen.add(abs);
-      if (entries.length >= MAX_TRELLIS_MANIFEST_ENTRIES) {
-        omitted++;
-        continue;
-      }
       const relativePath = toRepoRelativePath(cwd, abs);
       if (!relativePath) continue;
       const reason = normalizeManifestReason(row.reason);
@@ -293,8 +293,8 @@ function buildTrellisManifestIndex(cwd: string, taskDir: string, jsonlName: stri
       // Skip illegal JSON lines and unsafe/unreadable paths.
     }
   }
-  if (entries.length === 0) return "";
-  if (omitted > 0) {
+  if (entries.length === 0 && !omitted) return "";
+  if (omitted) {
     entries.push(`- ... additional entries omitted; inspect \`${jsonlName}\` directly.`);
   }
 

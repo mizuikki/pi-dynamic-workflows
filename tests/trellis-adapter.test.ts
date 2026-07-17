@@ -110,7 +110,7 @@ test("T18b: manifest deduplicates paths and never inlines large referenced files
       join(taskDir, "implement.jsonl"),
       [
         JSON.stringify({ file: "docs/large.md", reason: "first" }),
-        JSON.stringify({ file: "docs/large.md", reason: "duplicate" }),
+        JSON.stringify({ file: "./docs/large.md", reason: "duplicate" }),
       ].join("\n"),
       "utf-8",
     );
@@ -123,7 +123,25 @@ test("T18b: manifest deduplicates paths and never inlines large referenced files
   }
 });
 
-test("T18c: oversized task artifacts are bounded with an on-demand notice", () => {
+test("T18c: a truncated manifest with no parsed rows retains its on-demand pointer", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd);
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      JSON.stringify({ file: "docs/late.md", reason: "R".repeat(300 * 1024) }),
+      "utf-8",
+    );
+    const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
+    assert.ok(text.includes("Curated Spec / Research Manifest"));
+    assert.ok(text.includes("additional entries omitted; inspect `implement.jsonl` directly"));
+    assert.ok(!text.includes("`docs/late.md`"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T18d: oversized task artifacts are bounded with an on-demand notice", () => {
   const cwd = makeProject();
   try {
     const taskDir = writeTask(cwd);
@@ -136,7 +154,7 @@ test("T18c: oversized task artifacts are bounded with an on-demand notice", () =
   }
 });
 
-test("T18d: combined task artifacts cannot exceed the total context budget", () => {
+test("T18e: combined task artifacts cannot exceed the total context budget", () => {
   const cwd = makeProject();
   try {
     const taskDir = writeTask(cwd);
@@ -151,7 +169,7 @@ test("T18d: combined task artifacts cannot exceed the total context budget", () 
   }
 });
 
-test("T18e: referenced-file metadata revisions invalidate context even when byte size is unchanged", () => {
+test("T18f: referenced-file metadata revisions invalidate context even when byte size is unchanged", () => {
   const cwd = makeProject();
   try {
     const taskDir = writeTask(cwd);
