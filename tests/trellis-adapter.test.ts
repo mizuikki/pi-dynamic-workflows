@@ -8,6 +8,7 @@ import {
   createTrellisContextLoader,
   hasTrellisProject,
   isTrellisAgent,
+  MAX_TRELLIS_TASK_CONTEXT_BYTES,
   parseActiveTaskLine,
   resolveActiveTaskPath,
   shouldEnableTrellisAdapter,
@@ -73,7 +74,7 @@ test("T17: only prd present does not block; missing design/implement/jsonl ok", 
   }
 });
 
-test("T18: jsonl expands valid file rows and skips _example / illegal JSON", () => {
+test("T18: jsonl renders a read-on-demand manifest and skips _example / illegal JSON", () => {
   const cwd = makeProject();
   try {
     const taskDir = writeTask(cwd);
@@ -90,9 +91,101 @@ test("T18: jsonl expands valid file rows and skips _example / illegal JSON", () 
       "utf-8",
     );
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.ok(text.includes("## docs/note.md"));
-    assert.ok(text.includes("SPEC BODY"));
+    assert.ok(text.includes("Curated Spec / Research Manifest"));
+    assert.match(text, /`docs\/note\.md` \(9 bytes, rev [0-9a-f]{12}\): real/);
+    assert.ok(!text.includes("SPEC BODY"));
     assert.ok(!text.includes("docs/ignore.md"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T18b: manifest deduplicates paths and never inlines large referenced files", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd);
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    writeFileSync(join(cwd, "docs", "large.md"), "LARGE_SECRET\n".repeat(40_000), "utf-8");
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      [
+        JSON.stringify({ file: "docs/large.md", reason: "first" }),
+        JSON.stringify({ file: "./docs/large.md", reason: "duplicate" }),
+      ].join("\n"),
+      "utf-8",
+    );
+    const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
+    assert.equal(text.match(/`docs\/large\.md`/g)?.length, 1);
+    assert.ok(!text.includes("LARGE_SECRET"));
+    assert.ok(Buffer.byteLength(text, "utf8") <= MAX_TRELLIS_TASK_CONTEXT_BYTES);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T18c: a truncated manifest with no parsed rows retains its on-demand pointer", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd);
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      JSON.stringify({ file: "docs/late.md", reason: "R".repeat(300 * 1024) }),
+      "utf-8",
+    );
+    const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
+    assert.ok(text.includes("Curated Spec / Research Manifest"));
+    assert.ok(text.includes("additional entries omitted; inspect `implement.jsonl` directly"));
+    assert.ok(!text.includes("`docs/late.md`"));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T18d: oversized task artifacts are bounded with an on-demand notice", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd);
+    writeFileSync(join(taskDir, "prd.md"), "大型需求\n".repeat(50_000), "utf-8");
+    const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
+    assert.match(text, /prd\.md truncated at 65536 bytes/);
+    assert.ok(Buffer.byteLength(text, "utf8") <= MAX_TRELLIS_TASK_CONTEXT_BYTES);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T18e: combined task artifacts cannot exceed the total context budget", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd);
+    for (const fileName of ["prd.md", "design.md", "implement.md"]) {
+      writeFileSync(join(taskDir, fileName), `${fileName} body\n`.repeat(10_000), "utf-8");
+    }
+    const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
+    assert.match(text, /Trellis task context truncated at 131072 bytes/);
+    assert.equal(Buffer.byteLength(text, "utf8"), MAX_TRELLIS_TASK_CONTEXT_BYTES);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T18f: referenced-file metadata revisions invalidate context even when byte size is unchanged", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd);
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    const referenced = join(cwd, "docs", "same-size.md");
+    writeFileSync(referenced, "AAAA", "utf-8");
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      JSON.stringify({ file: "docs/same-size.md", reason: "hash me" }),
+      "utf-8",
+    );
+    const before = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
+    writeFileSync(referenced, "BBBB", "utf-8");
+    const after = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
+    assert.notEqual(before, after);
+    assert.ok(!after.includes("BBBB"));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -317,8 +410,10 @@ test("path safety: jsonl file rows cannot escape project cwd", () => {
     mkdirSync(join(cwd, "docs"), { recursive: true });
     writeFileSync(join(cwd, "docs", "ok.md"), "SAFE", "utf-8");
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.ok(text.includes("SAFE"));
+    assert.ok(text.includes("`docs/ok.md`"));
+    assert.ok(!text.includes("SAFE"));
     assert.ok(!text.includes("TOP SECRET"));
+    assert.ok(!text.includes("pi-dw-secret-file.md"));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
