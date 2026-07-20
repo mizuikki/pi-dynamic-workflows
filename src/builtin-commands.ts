@@ -10,6 +10,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ToolDefinition } from "@ear
 import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow, MAX_DIFF_CHARS } from "./code-review.js";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
+import { createPluginModelRuntime } from "./model-runtime.js";
 import { createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
@@ -57,8 +58,14 @@ function currentModelSpec(ctx: ExtensionCommandContext): string | undefined {
   return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 }
 
-function syncManagerFromContext(pi: ExtensionAPI, manager: WorkflowManager, ctx: ExtensionCommandContext): void {
-  manager.setSessionOptions({ modelRegistry: ctx.modelRegistry, model: ctx.model });
+async function syncManagerFromContext(
+  pi: ExtensionAPI,
+  manager: WorkflowManager,
+  ctx: ExtensionCommandContext,
+): Promise<void> {
+  const modelRuntime = manager.getModelRuntime() ?? (await createPluginModelRuntime());
+  manager.setModelRuntime(modelRuntime);
+  manager.setSessionOptions({ model: ctx.model });
   manager.setModelRegistry(ctx.modelRegistry);
   manager.setMainModel(currentModelSpec(ctx));
   manager.setThinkingLevel(pi.getThinkingLevel());
@@ -83,18 +90,20 @@ async function runBuiltinWorkflow(
   },
 ): Promise<WorkflowRunResult> {
   if (options.manager) {
-    syncManagerFromContext(pi, options.manager, ctx);
+    await syncManagerFromContext(pi, options.manager, ctx);
     return options.manager.runSync(script, args, {
       ...(options.tools ? { tools: options.tools } : {}),
       onPhase: options.onPhase,
     });
   }
+  const modelRuntime = await createPluginModelRuntime();
   return runWorkflow(script, {
     cwd: options.cwd,
     args,
     ...(options.tools ? { tools: options.tools } : {}),
-    session: { modelRegistry: ctx.modelRegistry, model: ctx.model },
+    session: { model: ctx.model },
     modelRegistry: ctx.modelRegistry,
+    modelRuntime,
     mainModel: currentModelSpec(ctx),
     currentThinkingLevel: pi.getThinkingLevel(),
     onPhase: options.onPhase,

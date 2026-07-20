@@ -16,7 +16,7 @@ import {
 import { Type } from "typebox";
 import { WorkflowAgent, wrapResourceLoaderForWorkflowSubagents } from "../src/agent.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
-import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
+import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
 
 test("WorkflowAgent binds extensions so session_start-initialized tools work in subagents", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-ext-home-"));
@@ -73,9 +73,11 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
         fauxAssistantMessage("tool returned session-ready"),
       ]);
 
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
       const agent = new WorkflowAgent({
         cwd,
-        modelRegistry: createFauxModelRegistry(faux),
+        modelRegistry,
+        modelRuntime,
         session: {
           model: faux.model,
           resourceLoader,
@@ -121,9 +123,11 @@ test("WorkflowAgent uses the per-run cwd when loading default project settings u
           fauxAssistantMessage(`resolved:${model.provider}/${model.id}`, { stopReason: "stop" }),
       ]);
 
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
       const agent = new WorkflowAgent({
         cwd,
-        modelRegistry: createFauxModelRegistry(faux),
+        modelRegistry,
+        modelRuntime,
         session: {
           sessionManager: SessionManager.inMemory(),
         },
@@ -154,9 +158,11 @@ test("WorkflowAgent does not initialize persistence when a session manager is in
     await withFakeHomeAsync(home, async () => {
       faux.setResponses([fauxAssistantMessage("injected session works")]);
       const agentDir = join(home, ".pi", "agent");
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
       const agent = new WorkflowAgent({
         cwd,
-        modelRegistry: createFauxModelRegistry(faux),
+        modelRegistry,
+        modelRuntime,
         persistAgentSessions: true,
         session: {
           model: faux.model,

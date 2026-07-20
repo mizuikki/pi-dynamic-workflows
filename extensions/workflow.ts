@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   createEffortState,
   createTrellisContextLoader,
@@ -28,6 +28,7 @@ import {
   WorkflowAgent,
   WorkflowManager,
 } from "../src/index.js";
+import { createPluginModelRuntime } from "../src/model-runtime.js";
 
 export default function extension(pi: ExtensionAPI) {
   // Single manager/storage shared by the workflow tool and the /workflows command,
@@ -104,6 +105,25 @@ export default function extension(pi: ExtensionAPI) {
   };
 
   let latestHostCtx: ExtensionContext | undefined;
+  let pluginModelRuntime: ModelRuntime | undefined;
+  let pluginModelRuntimePromise: Promise<ModelRuntime> | undefined;
+
+  const ensurePluginModelRuntime = async (): Promise<ModelRuntime> => {
+    if (pluginModelRuntime) return pluginModelRuntime;
+    if (!pluginModelRuntimePromise) {
+      pluginModelRuntimePromise = createPluginModelRuntime()
+        .then((runtime) => {
+          pluginModelRuntime = runtime;
+          return runtime;
+        })
+        .catch((error) => {
+          pluginModelRuntimePromise = undefined;
+          throw error;
+        });
+    }
+    return pluginModelRuntimePromise;
+  };
+
   const tryRegisterTrellisSubagent = (ctx?: ExtensionContext) => {
     if (ctx) latestHostCtx = ctx;
     if (trellisSubagentRegistered) return;
@@ -112,10 +132,11 @@ export default function extension(pi: ExtensionAPI) {
       console.warn("[trellis-subagent-tool] skipped: tool already registered (native Trellis or another extension)");
       return;
     }
-    // Lazy agent: rebuild each run so model registry / trust / thinking stay current.
+    // Lazy agent: rebuild each run so model runtime / trust / thinking stay current.
     const agent: Pick<WorkflowAgent, "run"> = {
-      run: ((prompt, opts) => {
+      run: (async (prompt, opts) => {
         const host = latestHostCtx;
+        const modelRuntime = await ensurePluginModelRuntime();
         const runner = new WorkflowAgent({
           cwd,
           projectTrusted: hostProjectTrusted,
@@ -123,11 +144,11 @@ export default function extension(pi: ExtensionAPI) {
           sessionId: hostSessionId,
           extensionPathFilters: trellisEnabled ? [trellisExtensionPathFilter] : [],
           session: {
-            modelRegistry: host?.modelRegistry,
             model: host?.model,
             ...(hostThinkingLevel ? { thinkingLevel: hostThinkingLevel as never } : {}),
           },
           modelRegistry: host?.modelRegistry,
+          modelRuntime,
           mainModel: host?.model ? `${host.model.provider}/${host.model.id}` : undefined,
         });
         return runner.run(prompt, opts);
@@ -149,7 +170,9 @@ export default function extension(pi: ExtensionAPI) {
 
   const syncWorkflowRuntime = async (ctx: ExtensionContext, activateTool = false) => {
     const wasActive = pi.getActiveTools().includes(workflowTool.name);
-    manager.setSessionOptions({ modelRegistry: ctx.modelRegistry, model: ctx.model });
+    const modelRuntime = await ensurePluginModelRuntime();
+    manager.setModelRuntime(modelRuntime);
+    manager.setSessionOptions({ model: ctx.model });
     manager.setModelRegistry(ctx.modelRegistry);
     manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
     manager.setThinkingLevel(pi.getThinkingLevel());

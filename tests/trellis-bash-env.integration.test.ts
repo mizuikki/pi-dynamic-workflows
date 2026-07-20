@@ -15,7 +15,7 @@ import {
   WorkflowAgent,
 } from "../src/index.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
-import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
+import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
 
 test("prependEnvExports injects export and skips when already present", () => {
   const env = { TRELLIS_CONTEXT_ID: "pi_abc" };
@@ -129,9 +129,11 @@ test("WorkflowAgent applies env interceptor so bash sees TRELLIS_CONTEXT_ID", as
       ]);
       const settingsManager = SettingsManager.create(cwd, agentDir);
       const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
       const agent = new WorkflowAgent({
         cwd,
-        modelRegistry: createFauxModelRegistry(faux),
+        modelRegistry,
+        modelRuntime,
         session: {
           model: faux.model,
           resourceLoader,

@@ -158,7 +158,7 @@ test("modelRoutingGuideline can list explicit models from the session registry",
     maxTokens: 8192,
   } satisfies Model<"faux">;
 
-  const text = modelRoutingGuideline({ getAvailableSync: () => [explicitModel] });
+  const text = modelRoutingGuideline({ getAvailable: () => [explicitModel] });
 
   assert.match(text, /explicit-faux\/faux-1/);
 });

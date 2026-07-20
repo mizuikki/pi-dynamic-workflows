@@ -15,11 +15,12 @@ mkdir -p "$SMOKE_DIR"
 PACK_INSPECT_DIR="$TEMP_ROOT/inspect"
 mkdir -p "$PACK_INSPECT_DIR"
 tar -xzf "$TARBALL" -C "$PACK_INSPECT_DIR"
-if tar -tzf "$TARBALL" | rg -q '(^|/)(home|tmp)/'; then
+TARBALL_ENTRIES=$(tar -tzf "$TARBALL")
+if grep -Eq '(^|/)(home|tmp)/' <<<"$TARBALL_ENTRIES"; then
   printf '%s\n' 'package tarball contains an absolute path entry' >&2
   exit 1
 fi
-if rg -q 'file:\.\./pi' "$PACK_INSPECT_DIR/package/package.json" 2>/dev/null; then
+if grep -Eq 'file:\.\./pi' "$PACK_INSPECT_DIR/package/package.json"; then
   printf '%s\n' 'package tarball references a sibling Pi path via a file: specifier' >&2
   exit 1
 fi
@@ -27,9 +28,9 @@ fi
 npm init -y --prefix "$SMOKE_DIR" >/dev/null
 npm install --ignore-scripts --prefix "$SMOKE_DIR" \
   "$TARBALL" \
-  "@earendil-works/pi-ai@0.80.6" \
-  "@earendil-works/pi-coding-agent@0.80.6" \
-  "@earendil-works/pi-tui@0.80.6" \
+  "@earendil-works/pi-ai@0.80.10" \
+  "@earendil-works/pi-coding-agent@0.80.10" \
+  "@earendil-works/pi-tui@0.80.10" \
   "typebox" \
   "typescript" >/dev/null
 

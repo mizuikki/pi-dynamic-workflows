@@ -180,7 +180,7 @@ test("WorkflowAgent constructor accepts all option shapes without throwing", () 
   }
 });
 
-test("WorkflowAgent reuses an injected ModelRegistry instead of building its own", () => {
+test("WorkflowAgent reuses an injected ModelRegistry for resolution", () => {
   const mockModel = { provider: "mock", id: "shared" } as any;
   const registry = {
     find: (provider: string, id: string) => (provider === "mock" && id === "shared" ? mockModel : undefined),
@@ -189,14 +189,17 @@ test("WorkflowAgent reuses an injected ModelRegistry instead of building its own
   } as any;
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: registry });
-  const resolved = resolveModelSpecWithThinking("mock/shared", (agent as any).getRegistry());
+  const host = (agent as any).getHostRegistry();
+  assert.equal(host, registry);
+  const resolved = resolveModelSpecWithThinking("mock/shared", host);
   assert.equal(resolved.model, mockModel, "should resolve via the injected registry");
 });
 
-test("WorkflowAgent falls back to building a disk registry when no registry is injected", () => {
+test("WorkflowAgent creates a cached plugin ModelRuntime when none is injected", async () => {
   const agent = new WorkflowAgent({ cwd: "/tmp" });
-  // Should not throw; getRegistry() lazily builds a ModelRegistry.
-  assert.doesNotThrow(() => (agent as any).getRegistry());
+  const runtime = await (agent as any).getModelRuntime();
+  assert.ok(runtime);
+  assert.equal(await (agent as any).getModelRuntime(), runtime, "runtime is cached");
 });
 
 test("WorkflowAgent.resolveModel resolves via a per-run registry when the constructor got none", () => {
@@ -211,7 +214,8 @@ test("WorkflowAgent.resolveModel resolves via a per-run registry when the constr
   } as any;
 
   const agent = new WorkflowAgent({ cwd: "/tmp" });
-  const resolved = resolveModelSpecWithThinking("router/per-run-only", (agent as any).getRegistry(perRunRegistry));
+  const host = (agent as any).getHostRegistry(perRunRegistry);
+  const resolved = resolveModelSpecWithThinking("router/per-run-only", host);
   assert.equal(resolved.model, perRunModel, "should resolve via the per-run registry, not a disk registry");
 });
 
@@ -232,23 +236,23 @@ test("WorkflowAgent.resolveModel: per-run registry takes precedence over the con
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: constructorRegistry });
   // The per-run registry, not the constructor's, is consulted when both are set.
-  const resolved = resolveModelSpecWithThinking("run/override", (agent as any).getRegistry(perRunRegistry));
+  const resolved = resolveModelSpecWithThinking("run/override", (agent as any).getHostRegistry(perRunRegistry));
   assert.equal(resolved.model, perRunModel, "per-run registry should win over the constructor's shared registry");
   // And the constructor registry is still used when no per-run registry is given.
-  const fallback = resolveModelSpecWithThinking("ctor/shared", (agent as any).getRegistry());
+  const fallback = resolveModelSpecWithThinking("ctor/shared", (agent as any).getHostRegistry());
   assert.equal(fallback.model, constructorModel, "constructor registry should still apply without a per-run override");
 });
 
-test("WorkflowAgent.getRegistry: per-run registry wins, then constructor's shared registry, then disk", () => {
+test("WorkflowAgent.getHostRegistry: per-run registry wins, then constructor's shared registry", () => {
   const constructorRegistry = { getAvailable: () => [], find: () => undefined, getAll: () => [] } as any;
   const perRunRegistry = { getAvailable: () => [], find: () => undefined, getAll: () => [] } as any;
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: constructorRegistry });
-  assert.equal((agent as any).getRegistry(perRunRegistry), perRunRegistry);
-  assert.equal((agent as any).getRegistry(), constructorRegistry);
+  assert.equal((agent as any).getHostRegistry(perRunRegistry), perRunRegistry);
+  assert.equal((agent as any).getHostRegistry(), constructorRegistry);
 
   const bareAgent = new WorkflowAgent({ cwd: "/tmp" });
-  assert.doesNotThrow(() => (bareAgent as any).getRegistry());
+  assert.equal((bareAgent as any).getHostRegistry(), undefined);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

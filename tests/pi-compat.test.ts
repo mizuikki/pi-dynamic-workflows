@@ -7,20 +7,12 @@ const models = [
   { provider: "explicit", id: "two" },
 ] as never;
 
-test("pi compatibility reads synchronous upstream availability", () => {
+test("pi compatibility reads synchronous ModelRegistry-style availability", () => {
   const source = { getAvailable: () => models };
   assert.deepEqual(getAvailableModelsSync(source), models);
 });
 
-test("pi compatibility prefers fork synchronous snapshots", () => {
-  const source = {
-    getAvailable: async () => [],
-    getAvailableSync: () => models,
-  };
-  assert.deepEqual(getAvailableModelsSync(source), models);
-});
-
-test("pi compatibility does not pretend an async source is synchronously available", () => {
+test("pi compatibility does not pretend an async ModelRuntime source is synchronously available", () => {
   const source = { getAvailable: async () => models };
   assert.deepEqual(getAvailableModelsSync(source), []);
 });

@@ -3,7 +3,12 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { CreateAgentSessionOptions, ModelRegistry, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+  CreateAgentSessionOptions,
+  ModelRegistry,
+  ModelRuntime,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import type { WorkflowAgent, WorkflowAgentOptions } from "./agent.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
@@ -79,11 +84,12 @@ export interface WorkflowManagerOptions {
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   mainModel?: string;
   /**
-   * The host Pi session's model registry. When provided, workflow subagents
-   * resolve models against the same registry as the main session, including
-   * extension-registered providers such as ollama-cloud.
+   * Host extension ModelRegistry facade. Used for model-spec resolution and as
+   * the source of registered dynamic providers to copy into the plugin runtime.
    */
   modelRegistry?: ModelRegistry;
+  /** Plugin-owned execution ModelRuntime for child sessions. */
+  modelRuntime?: ModelRuntime;
   /** Base host session options used by subagents; per-run model overrides win. */
   session?: WorkflowAgentOptions["session"];
   /** Current host thinking level, snapshotted when a run starts. */
@@ -116,8 +122,10 @@ export class WorkflowManager extends EventEmitter {
   private agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents. */
   private mainModel?: string;
-  /** The host Pi session's model registry, shared with subagents. */
+  /** Host extension ModelRegistry facade. */
   private modelRegistry?: ModelRegistry;
+  /** Plugin-owned execution ModelRuntime. */
+  private modelRuntime?: ModelRuntime;
   private sessionOptions?: WorkflowAgentOptions["session"];
   private currentThinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
   /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
@@ -137,6 +145,7 @@ export class WorkflowManager extends EventEmitter {
     this.agent = options.agent;
     this.mainModel = options.mainModel;
     this.modelRegistry = options.modelRegistry;
+    this.modelRuntime = options.modelRuntime;
     this.sessionOptions = options.session;
     this.currentThinkingLevel = options.thinkingLevel;
     this.sessionId = options.sessionId;
@@ -185,14 +194,18 @@ export class WorkflowManager extends EventEmitter {
     this.mainModel = spec;
   }
 
-  /** Set the host session's model registry so subagents resolve models consistently. */
+  /** Set the host extension ModelRegistry facade (resolution + provider copy source). */
   setModelRegistry(registry: ModelRegistry | undefined): void {
     this.modelRegistry = registry;
   }
 
+  /** Set the plugin-owned execution ModelRuntime for child sessions. */
+  setModelRuntime(runtime: ModelRuntime | undefined): void {
+    this.modelRuntime = runtime;
+  }
+
   setSessionOptions(session: WorkflowAgentOptions["session"] | undefined): void {
     this.sessionOptions = session;
-    if (session?.modelRegistry) this.modelRegistry = session.modelRegistry;
   }
 
   setThinkingLevel(level: CreateAgentSessionOptions["thinkingLevel"] | undefined): void {
@@ -212,13 +225,17 @@ export class WorkflowManager extends EventEmitter {
   }
 
   /**
-   * The host session's model registry, when set. Read lazily (e.g. by the
+   * The host session's model registry facade, when set. Read lazily (e.g. by the
    * workflow tool's model routing guideline) since `setModelRegistry` is called
    * from `session_start`, which runs after the tool is created — a snapshot
    * taken at tool-creation time would miss it.
    */
   getModelRegistry(): ModelRegistry | undefined {
     return this.modelRegistry;
+  }
+
+  getModelRuntime(): ModelRuntime | undefined {
+    return this.modelRuntime;
   }
 
   /**
@@ -392,6 +409,7 @@ export class WorkflowManager extends EventEmitter {
         tools: runTools,
         mainModel: this.mainModel,
         modelRegistry: this.modelRegistry,
+        modelRuntime: this.modelRuntime,
         session:
           this.sessionOptions || this.currentThinkingLevel
             ? {
