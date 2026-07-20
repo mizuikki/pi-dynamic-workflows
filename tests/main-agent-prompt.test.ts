@@ -525,8 +525,6 @@ test("WorkflowAgent child sessions filter the host extension before it can injec
         session: {
           model: faux.model,
 
-          modelRuntime,
-
           resourceLoader,
 
           sessionManager: SessionManager.inMemory(),
@@ -597,8 +595,6 @@ test("WorkflowAgent custom inline loaders isolate the host policy and preserve A
 
           session: {
             model: faux.model,
-
-            modelRuntime,
 
             resourceLoader,
 

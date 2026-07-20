@@ -80,7 +80,6 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
         modelRuntime,
         session: {
           model: faux.model,
-          modelRuntime,
           resourceLoader,
           sessionManager: SessionManager.inMemory(),
           settingsManager,
@@ -130,7 +129,6 @@ test("WorkflowAgent uses the per-run cwd when loading default project settings u
         modelRegistry,
         modelRuntime,
         session: {
-          modelRuntime,
           sessionManager: SessionManager.inMemory(),
         },
       });
@@ -168,7 +166,6 @@ test("WorkflowAgent does not initialize persistence when a session manager is in
         persistAgentSessions: true,
         session: {
           model: faux.model,
-          modelRuntime,
           sessionManager: SessionManager.inMemory(),
           settingsManager: SettingsManager.create(cwd, agentDir),
         },

@@ -274,7 +274,7 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
 
   assert.deepEqual(managerCalls, [
     ["runtime", fakeRuntime],
-    ["session", { modelRuntime: fakeRuntime, model: ctx.model }],
+    ["session", { model: ctx.model }],
     ["registry", ctx.modelRegistry],
     ["mainModel", "explicit-faux/selected-model"],
     ["thinking", "high"],

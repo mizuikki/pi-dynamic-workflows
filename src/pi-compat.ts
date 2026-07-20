@@ -45,7 +45,10 @@ let defaultRuntimePromise: Promise<ModelRuntime> | undefined;
 
 function getDefaultRuntime(): Promise<ModelRuntime> {
   if (!defaultRuntimePromise) {
-    defaultRuntimePromise = createPluginModelRuntime({ allowModelNetwork: false });
+    defaultRuntimePromise = createPluginModelRuntime({ allowModelNetwork: false }).catch((error) => {
+      defaultRuntimePromise = undefined;
+      throw error;
+    });
   }
   return defaultRuntimePromise;
 }

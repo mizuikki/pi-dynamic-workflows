@@ -145,7 +145,7 @@ export class WorkflowManager extends EventEmitter {
     this.agent = options.agent;
     this.mainModel = options.mainModel;
     this.modelRegistry = options.modelRegistry;
-    this.modelRuntime = options.modelRuntime ?? options.session?.modelRuntime;
+    this.modelRuntime = options.modelRuntime;
     this.sessionOptions = options.session;
     this.currentThinkingLevel = options.thinkingLevel;
     this.sessionId = options.sessionId;
@@ -206,7 +206,6 @@ export class WorkflowManager extends EventEmitter {
 
   setSessionOptions(session: WorkflowAgentOptions["session"] | undefined): void {
     this.sessionOptions = session;
-    if (session?.modelRuntime) this.modelRuntime = session.modelRuntime;
   }
 
   setThinkingLevel(level: CreateAgentSessionOptions["thinkingLevel"] | undefined): void {
@@ -412,10 +411,9 @@ export class WorkflowManager extends EventEmitter {
         modelRegistry: this.modelRegistry,
         modelRuntime: this.modelRuntime,
         session:
-          this.sessionOptions || this.currentThinkingLevel || this.modelRuntime
+          this.sessionOptions || this.currentThinkingLevel
             ? {
                 ...this.sessionOptions,
-                ...(this.modelRuntime ? { modelRuntime: this.modelRuntime } : {}),
                 ...(this.currentThinkingLevel ? { thinkingLevel: this.currentThinkingLevel } : {}),
               }
             : undefined,

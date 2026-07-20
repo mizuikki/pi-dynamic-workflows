@@ -111,7 +111,6 @@ test("T1: tools: [read] keeps only read (+ system/schema) and excludes bash/edit
       modelRuntime,
       session: {
         model: faux.model,
-        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager,
       },
@@ -172,7 +171,6 @@ test("T3: tools allowlist can include grep/find without createCodingTools custom
       modelRuntime,
       session: {
         model: faux.model,
-        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },
@@ -189,7 +187,6 @@ test("T4: excludeTools bash without allowlist removes bash", async () => {
       modelRuntime,
       session: {
         model: faux.model,
-        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },
@@ -229,7 +226,6 @@ test("T5: systemTools store_put/store_get are callable under restrictive allowli
       modelRuntime,
       session: {
         model: faux.model,
-        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },
@@ -258,7 +254,6 @@ test("T6: faux model calling disallowed bash does not execute a real shell comma
       modelRuntime,
       session: {
         model: faux.model,
-        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },
@@ -387,7 +382,6 @@ test("T9: session_start-initialized tools still work (lifecycle regression)", as
       modelRuntime,
       session: {
         model: faux.model,
-        modelRuntime,
         resourceLoader,
         sessionManager: SessionManager.inMemory(),
         settingsManager,
@@ -633,7 +627,6 @@ test("T26: systemTools survive denylist excludeTools", async () => {
       modelRuntime,
       session: {
         model: faux.model,
-        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },

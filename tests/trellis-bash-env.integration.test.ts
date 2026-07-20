@@ -136,7 +136,6 @@ test("WorkflowAgent applies env interceptor so bash sees TRELLIS_CONTEXT_ID", as
         modelRuntime,
         session: {
           model: faux.model,
-          modelRuntime,
           resourceLoader,
           sessionManager: SessionManager.inMemory(),
           settingsManager,

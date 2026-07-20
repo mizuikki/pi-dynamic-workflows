@@ -51,10 +51,11 @@ jobs:
           cache: npm
       - name: Checkout Pi ModelRuntime contract source
         run: |
-          git clone --filter=blob:none https://github.com/earendil-works/pi.git ../pi
-          git -C ../pi checkout v0.80.10
+          git clone --filter=blob:none https://github.com/mizuikki/pi.git ../pi
+          git -C ../pi checkout --detach 62cf438762cc577fae5a9691cb0c4d1824b8998f
+          test "$(git -C ../pi rev-parse HEAD)" = "62cf438762cc577fae5a9691cb0c4d1824b8998f"
       - name: Build isolated Pi tarballs and test the project copy
-        run: PI_FORK_DIR=../pi PI_FORK_REF=v0.80.10 npm run test:pi-fork
+        run: PI_FORK_DIR=../pi PI_FORK_REF=62cf438762cc577fae5a9691cb0c4d1824b8998f npm run test:pi-fork
 
   package-smoke:
     runs-on: ubuntu-latest

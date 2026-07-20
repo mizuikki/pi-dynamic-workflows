@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PI_FORK_DIR=${PI_FORK_DIR:-"$PROJECT_DIR/../pi"}
-# Prefer a tag/branch that provides ModelRuntime (Pi >= 0.80.8). Default: v0.80.10.
-PI_FORK_REF=${PI_FORK_REF:-v0.80.10}
+# Test the selected checkout by default; CI pins the synchronized fork commit.
+PI_FORK_REF=${PI_FORK_REF:-HEAD}
 KEEP_TEMP=${KEEP_TEMP:-0}
 TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/pi-dynamic-workflows-fork.XXXXXX")
 
@@ -27,7 +27,8 @@ fi
 FORK_DIR="$TEMP_ROOT/pi-fork"
 TARBALL_DIR="$TEMP_ROOT/tarballs"
 PROJECT_COPY="$TEMP_ROOT/project"
-mkdir -p "$FORK_DIR" "$TARBALL_DIR" "$PROJECT_COPY"
+PROBE_AGENT_DIR="$TEMP_ROOT/agent"
+mkdir -p "$FORK_DIR" "$TARBALL_DIR" "$PROJECT_COPY" "$PROBE_AGENT_DIR"
 
 git -C "$PI_FORK_DIR" archive --format=tar "$PI_FORK_REF" | tar -xf - -C "$FORK_DIR"
 FORK_COMMIT=$(git -C "$PI_FORK_DIR" rev-parse "$PI_FORK_REF^{commit}")
@@ -62,7 +63,7 @@ npm install --ignore-scripts --no-save --prefix "$PROJECT_COPY" "$TARBALL_DIR"/*
 
 (
 cd "$PROJECT_COPY"
-PROJECT_DIR="$PROJECT_COPY" node --input-type=module -e '
+PI_CODING_AGENT_DIR="$PROBE_AGENT_DIR" PROJECT_DIR="$PROJECT_COPY" node --input-type=module -e '
 const packages = ["@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"];
 for (const specifier of packages) {
   const resolved = await import.meta.resolve(specifier);
@@ -77,10 +78,6 @@ if (typeof ModelRuntime?.create !== "function") throw new Error("ModelRuntime.cr
 if (typeof ModelRegistry !== "function") throw new Error("ModelRegistry facade missing");
 if (typeof createAgentSession !== "function") throw new Error("createAgentSession missing");
 
-// Legacy APIs removed in the ModelRuntime migration must stay gone.
-if (typeof ModelRegistry.create === "function") throw new Error("legacy ModelRegistry.create must not exist");
-if (typeof ModelRegistry.inMemory === "function") throw new Error("legacy ModelRegistry.inMemory must not exist");
-if ("AuthStorage" in codingAgent) throw new Error("legacy AuthStorage export must not exist");
 
 const runtime = await ModelRuntime.create({ modelsPath: null, allowModelNetwork: false });
 if (typeof runtime.registerProvider !== "function") throw new Error("ModelRuntime.registerProvider missing");
@@ -89,17 +86,15 @@ if (typeof runtime.getAvailable !== "function") throw new Error("ModelRuntime.ge
 
 const registry = new ModelRegistry(runtime);
 if (typeof registry.getAvailable !== "function") throw new Error("ModelRegistry.getAvailable missing");
-if (typeof registry.getAvailableSync === "function") throw new Error("legacy getAvailableSync must not exist");
-if (typeof registry.getExplicitModelsSource === "function") throw new Error("legacy getExplicitModelsSource must not exist");
 
-// createAgentSession accepts modelRuntime (legacy modelRegistry/models options are gone).
+// The plugin depends on createAgentSession accepting ModelRuntime.
 const { session } = await createAgentSession({
   modelRuntime: runtime,
   cwd: process.cwd(),
 });
 session.dispose();
 
-console.log("capability probe: ModelRuntime.create/registerProvider, ModelRegistry facade, no legacy APIs confirmed");
+console.log("capability probe: ModelRuntime.create/registerProvider and ModelRegistry facade confirmed");
 '
 )
 

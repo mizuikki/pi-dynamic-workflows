@@ -403,8 +403,8 @@ export interface WorkflowAgentOptions {
    * and any per-run tools. Not a base coding-tool set replacement.
    */
   tools?: ToolDefinition[];
-  /** Override any createAgentSession option (model, modelRuntime, resourceLoader, etc.). */
-  session?: Partial<CreateAgentSessionOptions>;
+  /** Override createAgentSession options other than the top-level modelRuntime. */
+  session?: Omit<Partial<CreateAgentSessionOptions>, "modelRuntime">;
   /** Extra system guidance prepended to every subagent task. */
   instructions?: string;
   /**
@@ -538,11 +538,6 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * Takes precedence over the constructor's `modelRegistry`.
    */
   modelRegistry?: ModelRegistry;
-  /**
-   * Per-run ModelRuntime for createAgentSession. Takes precedence over the
-   * constructor/session runtime, then the agent's cached plugin runtime.
-   */
-  modelRuntime?: ModelRuntime;
   /** Explicit thinking override for this run; otherwise the host setting applies. */
   thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
   /** Optional per-run context loader override. */
@@ -596,7 +591,7 @@ export class WorkflowAgent {
     this.instructions = options.instructions;
     this.mainModel = options.mainModel;
     this.sharedRegistry = options.modelRegistry;
-    this.sharedRuntime = options.modelRuntime ?? options.session?.modelRuntime;
+    this.sharedRuntime = options.modelRuntime;
     this.projectTrusted = options.projectTrusted;
     this.contextLoader = options.contextLoader;
     this.sessionId = options.sessionId;
@@ -609,20 +604,23 @@ export class WorkflowAgent {
   }
 
   /**
-   * Execution ModelRuntime: per-run > constructor/session > cached plugin runtime.
+   * Execution ModelRuntime: constructor > cached plugin runtime.
    * Host registry is never unwrapped; dynamic providers are copied onto this runtime.
    */
-  private async getModelRuntime(perRunRuntime?: ModelRuntime): Promise<ModelRuntime> {
-    if (perRunRuntime) return perRunRuntime;
+  private async getModelRuntime(): Promise<ModelRuntime> {
     if (this.sharedRuntime) return this.sharedRuntime;
-    if (this.sessionOptions.modelRuntime) return this.sessionOptions.modelRuntime;
     if (this.cachedRuntime) return this.cachedRuntime;
     if (!this.cachedRuntimePromise) {
       const agentDir = this.sessionOptions.agentDir ?? getAgentDir();
-      this.cachedRuntimePromise = createPluginModelRuntime({ agentDir }).then((runtime) => {
-        this.cachedRuntime = runtime;
-        return runtime;
-      });
+      this.cachedRuntimePromise = createPluginModelRuntime({ agentDir })
+        .then((runtime) => {
+          this.cachedRuntime = runtime;
+          return runtime;
+        })
+        .catch((error) => {
+          this.cachedRuntimePromise = undefined;
+          throw error;
+        });
     }
     return this.cachedRuntimePromise;
   }
@@ -710,7 +708,7 @@ export class WorkflowAgent {
 
     // Plugin-owned execution runtime (never unwrap host runtime from ModelRegistry).
     const hostRegistry = this.getHostRegistry(options.modelRegistry);
-    const modelRuntime = await this.getModelRuntime(options.modelRuntime);
+    const modelRuntime = await this.getModelRuntime();
     copyRegisteredProviders(hostRegistry, modelRuntime);
 
     // Resolve a requested model spec to a Model object. Specs use Pi CLI-style
@@ -741,7 +739,6 @@ export class WorkflowAgent {
     const {
       resourceLoader: providedResourceLoader,
       settingsManager: providedSettingsManager,
-      modelRuntime: _sessionModelRuntime,
       ...baseSessionOptions
     } = this.sessionOptions;
     const projectTrusted = this.projectTrusted;

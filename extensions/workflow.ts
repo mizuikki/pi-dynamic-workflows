@@ -1,8 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
-  copyRegisteredProviders,
   createEffortState,
-  createPluginModelRuntime,
   createTrellisContextLoader,
   createTrellisSubagentTool,
   createWorkflowStorage,
@@ -30,6 +28,7 @@ import {
   WorkflowAgent,
   WorkflowManager,
 } from "../src/index.js";
+import { createPluginModelRuntime } from "../src/model-runtime.js";
 
 export default function extension(pi: ExtensionAPI) {
   // Single manager/storage shared by the workflow tool and the /workflows command,
@@ -112,10 +111,15 @@ export default function extension(pi: ExtensionAPI) {
   const ensurePluginModelRuntime = async (): Promise<ModelRuntime> => {
     if (pluginModelRuntime) return pluginModelRuntime;
     if (!pluginModelRuntimePromise) {
-      pluginModelRuntimePromise = createPluginModelRuntime().then((runtime) => {
-        pluginModelRuntime = runtime;
-        return runtime;
-      });
+      pluginModelRuntimePromise = createPluginModelRuntime()
+        .then((runtime) => {
+          pluginModelRuntime = runtime;
+          return runtime;
+        })
+        .catch((error) => {
+          pluginModelRuntimePromise = undefined;
+          throw error;
+        });
     }
     return pluginModelRuntimePromise;
   };
@@ -133,7 +137,6 @@ export default function extension(pi: ExtensionAPI) {
       run: (async (prompt, opts) => {
         const host = latestHostCtx;
         const modelRuntime = await ensurePluginModelRuntime();
-        if (host?.modelRegistry) copyRegisteredProviders(host.modelRegistry, modelRuntime);
         const runner = new WorkflowAgent({
           cwd,
           projectTrusted: hostProjectTrusted,
@@ -141,7 +144,6 @@ export default function extension(pi: ExtensionAPI) {
           sessionId: hostSessionId,
           extensionPathFilters: trellisEnabled ? [trellisExtensionPathFilter] : [],
           session: {
-            modelRuntime,
             model: host?.model,
             ...(hostThinkingLevel ? { thinkingLevel: hostThinkingLevel as never } : {}),
           },
@@ -169,9 +171,8 @@ export default function extension(pi: ExtensionAPI) {
   const syncWorkflowRuntime = async (ctx: ExtensionContext, activateTool = false) => {
     const wasActive = pi.getActiveTools().includes(workflowTool.name);
     const modelRuntime = await ensurePluginModelRuntime();
-    copyRegisteredProviders(ctx.modelRegistry, modelRuntime);
-    manager.setSessionOptions({ modelRuntime, model: ctx.model });
     manager.setModelRuntime(modelRuntime);
+    manager.setSessionOptions({ model: ctx.model });
     manager.setModelRegistry(ctx.modelRegistry);
     manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
     manager.setThinkingLevel(pi.getThinkingLevel());

@@ -73,7 +73,7 @@ test("a real subagent session that hits a usage limit surfaces PROVIDER_USAGE_LI
       cwd,
       modelRegistry,
       modelRuntime,
-      session: { model: model as never, modelRuntime },
+      session: { model: model as never },
     });
     await assert.rejects(
       () => agent.run("do the task", { label: "probe" }),
@@ -95,7 +95,7 @@ test("a successful real turn whose text merely mentions 'rate limit' is NOT misc
       cwd,
       modelRegistry,
       modelRuntime,
-      session: { model: model as never, modelRuntime },
+      session: { model: model as never },
     });
     const text = await agent.run("do the task", { label: "ok" });
     assert.ok(typeof text === "string" && text.includes("Done."), `expected normal text, got ${String(text)}`);
@@ -107,7 +107,7 @@ test("through the manager: a usage limit pauses the run (not fails) and resume r
       cwd,
       modelRegistry,
       modelRuntime,
-      session: { model: model as never, modelRuntime },
+      session: { model: model as never },
     });
     const manager = new WorkflowManager({ cwd, agent: managerAgent });
     const pausedReasons: Array<string | undefined> = [];

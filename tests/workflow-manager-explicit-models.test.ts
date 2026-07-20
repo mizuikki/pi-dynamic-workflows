@@ -50,7 +50,7 @@ test(
       const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${faux.model.id}` });
       manager.setModelRegistry(modelRegistry);
       manager.setModelRuntime(modelRuntime);
-      manager.setSessionOptions({ modelRuntime, model: faux.model });
+      manager.setSessionOptions({ model: faux.model });
 
       const result = await manager.runSync(oneAgentScript);
 
@@ -85,7 +85,7 @@ test(
       const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
       manager.setModelRegistry(modelRegistry);
       manager.setModelRuntime(modelRuntime);
-      manager.setSessionOptions({ modelRuntime, model: selectedModel });
+      manager.setSessionOptions({ model: selectedModel });
 
       const result = await manager.runSync(selectedModelScript);
 
@@ -134,7 +134,7 @@ test(
         const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
         manager.setModelRegistry(modelRegistry);
         manager.setModelRuntime(modelRuntime);
-        manager.setSessionOptions({ modelRuntime, model: selectedModel });
+        manager.setSessionOptions({ model: selectedModel });
 
         const { runId, promise } = manager.startInBackground(resumeWithWebToolsScript, undefined, {
           tools: [...createCodingTools(cwd), ...createWebTools()],
