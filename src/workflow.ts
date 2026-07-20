@@ -556,6 +556,7 @@ export async function runWorkflow<T = unknown>(
                 tier: agentOptions.tier,
                 thinkingLevel: tierThinkingLevel,
                 modelRegistry: options.modelRegistry,
+                modelRuntime: options.modelRuntime,
                 toolNames: agentDef?.tools,
                 disallowedToolNames: agentDef?.disallowedTools,
                 // Per-agent store tools track this agent's writes by the

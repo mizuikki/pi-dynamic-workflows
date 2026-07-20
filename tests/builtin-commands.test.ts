@@ -144,9 +144,12 @@ function makeManagerBackedCommandHarness() {
     sendMessage: async () => {},
     getThinkingLevel: () => undefined,
   };
+  const fakeRuntime = { kind: "fake-runtime" };
   const manager = {
     setSessionOptions: () => {},
     setModelRegistry: () => {},
+    setModelRuntime: () => {},
+    getModelRuntime: () => fakeRuntime,
     setMainModel: () => {},
     setThinkingLevel: () => {},
     setSessionId: () => {},
@@ -163,7 +166,11 @@ function makeManagerBackedCommandHarness() {
     },
   };
   const ctx = {
-    modelRegistry: { getAvailable: async () => [] },
+    modelRegistry: {
+      getAvailable: () => [],
+      getRegisteredProviderIds: () => [],
+      getRegisteredProviderConfig: () => undefined,
+    },
     sessionManager: { getSessionId: () => "session-123" },
     ui: {
       notify: (message: string, type?: string) => notified.push({ message, type }),
@@ -218,9 +225,12 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
     getThinkingLevel: () => "high",
   };
 
+  const fakeRuntime = { kind: "fake-runtime" };
   const manager = {
     setSessionOptions: (options: unknown) => managerCalls.push(["session", options]),
     setModelRegistry: (registry: unknown) => managerCalls.push(["registry", registry]),
+    setModelRuntime: (runtime: unknown) => managerCalls.push(["runtime", runtime]),
+    getModelRuntime: () => fakeRuntime,
     setMainModel: (model: unknown) => managerCalls.push(["mainModel", model]),
     setThinkingLevel: (level: unknown) => managerCalls.push(["thinking", level]),
     setSessionId: (sessionId: unknown) => managerCalls.push(["sessionId", sessionId]),
@@ -247,7 +257,11 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
   assert.ok(deepResearchHandler, "deep-research handler should exist");
 
   const ctx = {
-    modelRegistry: { getAvailable: async () => [] },
+    modelRegistry: {
+      getAvailable: () => [],
+      getRegisteredProviderIds: () => [],
+      getRegisteredProviderConfig: () => undefined,
+    },
     model: { provider: "explicit-faux", id: "selected-model" },
     sessionManager: { getSessionId: () => "session-123" },
     ui: {
@@ -259,7 +273,8 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
   await deepResearchHandler("trace auth flows", ctx as never);
 
   assert.deepEqual(managerCalls, [
-    ["session", { modelRegistry: ctx.modelRegistry, model: ctx.model }],
+    ["runtime", fakeRuntime],
+    ["session", { modelRuntime: fakeRuntime, model: ctx.model }],
     ["registry", ctx.modelRegistry],
     ["mainModel", "explicit-faux/selected-model"],
     ["thinking", "high"],

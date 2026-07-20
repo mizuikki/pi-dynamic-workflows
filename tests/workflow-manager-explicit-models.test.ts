@@ -8,7 +8,7 @@ import { createCodingTools } from "@earendil-works/pi-coding-agent";
 import { createWebTools } from "../src/web-tools.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
-import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
+import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
 
 function withTempCwd(fn: (cwd: string) => Promise<void>) {
   return async () => {
@@ -37,18 +37,20 @@ const b = await agent('second', { label: 'second' })
 return { a, b }`;
 
 test(
-  "WorkflowManager passes the live session model registry to real workflow subagents",
+  "WorkflowManager passes the live session model runtime to real workflow subagents",
   withTempCwd(async (cwd) => {
     const faux = createExplicitFauxModels({
       provider: "deepseek",
       models: [{ id: "explicit-workflow", name: "Explicit Workflow Model" }],
     });
     try {
-      const modelRegistry = createFauxModelRegistry(faux);
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
       faux.setResponses([fauxAssistantMessage("explicit workflow result")]);
 
       const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${faux.model.id}` });
-      manager.setSessionOptions({ modelRegistry, model: faux.model });
+      manager.setModelRegistry(modelRegistry);
+      manager.setModelRuntime(modelRuntime);
+      manager.setSessionOptions({ modelRuntime, model: faux.model });
 
       const result = await manager.runSync(oneAgentScript);
 
@@ -71,7 +73,7 @@ test(
       ],
     });
     try {
-      const modelRegistry = createFauxModelRegistry(faux);
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
       const selectedModel = faux.getModel("workflow-selected");
 
       if (!selectedModel) {
@@ -81,7 +83,9 @@ test(
       faux.setResponses([(_context, _options, _state, model) => fauxAssistantMessage(`resolved:${model.id}`)]);
 
       const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
-      manager.setSessionOptions({ modelRegistry, model: selectedModel });
+      manager.setModelRegistry(modelRegistry);
+      manager.setModelRuntime(modelRuntime);
+      manager.setSessionOptions({ modelRuntime, model: selectedModel });
 
       const result = await manager.runSync(selectedModelScript);
 
@@ -101,7 +105,7 @@ test(
       models: [{ id: "workflow-web", name: "Workflow Web Model" }],
     });
     try {
-      const modelRegistry = createFauxModelRegistry(faux);
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
       const selectedModel = faux.getModel("workflow-web");
 
       if (!selectedModel) {
@@ -128,7 +132,9 @@ test(
         ]);
 
         const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
-        manager.setSessionOptions({ modelRegistry, model: selectedModel });
+        manager.setModelRegistry(modelRegistry);
+        manager.setModelRuntime(modelRuntime);
+        manager.setSessionOptions({ modelRuntime, model: selectedModel });
 
         const { runId, promise } = manager.startInBackground(resumeWithWebToolsScript, undefined, {
           tools: [...createCodingTools(cwd), ...createWebTools()],

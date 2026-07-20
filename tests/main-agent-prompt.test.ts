@@ -26,7 +26,7 @@ import {
   WORKFLOW_MAIN_RELATIVE_PATH,
 } from "../src/main-agent-prompt.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
-import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
+import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
 
 function project(): string {
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-"));
@@ -425,11 +425,12 @@ test("real Pi host turns inject, chain, and re-read the project prompt once per 
           ],
         });
         await resourceLoader.reload();
+        const { modelRuntime } = await createFauxRuntimeBundle(faux);
         const created = await createAgentSession({
           cwd,
           agentDir,
           model: faux.model,
-          modelRegistry: createFauxModelRegistry(faux),
+          modelRuntime,
           sessionManager: SessionManager.inMemory(),
           settingsManager,
           resourceLoader,
@@ -510,14 +511,26 @@ test("WorkflowAgent child sessions filter the host extension before it can injec
         settingsManager,
         additionalExtensionPaths: [extensionPath],
       });
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+
       const agent = new WorkflowAgent({
         cwd,
+
         projectTrusted: true,
-        modelRegistry: createFauxModelRegistry(faux),
+
+        modelRegistry,
+
+        modelRuntime,
+
         session: {
           model: faux.model,
+
+          modelRuntime,
+
           resourceLoader,
+
           sessionManager: SessionManager.inMemory(),
+
           settingsManager,
         },
       });
@@ -571,14 +584,26 @@ test("WorkflowAgent custom inline loaders isolate the host policy and preserve A
         });
         await resourceLoader.reload();
         assert.match(resourceLoader.getExtensions().extensions[0]?.path ?? "", /^<inline:/);
+        const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+
         const agent = new WorkflowAgent({
           cwd,
+
           projectTrusted: true,
-          modelRegistry: createFauxModelRegistry(faux),
+
+          modelRegistry,
+
+          modelRuntime,
+
           session: {
             model: faux.model,
+
+            modelRuntime,
+
             resourceLoader,
+
             sessionManager: SessionManager.inMemory(),
+
             settingsManager,
           },
         });

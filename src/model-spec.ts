@@ -1,5 +1,4 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -198,12 +197,12 @@ function buildFallbackModel(provider: string, modelId: string, availableModels: 
  */
 export function resolveModelSpecWithThinking(
   spec: string,
-  modelRegistry: Pick<ModelRegistry, "getAll">,
+  modelRegistry: { getAll(): readonly Model<Api>[] },
 ): ResolvedModelSpec {
   const requestedSpec = spec.trim();
   if (!requestedSpec) return { requestedSpec, error: "No model spec provided." };
 
-  const availableModels = modelRegistry.getAll();
+  const availableModels = [...modelRegistry.getAll()];
   if (availableModels.length === 0) {
     return {
       requestedSpec,

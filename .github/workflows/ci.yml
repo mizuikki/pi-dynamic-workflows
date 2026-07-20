@@ -49,12 +49,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Checkout fixed Pi fork contract
+      - name: Checkout Pi ModelRuntime contract source
         run: |
-          git clone --filter=blob:none https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout 4a4a2ab3630a0a6f65ad655e07d6f3babe4e07f5
-      - name: Build isolated fork tarballs and test the project copy
-        run: PI_FORK_DIR=../pi PI_FORK_REF=4a4a2ab3 npm run test:pi-fork
+          git clone --filter=blob:none https://github.com/earendil-works/pi.git ../pi
+          git -C ../pi checkout v0.80.10
+      - name: Build isolated Pi tarballs and test the project copy
+        run: PI_FORK_DIR=../pi PI_FORK_REF=v0.80.10 npm run test:pi-fork
 
   package-smoke:
     runs-on: ubuntu-latest

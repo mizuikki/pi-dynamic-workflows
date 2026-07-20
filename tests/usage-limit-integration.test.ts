@@ -2,11 +2,9 @@
  * Real-session integration test for issue #26 — provider usage-limit handling.
  *
  * Every other test injects a fake agent runner; this one drives the REAL
- * `WorkflowAgent.run` → `createAgentSession` path and uses the pi SDK's built-in
- * FAUX provider to end a turn in a "usage limit reached" error (stopReason
+ * `WorkflowAgent.run` → `createAgentSession` path and uses a ModelRuntime-registered
+ * faux provider to end a turn in a "usage limit reached" error (stopReason
  * "error" + errorMessage), exactly as a real provider buries a quota exhaustion.
- * It is the contract guard for the load-bearing SDK assumption behind the fix:
- * a usage limit surfaces as an error-status assistant message, not a thrown error.
  * No network call is made and NO provider quota is consumed.
  */
 
@@ -16,24 +14,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import type { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { WorkflowAgent } from "../src/agent.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
-import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
+import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
 
 const USAGE_LIMIT_MSG = "Codex usage limit reached (plus plan). Resets in ~3h.";
 
 /**
- * Run `fn` with an isolated HOME and an explicitly injected faux registry. The
- * shared helper binds the provider through both standard Pi's dynamic registry
- * and the fork's explicit Models API, avoiding package-layout-dependent globals.
+ * Run `fn` with an isolated HOME and an explicitly injected faux ModelRuntime.
  */
 async function withFauxSession(
   fn: (ctx: {
     cwd: string;
     model: unknown;
-    modelRegistry: ReturnType<typeof createFauxModelRegistry>;
+    modelRegistry: ModelRegistry;
+    modelRuntime: ModelRuntime;
     setResponses: (msgs: unknown[]) => void;
     fauxAssistantMessage: typeof fauxAssistantMessage;
   }) => Promise<void>,
@@ -50,12 +48,13 @@ async function withFauxSession(
     const testHome = home;
     const testCwd = cwd;
     if (!testHome || !testCwd) throw new Error("faux session setup failed");
-    const modelRegistry = createFauxModelRegistry(faux);
+    const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
     await withFakeHomeAsync(testHome, () =>
       fn({
         cwd: testCwd,
         model: faux.model,
         modelRegistry,
+        modelRuntime,
         setResponses: (msgs) => faux.setResponses(msgs as never),
         fauxAssistantMessage,
       }),
@@ -68,9 +67,14 @@ async function withFauxSession(
 }
 
 test("a real subagent session that hits a usage limit surfaces PROVIDER_USAGE_LIMIT (not SCHEMA_NONCOMPLIANCE/EMPTY)", () =>
-  withFauxSession(async ({ cwd, model, modelRegistry, setResponses, fauxAssistantMessage }) => {
+  withFauxSession(async ({ cwd, model, modelRegistry, modelRuntime, setResponses, fauxAssistantMessage }) => {
     setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: USAGE_LIMIT_MSG })]);
-    const agent = new WorkflowAgent({ cwd, modelRegistry, session: { model: model as never } });
+    const agent = new WorkflowAgent({
+      cwd,
+      modelRegistry,
+      modelRuntime,
+      session: { model: model as never, modelRuntime },
+    });
     await assert.rejects(
       () => agent.run("do the task", { label: "probe" }),
       (err: unknown) => {
@@ -85,16 +89,26 @@ test("a real subagent session that hits a usage limit surfaces PROVIDER_USAGE_LI
   }));
 
 test("a successful real turn whose text merely mentions 'rate limit' is NOT misclassified", () =>
-  withFauxSession(async ({ cwd, model, modelRegistry, setResponses, fauxAssistantMessage }) => {
+  withFauxSession(async ({ cwd, model, modelRegistry, modelRuntime, setResponses, fauxAssistantMessage }) => {
     setResponses([fauxAssistantMessage("Done. I handled the rate limit gracefully.", { stopReason: "stop" })]);
-    const agent = new WorkflowAgent({ cwd, modelRegistry, session: { model: model as never } });
+    const agent = new WorkflowAgent({
+      cwd,
+      modelRegistry,
+      modelRuntime,
+      session: { model: model as never, modelRuntime },
+    });
     const text = await agent.run("do the task", { label: "ok" });
     assert.ok(typeof text === "string" && text.includes("Done."), `expected normal text, got ${String(text)}`);
   }));
 
 test("through the manager: a usage limit pauses the run (not fails) and resume replays the journal", () =>
-  withFauxSession(async ({ cwd, model, modelRegistry, setResponses, fauxAssistantMessage }) => {
-    const managerAgent = new WorkflowAgent({ cwd, modelRegistry, session: { model: model as never } });
+  withFauxSession(async ({ cwd, model, modelRegistry, modelRuntime, setResponses, fauxAssistantMessage }) => {
+    const managerAgent = new WorkflowAgent({
+      cwd,
+      modelRegistry,
+      modelRuntime,
+      session: { model: model as never, modelRuntime },
+    });
     const manager = new WorkflowManager({ cwd, agent: managerAgent });
     const pausedReasons: Array<string | undefined> = [];
     manager.on("paused", (e: { reason?: string }) => pausedReasons.push(e.reason));

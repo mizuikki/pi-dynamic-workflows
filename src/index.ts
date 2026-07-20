@@ -117,6 +117,13 @@ export {
 } from "./main-agent-prompt.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";
 export { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+export type { ModelListSource, RegisteredProviderSource } from "./model-runtime.js";
+export {
+  copyRegisteredProviders,
+  createPluginModelRuntime,
+  modelListFromRegistry,
+  modelListFromRuntime,
+} from "./model-runtime.js";
 export type { ModelThinkingLevel, ResolvedModelSpec } from "./model-spec.js";
 export {
   canonicalModelSpec,

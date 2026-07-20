@@ -24,7 +24,7 @@ import {
 } from "../src/agent.js";
 import { createSharedStoreTools, SharedStore } from "../src/shared-store.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
-import { createExplicitFauxModels, createFauxModelRegistry } from "./helpers/faux-models.js";
+import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
 
 function sortUnique(names: string[]): string[] {
   return [...new Set(names)].sort();
@@ -35,7 +35,8 @@ async function withAgentSession(
     cwd: string;
     agentDir: string;
     faux: ReturnType<typeof createExplicitFauxModels>;
-    registry: ReturnType<typeof createFauxModelRegistry>;
+    modelRuntime: Awaited<ReturnType<typeof createFauxRuntimeBundle>>["modelRuntime"];
+    registry: Awaited<ReturnType<typeof createFauxRuntimeBundle>>["modelRegistry"];
   }) => Promise<void>,
 ): Promise<void> {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-tools-home-"));
@@ -48,7 +49,8 @@ async function withAgentSession(
   });
   try {
     await withFakeHomeAsync(home, async () => {
-      await fn({ cwd, agentDir, faux, registry: createFauxModelRegistry(faux) });
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+      await fn({ cwd, agentDir, faux, modelRuntime, registry: modelRegistry });
     });
   } finally {
     faux.dispose();
@@ -72,7 +74,7 @@ test("resolveSessionToolAllowlist merges system + structured_output names", () =
 });
 
 test("T1: tools: [read] keeps only read (+ system/schema) and excludes bash/edit/write", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const settingsManager = SettingsManager.create(cwd, agentDir);
     const store = new SharedStore();
     const systemTools = createSharedStoreTools(store);
@@ -87,7 +89,7 @@ test("T1: tools: [read] keeps only read (+ system/schema) and excludes bash/edit
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       model: faux.model,
-      modelRegistry: registry,
+      modelRuntime,
       tools: allow,
       customTools: systemTools as never,
     });
@@ -106,9 +108,10 @@ test("T1: tools: [read] keeps only read (+ system/schema) and excludes bash/edit
     faux.setResponses([fauxAssistantMessage("read-only ok")]);
     const agent = new WorkflowAgent({
       cwd,
-      modelRegistry: registry,
+      modelRuntime,
       session: {
         model: faux.model,
+        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager,
       },
@@ -123,7 +126,7 @@ test("T1: tools: [read] keeps only read (+ system/schema) and excludes bash/edit
 });
 
 test("T2: no tools allowlist defaults include bash", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const { createAgentSession } = await import("@earendil-works/pi-coding-agent");
     const { session } = await createAgentSession({
       cwd,
@@ -131,7 +134,7 @@ test("T2: no tools allowlist defaults include bash", async () => {
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.create(cwd, agentDir),
       model: faux.model,
-      modelRegistry: registry,
+      modelRuntime,
     });
     try {
       assert.ok(session.getActiveToolNames().includes("bash"), "default active tools should include bash");
@@ -142,7 +145,7 @@ test("T2: no tools allowlist defaults include bash", async () => {
 });
 
 test("T3: tools allowlist can include grep/find without createCodingTools custom set", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const { createAgentSession } = await import("@earendil-works/pi-coding-agent");
     const { session } = await createAgentSession({
       cwd,
@@ -150,7 +153,7 @@ test("T3: tools allowlist can include grep/find without createCodingTools custom
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.create(cwd, agentDir),
       model: faux.model,
-      modelRegistry: registry,
+      modelRuntime,
       tools: ["read", "grep", "find"],
     });
     try {
@@ -166,9 +169,10 @@ test("T3: tools allowlist can include grep/find without createCodingTools custom
     faux.setResponses([fauxAssistantMessage("grep-find ok")]);
     const agent = new WorkflowAgent({
       cwd,
-      modelRegistry: registry,
+      modelRuntime,
       session: {
         model: faux.model,
+        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },
@@ -178,13 +182,14 @@ test("T3: tools allowlist can include grep/find without createCodingTools custom
 });
 
 test("T4: excludeTools bash without allowlist removes bash", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     faux.setResponses([fauxAssistantMessage("no bash")]);
     const agent = new WorkflowAgent({
       cwd,
-      modelRegistry: registry,
+      modelRuntime,
       session: {
         model: faux.model,
+        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },
@@ -197,7 +202,7 @@ test("T4: excludeTools bash without allowlist removes bash", async () => {
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.create(cwd, agentDir),
       model: faux.model,
-      modelRegistry: registry,
+      modelRuntime,
       excludeTools: ["bash"],
     });
     try {
@@ -210,7 +215,7 @@ test("T4: excludeTools bash without allowlist removes bash", async () => {
 });
 
 test("T5: systemTools store_put/store_get are callable under restrictive allowlist", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const store = new SharedStore();
     const systemTools = createSharedStoreTools(store);
     faux.setResponses([
@@ -221,9 +226,10 @@ test("T5: systemTools store_put/store_get are callable under restrictive allowli
     ]);
     const agent = new WorkflowAgent({
       cwd,
-      modelRegistry: registry,
+      modelRuntime,
       session: {
         model: faux.model,
+        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },
@@ -238,7 +244,7 @@ test("T5: systemTools store_put/store_get are callable under restrictive allowli
 });
 
 test("T6: faux model calling disallowed bash does not execute a real shell command", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const marker = join(cwd, "should-not-exist.txt");
     faux.setResponses([
       fauxAssistantMessage(
@@ -249,9 +255,10 @@ test("T6: faux model calling disallowed bash does not execute a real shell comma
     ]);
     const agent = new WorkflowAgent({
       cwd,
-      modelRegistry: registry,
+      modelRuntime,
       session: {
         model: faux.model,
+        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },
@@ -268,7 +275,7 @@ test("T6: faux model calling disallowed bash does not execute a real shell comma
 });
 
 test("T7/T8: projectTrusted false hides project extension tools; true loads them", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const extDir = join(cwd, ".pi", "extensions");
     mkdirSync(extDir, { recursive: true });
     writeFileSync(
@@ -302,7 +309,7 @@ export default function (pi) {
         settingsManager,
         resourceLoader,
         model: faux.model,
-        modelRegistry: registry,
+        modelRuntime,
       });
       try {
         return session.getAllTools().map((t) => t.name);
@@ -322,14 +329,14 @@ export default function (pi) {
     const agentFalse = new WorkflowAgent({
       cwd,
       projectTrusted: false,
-      modelRegistry: registry,
+      modelRuntime,
       session: { model: faux.model, sessionManager: SessionManager.inMemory() },
     });
     assert.equal(await agentFalse.run("a"), "trust false");
     const agentTrue = new WorkflowAgent({
       cwd,
       projectTrusted: true,
-      modelRegistry: registry,
+      modelRuntime,
       session: { model: faux.model, sessionManager: SessionManager.inMemory() },
     });
     assert.equal(await agentTrue.run("b"), "trust true");
@@ -337,7 +344,7 @@ export default function (pi) {
 });
 
 test("T9: session_start-initialized tools still work (lifecycle regression)", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const settingsManager = SettingsManager.create(cwd, agentDir);
     const resourceLoader = new DefaultResourceLoader({
       cwd,
@@ -377,9 +384,10 @@ test("T9: session_start-initialized tools still work (lifecycle regression)", as
     ]);
     const agent = new WorkflowAgent({
       cwd,
-      modelRegistry: registry,
+      modelRuntime,
       session: {
         model: faux.model,
+        modelRuntime,
         resourceLoader,
         sessionManager: SessionManager.inMemory(),
         settingsManager,
@@ -581,7 +589,7 @@ test("filterShadowingBuiltinCustomTools drops coding builtins but keeps extras",
 });
 
 test("T25: historical createCodingTools(cwd) extras do not shadow session built-ins under worktree cwd", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const { createCodingTools } = await import("@earendil-works/pi-coding-agent");
     const worktreeCwd = mkdtempSync(join(tmpdir(), "pi-dw-worktree-cwd-"));
     try {
@@ -596,7 +604,7 @@ test("T25: historical createCodingTools(cwd) extras do not shadow session built-
       const agent = new WorkflowAgent({
         cwd,
         tools: createCodingTools(cwd) as never,
-        modelRegistry: registry,
+        modelRuntime,
         session: {
           model: faux.model,
           sessionManager: SessionManager.inMemory(),
@@ -611,7 +619,7 @@ test("T25: historical createCodingTools(cwd) extras do not shadow session built-
 });
 
 test("T26: systemTools survive denylist excludeTools", async () => {
-  await withAgentSession(async ({ cwd, agentDir, faux, registry }) => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const store = new SharedStore();
     const systemTools = createSharedStoreTools(store);
     faux.setResponses([
@@ -622,9 +630,10 @@ test("T26: systemTools survive denylist excludeTools", async () => {
     ]);
     const agent = new WorkflowAgent({
       cwd,
-      modelRegistry: registry,
+      modelRuntime,
       session: {
         model: faux.model,
+        modelRuntime,
         sessionManager: SessionManager.inMemory(),
         settingsManager: SettingsManager.create(cwd, agentDir),
       },

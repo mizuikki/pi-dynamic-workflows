@@ -1,24 +1,23 @@
-import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { AuthStorage, getAgentDir, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { createPluginModelRuntime } from "./model-runtime.js";
 
-/** The small availability surface shared by upstream Pi and the local fork. */
+/**
+ * Availability surface for UI/guidelines.
+ * Upstream ModelRegistry.getAvailable() is synchronous (snapshot).
+ * ModelRuntime.getAvailable() is asynchronous.
+ */
 export interface ModelAvailabilitySource {
   getAvailable(): readonly Model<Api>[] | Promise<readonly Model<Api>[]>;
-  getAvailableSync?(): readonly Model<Api>[];
 }
 
 function reportAvailabilityFailure(error: unknown): void {
   console.warn(`[workflow] unable to read available models: ${error instanceof Error ? error.message : String(error)}`);
 }
 
-/** Return a best-effort synchronous snapshot without treating a Promise as data. */
+/** Best-effort synchronous snapshot: arrays only; Promises are not treated as data. */
 export function getAvailableModelsSync(source: ModelAvailabilitySource): readonly Model<Api>[] {
   try {
-    if (typeof source.getAvailableSync === "function") {
-      const models = source.getAvailableSync();
-      return Array.isArray(models) ? models : [];
-    }
     const models = source.getAvailable();
     if (models && typeof (models as PromiseLike<unknown>).then === "function") {
       void Promise.resolve(models).catch(reportAvailabilityFailure);
@@ -31,7 +30,7 @@ export function getAvailableModelsSync(source: ModelAvailabilitySource): readonl
   }
 }
 
-/** Resolve the authenticated model list for UI and other asynchronous callers. */
+/** Resolve the authenticated/available model list for async callers. */
 export async function getAvailableModels(source: ModelAvailabilitySource): Promise<readonly Model<Api>[]> {
   try {
     const models = await source.getAvailable();
@@ -42,22 +41,58 @@ export async function getAvailableModels(source: ModelAvailabilitySource): Promi
   }
 }
 
-function createDefaultAvailabilitySource(): ModelAvailabilitySource {
-  const agentDir = getAgentDir();
-  return ModelRegistry.create(
-    AuthStorage.create(join(agentDir, "auth.json")),
-    join(agentDir, "models.json"),
-  ) as unknown as ModelAvailabilitySource;
+let defaultRuntimePromise: Promise<ModelRuntime> | undefined;
+
+function getDefaultRuntime(): Promise<ModelRuntime> {
+  if (!defaultRuntimePromise) {
+    defaultRuntimePromise = createPluginModelRuntime({ allowModelNetwork: false });
+  }
+  return defaultRuntimePromise;
+}
+
+function availabilityFromRuntime(runtime: ModelRuntime): ModelAvailabilitySource {
+  return {
+    getAvailable: () => runtime.getAvailable(),
+  };
+}
+
+function availabilityFromRegistry(registry: ModelRegistry): ModelAvailabilitySource {
+  return {
+    getAvailable: () => registry.getAvailable(),
+  };
+}
+
+async function resolveDefaultAvailabilitySource(): Promise<ModelAvailabilitySource> {
+  return availabilityFromRuntime(await getDefaultRuntime());
 }
 
 export function listAvailableModelSpecs(source?: ModelAvailabilitySource): string[] {
-  return getAvailableModelsSync(source ?? createDefaultAvailabilitySource()).map(
-    (model) => `${model.provider}/${model.id}`,
-  );
+  if (!source) {
+    // Sync path without a host registry: no blocking ModelRuntime.create.
+    return [];
+  }
+  return getAvailableModelsSync(source).map((model) => `${model.provider}/${model.id}`);
 }
 
-export async function listAvailableModelSpecsAsync(source?: ModelAvailabilitySource): Promise<string[]> {
-  return (await getAvailableModels(source ?? createDefaultAvailabilitySource())).map(
-    (model) => `${model.provider}/${model.id}`,
-  );
+export async function listAvailableModelSpecsAsync(
+  source?: ModelAvailabilitySource | ModelRegistry | ModelRuntime,
+): Promise<string[]> {
+  let availability: ModelAvailabilitySource;
+  if (!source) {
+    availability = await resolveDefaultAvailabilitySource();
+  } else if (
+    typeof (source as ModelRuntime).getModels === "function" &&
+    typeof (source as ModelRuntime).getAvailable === "function"
+  ) {
+    // ModelRuntime: prefer async getAvailable for auth-aware listing.
+    availability = availabilityFromRuntime(source as ModelRuntime);
+  } else if (
+    typeof (source as ModelRegistry).getAll === "function" &&
+    typeof (source as ModelRegistry).getAvailable === "function"
+  ) {
+    availability = availabilityFromRegistry(source as ModelRegistry);
+  } else {
+    availability = source as ModelAvailabilitySource;
+  }
+  return (await getAvailableModels(availability)).map((model) => `${model.provider}/${model.id}`);
 }

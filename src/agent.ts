@@ -3,7 +3,6 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import {
-  AuthStorage,
   type CreateAgentSessionOptions,
   createAgentSession,
   createSyntheticSourceInfo,
@@ -11,7 +10,8 @@ import {
   type Extension,
   getAgentDir,
   type LoadExtensionsResult,
-  ModelRegistry,
+  type ModelRegistry,
+  type ModelRuntime,
   type ResourceLoader,
   SessionManager,
   SettingsManager,
@@ -22,6 +22,13 @@ import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
 import { applyToolPolicy } from "./agent-registry.js";
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
+import {
+  copyRegisteredProviders,
+  createPluginModelRuntime,
+  type ModelListSource,
+  modelListFromRegistry,
+  modelListFromRuntime,
+} from "./model-runtime.js";
 import { canonicalModelSpec, resolveModelSpecWithThinking } from "./model-spec.js";
 import {
   loadModelTierConfig,
@@ -396,7 +403,7 @@ export interface WorkflowAgentOptions {
    * and any per-run tools. Not a base coding-tool set replacement.
    */
   tools?: ToolDefinition[];
-  /** Override any createAgentSession option (model, authStorage, resourceLoader, etc.). */
+  /** Override any createAgentSession option (model, modelRuntime, resourceLoader, etc.). */
   session?: Partial<CreateAgentSessionOptions>;
   /** Extra system guidance prepended to every subagent task. */
   instructions?: string;
@@ -408,13 +415,16 @@ export interface WorkflowAgentOptions {
    */
   mainModel?: string;
   /**
-   * Shared model registry from the host Pi session. When provided, subagents
-   * resolve tier/model specs against the same registry the main session uses,
-   * including dynamically-registered providers such as ollama-cloud. Without
-   * this, the agent builds an isolated registry from disk and may miss models
-   * that are only available via extension registration.
+   * Host extension ModelRegistry facade. Used for model-spec resolution and as
+   * the source of registered dynamic provider configs to copy into the plugin
+   * ModelRuntime. Not passed to createAgentSession.
    */
   modelRegistry?: ModelRegistry;
+  /**
+   * Plugin-owned execution runtime for child sessions. When omitted, a cached
+   * runtime is created asynchronously from agentDir auth/models paths.
+   */
+  modelRuntime?: ModelRuntime;
   /**
    * Persist each subagent transcript as a real pi session file under the
    * standard sessions directory (keyed by the runner's project cwd), instead
@@ -524,13 +534,15 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    */
   systemTools?: ToolDefinition[];
   /**
-   * Per-run model registry override. Takes precedence over the constructor's
-   * `modelRegistry` (WorkflowAgentOptions.modelRegistry) for both model
-   * resolution and the `createAgentSession` call this run makes. Falls back to
-   * the constructor's shared registry, then a lazily-built disk registry, when
-   * omitted.
+   * Per-run host ModelRegistry facade for resolution and dynamic provider copy.
+   * Takes precedence over the constructor's `modelRegistry`.
    */
   modelRegistry?: ModelRegistry;
+  /**
+   * Per-run ModelRuntime for createAgentSession. Takes precedence over the
+   * constructor/session runtime, then the agent's cached plugin runtime.
+   */
+  modelRuntime?: ModelRuntime;
   /** Explicit thinking override for this run; otherwise the host setting applies. */
   thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
   /** Optional per-run context loader override. */
@@ -568,10 +580,13 @@ export class WorkflowAgent {
   private readonly contextLoader?: SubagentContextLoader;
   private readonly sessionId?: string;
   private readonly extensionPathFilters: ExtensionPathFilter[];
-  /** Shared registry from the host session, when provided. */
+  /** Host extension registry facade from the host session, when provided. */
   private readonly sharedRegistry?: ModelRegistry;
-  /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
-  private registry?: ModelRegistry;
+  /** Explicit execution runtime from constructor options, when provided. */
+  private readonly sharedRuntime?: ModelRuntime;
+  /** Cached plugin-owned runtime created on first use. */
+  private cachedRuntime?: ModelRuntime;
+  private cachedRuntimePromise?: Promise<ModelRuntime>;
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -581,30 +596,44 @@ export class WorkflowAgent {
     this.instructions = options.instructions;
     this.mainModel = options.mainModel;
     this.sharedRegistry = options.modelRegistry;
+    this.sharedRuntime = options.modelRuntime ?? options.session?.modelRuntime;
     this.projectTrusted = options.projectTrusted;
     this.contextLoader = options.contextLoader;
     this.sessionId = options.sessionId;
     this.extensionPathFilters = options.extensionPathFilters ?? [];
   }
 
+  /** Host registry for resolution / provider copy: per-run > constructor. */
+  private getHostRegistry(perRunRegistry?: ModelRegistry): ModelRegistry | undefined {
+    return perRunRegistry ?? this.sharedRegistry;
+  }
+
   /**
-   * Resolve the registry for a run: an explicit per-run registry wins, then the
-   * constructor's shared registry, then a lazily-built disk registry (shared
-   * across calls once built).
+   * Execution ModelRuntime: per-run > constructor/session > cached plugin runtime.
+   * Host registry is never unwrapped; dynamic providers are copied onto this runtime.
    */
-  private getRegistry(perRunRegistry?: ModelRegistry): ModelRegistry {
-    const providedRegistry = perRunRegistry ?? this.sharedRegistry ?? this.sessionOptions.modelRegistry;
-    if (providedRegistry) {
-      return providedRegistry;
+  private async getModelRuntime(perRunRuntime?: ModelRuntime): Promise<ModelRuntime> {
+    if (perRunRuntime) return perRunRuntime;
+    if (this.sharedRuntime) return this.sharedRuntime;
+    if (this.sessionOptions.modelRuntime) return this.sessionOptions.modelRuntime;
+    if (this.cachedRuntime) return this.cachedRuntime;
+    if (!this.cachedRuntimePromise) {
+      const agentDir = this.sessionOptions.agentDir ?? getAgentDir();
+      this.cachedRuntimePromise = createPluginModelRuntime({ agentDir }).then((runtime) => {
+        this.cachedRuntime = runtime;
+        return runtime;
+      });
     }
-    if (!this.registry) {
-      const dir = getAgentDir();
-      // Same agentDir/auth files createAgentSession uses by default, so a model
-      // resolved here carries valid credentials.
-      const auth = AuthStorage.create(join(dir, "auth.json"));
-      this.registry = ModelRegistry.create(auth, join(dir, "models.json"));
-    }
-    return this.registry;
+    return this.cachedRuntimePromise;
+  }
+
+  /**
+   * Resolution list source after providers have been copied into the runtime.
+   * Prefer the host registry (routing/catalog surface); fall back to the plugin runtime.
+   */
+  private getResolutionSource(runtime: ModelRuntime, hostRegistry?: ModelRegistry): ModelListSource {
+    if (hostRegistry) return modelListFromRegistry(hostRegistry);
+    return modelListFromRuntime(runtime);
   }
 
   /**
@@ -679,15 +708,20 @@ export class WorkflowAgent {
     // options.model when a phase pattern matches — so an explicit model wins.
     const modelSpec = resolveAgentModelSpec(options, this.mainModel);
 
+    // Plugin-owned execution runtime (never unwrap host runtime from ModelRegistry).
+    const hostRegistry = this.getHostRegistry(options.modelRegistry);
+    const modelRuntime = await this.getModelRuntime(options.modelRuntime);
+    copyRegisteredProviders(hostRegistry, modelRuntime);
+
     // Resolve a requested model spec to a Model object. Specs use Pi CLI-style
     // parsing, including an optional :thinking suffix such as gpt-5.5:xhigh.
     // A given-but-unresolved spec falls back to the session default (with a
     // warning) rather than failing.
-    const modelRegistry = this.getRegistry(options.modelRegistry);
+    const resolutionSource = this.getResolutionSource(modelRuntime, hostRegistry);
     let resolvedModel: Model<any> | undefined;
     let resolvedThinkingLevel: CreateAgentSessionOptions["thinkingLevel"] | undefined;
     if (modelSpec) {
-      const resolved = resolveModelSpecWithThinking(modelSpec, modelRegistry);
+      const resolved = resolveModelSpecWithThinking(modelSpec, resolutionSource);
       if (resolved.warning) console.warn(`[workflow] ${resolved.warning}`);
       if (resolved.model) {
         resolvedModel = resolved.model;
@@ -707,7 +741,7 @@ export class WorkflowAgent {
     const {
       resourceLoader: providedResourceLoader,
       settingsManager: providedSettingsManager,
-      modelRegistry: _sessionModelRegistry,
+      modelRuntime: _sessionModelRuntime,
       ...baseSessionOptions
     } = this.sessionOptions;
     const projectTrusted = this.projectTrusted;
@@ -765,14 +799,13 @@ export class WorkflowAgent {
           },
     );
     const sessionManager = this.sessionOptions.sessionManager ?? this.createSessionManager();
-    const hostRegistry = modelRegistry;
     const childSessionOptions: CreateAgentSessionOptions = {
       cwd: runCwd,
       agentDir,
       sessionManager,
       settingsManager,
       ...baseSessionOptions,
-      ...(hostRegistry ? { modelRegistry: hostRegistry } : {}),
+      modelRuntime,
       resourceLoader,
       // Per-call model/thinking wins over any sessionOptions defaults.
       ...(resolvedModel ? { model: resolvedModel } : {}),
