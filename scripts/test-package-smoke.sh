@@ -28,9 +28,9 @@ fi
 npm init -y --prefix "$SMOKE_DIR" >/dev/null
 npm install --ignore-scripts --prefix "$SMOKE_DIR" \
   "$TARBALL" \
-  "@earendil-works/pi-ai@0.80.10" \
-  "@earendil-works/pi-coding-agent@0.80.10" \
-  "@earendil-works/pi-tui@0.80.10" \
+  "@earendil-works/pi-ai@0.81.1" \
+  "@earendil-works/pi-coding-agent@0.81.1" \
+  "@earendil-works/pi-tui@0.81.1" \
   "typebox" \
   "typescript" >/dev/null
 

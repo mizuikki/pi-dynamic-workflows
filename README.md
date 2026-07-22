@@ -399,10 +399,10 @@ npm install
 npm test     # biome + tsc + unit tests
 ```
 
-The standard contract uses `@earendil-works/pi-*` `0.80.6` packages from the lockfile. The Pi fork contract is fixed to commit `4a4a2ab3630a0a6f65ad655e07d6f3babe4e07f5` (`0.80.7`) and is tested without changing this checkout's `node_modules`:
+The standard contract uses `@earendil-works/pi-*` `0.81.1` packages from the lockfile. The Pi fork contract is fixed to commit `ae166c1366239363ccc1cab1906f8a5b4e07c6f0` (`0.81.1`) and is tested without changing this checkout's `node_modules`:
 
 ```bash
-PI_FORK_DIR=../pi PI_FORK_REF=4a4a2ab3 npm run test:pi-fork
+PI_FORK_DIR=../pi PI_FORK_REF=ae166c13 npm run test:pi-fork
 ```
 
 The fork verifier builds and packs `tui`, `ai`, `agent`, and `coding-agent` in temporary directories, installs those exact tarballs into an isolated project copy, checks module provenance and fork capabilities, then runs check, build, and unit tests. Do not add sibling `file:` dependencies to `package.json` or `package-lock.json`.
