@@ -34,12 +34,24 @@ git -C "$PI_FORK_DIR" archive --format=tar "$PI_FORK_REF" | tar -xf - -C "$FORK_
 FORK_COMMIT=$(git -C "$PI_FORK_DIR" rev-parse "$PI_FORK_REF^{commit}")
 printf 'Pi fork commit: %s (%s)\n' "$FORK_COMMIT" "$PI_FORK_REF"
 
+# Pi keeps catalog values out of Git while retaining their typed structure in
+# the archived source. Copy local values, then let build:offline verify their
+# manifest against that exact structure without fetching a mutable catalog.
+SOURCE_MODEL_DATA_DIR="$PI_FORK_DIR/packages/ai/src/providers/data"
+FORK_MODEL_DATA_DIR="$FORK_DIR/packages/ai/src/providers/data"
+if [[ ! -f "$SOURCE_MODEL_DATA_DIR/.manifest.json" ]]; then
+  printf 'Pi fork model catalog data is unavailable: %s\n' "$SOURCE_MODEL_DATA_DIR" >&2
+  exit 2
+fi
+mkdir -p "$FORK_MODEL_DATA_DIR"
+tar -C "$SOURCE_MODEL_DATA_DIR" -cf - . | tar -xf - -C "$FORK_MODEL_DATA_DIR"
+
 printf '%s\n' 'Installing Pi fork dependencies in the isolated checkout.'
 npm ci --ignore-scripts --prefix "$FORK_DIR"
 npm run build --prefix "$FORK_DIR/packages/tui"
-# Compile the tagged AI catalog snapshot without regenerating it from mutable
-# network catalogs; the contract test must exercise the archived source exactly.
-"$FORK_DIR/node_modules/.bin/tsgo" -p "$FORK_DIR/packages/ai/tsconfig.build.json"
+# Validate the local JSON snapshot against the archived structures, then build
+# without regenerating from mutable network catalogs.
+npm run build:offline --prefix "$FORK_DIR/packages/ai"
 npm run build --prefix "$FORK_DIR/packages/agent"
 npm run build --prefix "$FORK_DIR/packages/coding-agent"
 for workspace in tui ai agent coding-agent; do
@@ -81,11 +93,13 @@ if (typeof createAgentSession !== "function") throw new Error("createAgentSessio
 
 const runtime = await ModelRuntime.create({ modelsPath: null, allowModelNetwork: false });
 if (typeof runtime.registerProvider !== "function") throw new Error("ModelRuntime.registerProvider missing");
+if (typeof runtime.registerNativeProvider !== "function") throw new Error("ModelRuntime.registerNativeProvider missing");
 if (typeof runtime.getModels !== "function") throw new Error("ModelRuntime.getModels missing");
 if (typeof runtime.getAvailable !== "function") throw new Error("ModelRuntime.getAvailable missing");
 
 const registry = new ModelRegistry(runtime);
 if (typeof registry.getAvailable !== "function") throw new Error("ModelRegistry.getAvailable missing");
+if (typeof registry.getRegisteredNativeProvider !== "function") throw new Error("ModelRegistry.getRegisteredNativeProvider missing");
 
 // The plugin depends on createAgentSession accepting ModelRuntime.
 const { session } = await createAgentSession({
@@ -94,7 +108,7 @@ const { session } = await createAgentSession({
 });
 session.dispose();
 
-console.log("capability probe: ModelRuntime.create/registerProvider and ModelRegistry facade confirmed");
+console.log("capability probe: legacy/native ModelRuntime registration and ModelRegistry facade confirmed");
 '
 )
 
