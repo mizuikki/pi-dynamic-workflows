@@ -49,13 +49,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Checkout Pi ModelRuntime contract source
+      - name: Checkout and hydrate Pi ModelRuntime contract source
         run: |
           git clone --filter=blob:none https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout --detach 62cf438762cc577fae5a9691cb0c4d1824b8998f
-          test "$(git -C ../pi rev-parse HEAD)" = "62cf438762cc577fae5a9691cb0c4d1824b8998f"
+          git -C ../pi checkout --detach fd5308db5250c674f3e4cfe6059730d8f865e948
+          test "$(git -C ../pi rev-parse HEAD)" = "fd5308db5250c674f3e4cfe6059730d8f865e948"
+          npm ci --ignore-scripts --prefix ../pi
+          npm run hydrate:model-data --prefix ../pi
       - name: Build isolated Pi tarballs and test the project copy
-        run: PI_FORK_DIR=../pi PI_FORK_REF=62cf438762cc577fae5a9691cb0c4d1824b8998f npm run test:pi-fork
+        run: PI_FORK_DIR=../pi PI_FORK_REF=fd5308db5250c674f3e4cfe6059730d8f865e948 npm run test:pi-fork
 
   package-smoke:
     runs-on: ubuntu-latest
