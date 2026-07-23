@@ -49,13 +49,17 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Checkout and hydrate Pi ModelRuntime contract source
+      - name: Checkout and generate Pi ModelRuntime contract source
         run: |
           git clone --filter=blob:none https://github.com/mizuikki/pi.git ../pi
           git -C ../pi checkout --detach fd5308db5250c674f3e4cfe6059730d8f865e948
           test "$(git -C ../pi rev-parse HEAD)" = "fd5308db5250c674f3e4cfe6059730d8f865e948"
           npm ci --ignore-scripts --prefix ../pi
-          npm run hydrate:model-data --prefix ../pi
+          # hydrate:model-data fails when live provider catalogs drop models that
+          # the pinned fork still lists. generate:models regenerates both the
+          # typed structure and offline data from current catalogs so the fork
+          # contract stays buildable without depending on a frozen NVIDIA list.
+          npm run generate:models --prefix ../pi
       - name: Build isolated Pi tarballs and test the project copy
         run: PI_FORK_DIR=../pi PI_FORK_REF=fd5308db5250c674f3e4cfe6059730d8f865e948 npm run test:pi-fork
 

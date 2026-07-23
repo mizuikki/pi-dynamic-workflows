@@ -35,14 +35,26 @@ FORK_COMMIT=$(git -C "$PI_FORK_DIR" rev-parse "$PI_FORK_REF^{commit}")
 printf 'Pi fork commit: %s (%s)\n' "$FORK_COMMIT" "$PI_FORK_REF"
 
 # Pi keeps catalog values out of Git while retaining their typed structure in
-# the archived source. Copy local values, then let build:offline verify their
-# manifest against that exact structure without fetching a mutable catalog.
-SOURCE_MODEL_DATA_DIR="$PI_FORK_DIR/packages/ai/src/providers/data"
-FORK_MODEL_DATA_DIR="$FORK_DIR/packages/ai/src/providers/data"
+# the archived source. CI regenerates both structure and values from live
+# provider catalogs when hydrate cannot match a dropped model. Copy those
+# working-tree artifacts into the archive checkout so build:offline can verify
+# them without another network fetch.
+SOURCE_AI_SRC="$PI_FORK_DIR/packages/ai/src"
+FORK_AI_SRC="$FORK_DIR/packages/ai/src"
+SOURCE_MODEL_DATA_DIR="$SOURCE_AI_SRC/providers/data"
+FORK_MODEL_DATA_DIR="$FORK_AI_SRC/providers/data"
 if [[ ! -f "$SOURCE_MODEL_DATA_DIR/.manifest.json" ]]; then
   printf 'Pi fork model catalog data is unavailable: %s\n' "$SOURCE_MODEL_DATA_DIR" >&2
   exit 2
 fi
+if [[ -f "$SOURCE_AI_SRC/models.generated.ts" ]]; then
+  cp "$SOURCE_AI_SRC/models.generated.ts" "$FORK_AI_SRC/models.generated.ts"
+fi
+shopt -s nullglob
+for shard in "$SOURCE_AI_SRC"/providers/*.models.ts; do
+  cp "$shard" "$FORK_AI_SRC/providers/$(basename "$shard")"
+done
+shopt -u nullglob
 mkdir -p "$FORK_MODEL_DATA_DIR"
 tar -C "$SOURCE_MODEL_DATA_DIR" -cf - . | tar -xf - -C "$FORK_MODEL_DATA_DIR"
 
