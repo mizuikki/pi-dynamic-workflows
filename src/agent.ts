@@ -77,11 +77,21 @@ const WORKFLOW_EXTENSION_SUFFIXES = [
   "extensions/workflow.cjs",
 ] as const;
 
+// The adaptor owns a provider-local tool profile which is initialized against
+// the host session. A workflow child creates an independent session and must
+// retain its normal Pi tool surface, so do not load that host-only profile into
+// the child.
+const CODEX_ADAPTOR_PATH_SEGMENT = "/pi-codex-adaptor/";
+
 export type ExtensionPathFilter = (pathValue: string) => boolean;
 
 function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
   const normalized = pathValue.replace(/\\/g, "/").toLowerCase();
   return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+function shouldFilterCodexAdaptorExtensionPath(pathValue: string): boolean {
+  return pathValue.replace(/\\/g, "/").toLowerCase().includes(CODEX_ADAPTOR_PATH_SEGMENT);
 }
 
 function extensionPathValues(extension: { path: string; resolvedPath?: string }): string[] {
@@ -107,8 +117,9 @@ function filterExtensions(
   extraFilters: ExtensionPathFilter[] = [],
 ): LoadExtensionsResult {
   const shouldDrop = (pathValues: string[]) =>
-    pathValues.some((pathValue) => shouldFilterWorkflowExtensionPath(pathValue)) ||
-    configuredFilterMatches(pathValues, extraFilters);
+    pathValues.some(
+      (pathValue) => shouldFilterWorkflowExtensionPath(pathValue) || shouldFilterCodexAdaptorExtensionPath(pathValue),
+    ) || configuredFilterMatches(pathValues, extraFilters);
   return {
     ...result,
     extensions: result.extensions.filter(
@@ -293,6 +304,23 @@ export function throwIfProviderLimit(messages: unknown[], label?: string): void 
     WorkflowErrorCode.PROVIDER_USAGE_LIMIT,
     { recoverable: false, agentLabel: label, resetHint },
   );
+}
+
+/**
+ * Preserve a provider terminal error instead of reporting it as an empty
+ * response. Capability/profile failures are local configuration errors and
+ * cannot be repaired by retrying the same child session.
+ */
+export function throwIfAssistantError(messages: unknown[], label?: string): void {
+  const err = lastAssistantError(messages);
+  if (err?.stopReason !== "error") return;
+
+  const message = err.errorMessage ?? "Subagent provider request failed";
+  const profileUnavailable = /tool profile is unavailable for the selected capability/i.test(message);
+  throw new WorkflowError(message, WorkflowErrorCode.AGENT_EXECUTION_ERROR, {
+    recoverable: !profileUnavailable,
+    agentLabel: label,
+  });
 }
 
 /** Minimal session surface resolveStructuredOutput needs (real session or a test double). */
@@ -879,6 +907,7 @@ export class WorkflowAgent {
       // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
       // (schema path) or a silent empty-output null (non-schema path).
       throwIfProviderLimit(session.messages, options.label);
+      throwIfAssistantError(session.messages, options.label);
 
       if (options.schema) {
         return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>

@@ -242,6 +242,48 @@ test("wrapResourceLoaderForWorkflowSubagents drops the local workflow extension"
   );
 });
 
+test("wrapResourceLoaderForWorkflowSubagents drops the host Codex adaptor", () => {
+  const adaptorExtension = {
+    path: "/extensions/pi-codex-adaptor/src/extension.ts",
+    resolvedPath: "/extensions/pi-codex-adaptor/src/extension.ts",
+    sourceInfo: {} as never,
+    handlers: new Map(),
+    tools: new Map(),
+    messageRenderers: new Map(),
+    commands: new Map(),
+    flags: new Map(),
+    shortcuts: new Map(),
+  } as Extension;
+  const safeExtension = {
+    path: "extensions/safe.ts",
+    resolvedPath: "/tmp/project/extensions/safe.ts",
+    sourceInfo: {} as never,
+    handlers: new Map(),
+    tools: new Map(),
+    messageRenderers: new Map(),
+    commands: new Map(),
+    flags: new Map(),
+    shortcuts: new Map(),
+  } as Extension;
+  const baseLoader = {
+    getExtensions: () => ({ extensions: [adaptorExtension, safeExtension], errors: [], runtime: {} as never }),
+    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }),
+    getAgentsFiles: () => ({ agentsFiles: [] }),
+    getSystemPrompt: () => undefined,
+    getAppendSystemPrompt: () => [],
+    extendResources: () => {},
+    reload: async () => {},
+  } as ResourceLoader;
+
+  const result = wrapResourceLoaderForWorkflowSubagents(baseLoader).getExtensions();
+  assert.deepEqual(
+    result.extensions.map((extension) => extension.path),
+    ["extensions/safe.ts"],
+  );
+});
+
 test("wrapResourceLoader filters workflow path and tool/command identities", () => {
   const extension = (path: string, resolvedPath: string, toolNames: string[] = [], commandNames: string[] = []) =>
     ({
