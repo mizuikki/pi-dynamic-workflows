@@ -67,6 +67,32 @@ test("awaitAbortableSubagentPrompt waits for child session cancellation before r
   assert.equal(abortCalls, 1, "abort is issued exactly once");
 });
 
+test("awaitAbortableSubagentPrompt rejects a pre-aborted signal without invoking prompt", async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  let promptCalls = 0;
+  let abortCalls = 0;
+
+  await assert.rejects(
+    () =>
+      awaitAbortableSubagentPrompt(
+        async () => {
+          promptCalls++;
+          return "should-not-run";
+        },
+        controller.signal,
+        async () => {
+          abortCalls++;
+        },
+      ),
+    /Subagent was aborted/,
+  );
+
+  assert.equal(promptCalls, 0, "prompt must never be scheduled or invoked");
+  assert.equal(abortCalls, 1, "abort is issued exactly once");
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // persistAgentSessions — in-memory by default, file-backed keyed by project cwd
 // ═══════════════════════════════════════════════════════════════════════

@@ -528,12 +528,18 @@ export async function awaitAbortableSubagentPrompt<T>(
     abortPromise ??= Promise.resolve().then(abort);
     return abortPromise;
   };
+  const abortError = () => new Error("Subagent was aborted");
+
+  // Already cancelled before entry: never schedule or invoke prompt.
+  if (signal.aborted) {
+    await beginAbort();
+    throw abortError();
+  }
 
   let rejectWhenAborted: ((reason?: unknown) => void) | undefined;
   const aborted = new Promise<never>((_, reject) => {
     rejectWhenAborted = reject;
   });
-  const abortError = () => new Error("Subagent was aborted");
   const onAbort = () => {
     void beginAbort().then(
       () => rejectWhenAborted?.(abortError()),
@@ -541,8 +547,7 @@ export async function awaitAbortableSubagentPrompt<T>(
     );
   };
 
-  if (signal.aborted) onAbort();
-  else signal.addEventListener("abort", onAbort, { once: true });
+  signal.addEventListener("abort", onAbort, { once: true });
 
   try {
     const result = await Promise.race([Promise.resolve().then(prompt), aborted]);
