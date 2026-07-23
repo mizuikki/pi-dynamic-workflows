@@ -39,7 +39,7 @@ export interface WorkflowSettings {
    * Persist each workflow subagent transcript as a real pi session file under
    * the standard sessions directory (~/.pi/agent/sessions/<encoded-cwd>/),
    * keyed by the project cwd. Default false: subagent sessions stay in-memory
-   * and only the compacted history embedded in the run JSON survives.
+   * and only the compacted history embedded in the run payload survives.
    */
   persistAgentSessions?: boolean;
   /**

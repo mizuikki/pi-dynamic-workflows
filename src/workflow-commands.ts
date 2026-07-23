@@ -6,7 +6,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { recomputeWorkflowSnapshot, renderWorkflowText, type WorkflowSnapshot } from "./display.js";
 import { type EffortState, effortDirective } from "./effort-command.js";
-import type { PersistedRunState } from "./run-persistence.js";
+import type { PersistedRunState, WorkflowRunSummary } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
 import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME } from "./workflow-editor.js";
 import type { WorkflowManager } from "./workflow-manager.js";
@@ -27,10 +27,10 @@ const USAGE =
 
 const RUN_USAGE = "Usage: /workflows run <prompt> — force a dynamic workflow from the prompt";
 
-function summarizeRun(run: PersistedRunState): string {
+function summarizeRun(run: WorkflowRunSummary): string {
   const icon = STATUS_ICON[run.status] ?? "?";
-  const done = run.agents.filter((a) => a.status === "done").length;
-  const total = run.agents.length;
+  const done = run.agentCounts.done;
+  const total = run.agentCounts.total;
   const tokens = run.tokenUsage ? ` · ${run.tokenUsage.total.toLocaleString()} tok` : "";
   return `${icon} ${run.runId}  ${run.workflowName} [${run.status}] ${done}/${total} agents${tokens}`;
 }
@@ -204,7 +204,7 @@ export function registerWorkflowCommands(
             await print(renderWorkflowText(recomputeWorkflowSnapshot(live), false));
             return;
           }
-          const run = manager.listRuns().find((r) => r.runId === id);
+          const run = manager.loadRun(id);
           if (!run) {
             ctx.ui.notify(`No workflow run "${id}"`, "error");
             return;
@@ -233,7 +233,15 @@ export function registerWorkflowCommands(
         }
         case "rm": {
           if (!id) return ctx.ui.notify(USAGE, "warning");
-          ctx.ui.notify(manager.deleteRun(id) ? `Removed ${id}` : `No run ${id}`, "info");
+          const result = await manager.deleteRun(id);
+          ctx.ui.notify(
+            result === "deleted"
+              ? `Removed ${id}`
+              : result === "leased"
+                ? `Cannot remove ${id} (run is active)`
+                : `No run ${id}`,
+            result === "deleted" ? "info" : "warning",
+          );
           return;
         }
         case "save": {
@@ -244,7 +252,8 @@ export function registerWorkflowCommands(
           const runs = manager.listRuns();
           const runIdArg = parts[2];
           // Pick the named run, else the most recent run that still has its script.
-          const run = runIdArg ? runs.find((r) => r.runId === runIdArg) : runs.find((r) => r.script);
+          const summary = runIdArg ? runs.find((r) => r.runId === runIdArg) : runs.find((r) => r.hasScript);
+          const run = summary ? manager.loadRun(summary.runId) : null;
           if (!run?.script) {
             ctx.ui.notify(runIdArg ? `No run ${runIdArg} with a script` : "No saved run to save", "error");
             return;

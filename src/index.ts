@@ -143,8 +143,8 @@ export {
   listAvailableModelSpecs as listAvailableModelSpecsCompat,
   listAvailableModelSpecsAsync as listAvailableModelSpecsAsyncCompat,
 } from "./pi-compat.js";
-export type { PersistedRunState, RunPersistence, RunStatus } from "./run-persistence.js";
-export { createRunPersistence, generateRunId } from "./run-persistence.js";
+export type { DeleteRunResult, PersistedRunState, RunStatus, WorkflowRunSummary } from "./run-persistence.js";
+export { generateRunId, RUN_LEASE_HEARTBEAT_INTERVAL_MS, RUN_LEASE_STALE_AFTER_MS } from "./run-persistence.js";
 export {
   parseCommandArgs,
   registerAllSavedWorkflows,
@@ -162,7 +162,15 @@ export {
   prependEnvExports,
   shellQuoteEnvValue,
 } from "./subagent-context.js";
-export { deliverText, installResultDelivery, installTaskPanel, type TaskPanelOptions } from "./task-panel.js";
+export {
+  createWorkflowPanelSnapshot,
+  deliverText,
+  installResultDelivery,
+  installTaskPanel,
+  type TaskPanelOptions,
+  type WorkflowPanelRunSnapshot,
+  type WorkflowPanelSnapshot,
+} from "./task-panel.js";
 export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
   AgentOptions,
@@ -175,6 +183,14 @@ export type {
 } from "./workflow.js";
 export { parseWorkflowScript, runWorkflow } from "./workflow.js";
 export { registerWorkflowCommands } from "./workflow-commands.js";
+export {
+  assertSupportedNodeRuntime,
+  WORKFLOW_DATABASE_APPLICATION_ID,
+  WORKFLOW_DATABASE_BUSY_TIMEOUT_MS,
+  WORKFLOW_DATABASE_SCHEMA_VERSION,
+  WORKFLOW_PAYLOAD_VERSION,
+  WorkflowPersistenceError,
+} from "./workflow-database.js";
 export {
   buildForcedWorkflowPrompt,
   colorizeWorkflow,
@@ -193,8 +209,11 @@ export type { ManagedRun, WorkflowManagerOptions } from "./workflow-manager.js";
 export { WorkflowManager } from "./workflow-manager.js";
 export type { WorkflowProjectPaths } from "./workflow-paths.js";
 export {
+  WORKFLOW_DATABASE_FILENAME,
   WORKFLOW_HOME_RELATIVE_DIR,
   WORKFLOW_PROJECTS_SUBDIR,
+  workflowCanonicalProjectPath,
+  workflowDatabasePath,
   workflowHomeDir,
   workflowProjectKey,
   workflowProjectPaths,

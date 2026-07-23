@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
+import { createRunPersistence, type PersistedRunState } from "../src/run-persistence.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
@@ -67,6 +68,15 @@ phase('Work')
 const a = await agent('do it', { label: 'a' })
 return { a }`;
 
+function seedRun(cwd: string, state: PersistedRunState) {
+  const repository = createRunPersistence(cwd);
+  const lease = repository.acquireRunLease(state.runId, "new");
+  assert.ok(lease);
+  repository.save(state, lease);
+  repository.releaseRunLease(lease);
+  repository.close();
+}
+
 /** Run each manager test with isolated cwd and HOME so workflow state is isolated. */
 function withTempCwd(fn: (cwd: string) => Promise<void>) {
   return async () => {
@@ -116,7 +126,8 @@ test(
     const result = await manager.runSync(oneAgentScript);
 
     assert.equal((result.result as { a: unknown }).a, null);
-    const agent = manager.listRuns()[0]?.agents[0];
+    const first = manager.listRuns()[0];
+    const agent = first ? manager.loadRun(first.runId)?.agents[0] : undefined;
     assert.equal(agent?.status, "error");
     assert.match(agent?.error ?? "", /timed out after 5ms/);
     assert.match(agent?.error ?? "", /raise or omit timeoutMs\/agentTimeoutMs/);
@@ -131,7 +142,8 @@ test(
     const result = await manager.runSync(oneAgentScript, undefined, { agentTimeoutMs: null });
 
     assert.equal((result.result as { a: unknown }).a, "slow");
-    const agent = manager.listRuns()[0]?.agents[0];
+    const first = manager.listRuns()[0];
+    const agent = first ? manager.loadRun(first.runId)?.agents[0] : undefined;
     assert.equal(agent?.status, "done");
   }),
 );
@@ -215,7 +227,8 @@ const b = await agent('reason', { label: 'judge' })
 return { a, b }`;
     await manager.runSync(script);
 
-    const run = manager.listRuns().find((r) => r.workflowName === "model_demo");
+    const summary = manager.listRuns().find((r) => r.workflowName === "model_demo");
+    const run = summary ? manager.loadRun(summary.runId) : null;
     const byLabel = Object.fromEntries((run?.agents ?? []).map((a) => [a.label, a.model]));
     assert.equal(byLabel.scan, "openai/gpt-5-mini", "explicit per-agent model is recorded");
     assert.equal(byLabel.judge, "anthropic/claude-opus-4-8", "default agent shows the main model");
@@ -236,7 +249,8 @@ test(
 
     await manager.runSync(oneAgentScript);
 
-    const run = manager.listRuns().find((r) => r.workflowName === "tracked_demo");
+    const summary = manager.listRuns().find((r) => r.workflowName === "tracked_demo");
+    const run = summary ? manager.loadRun(summary.runId) : null;
     const agent = run?.agents[0];
     assert.equal(agent?.status, "error");
     assert.equal(agent?.error, "agent exploded");
@@ -260,7 +274,8 @@ test(
 
     await manager.runSync(oneAgentScript);
 
-    const run = manager.listRuns().find((r) => r.workflowName === "tracked_demo");
+    const summary = manager.listRuns().find((r) => r.workflowName === "tracked_demo");
+    const run = summary ? manager.loadRun(summary.runId) : null;
     const agent = run?.agents[0];
     assert.equal(agent?.history?.length, 1);
     assert.equal(agent?.history?.[0]?.text, "inspecting files");
@@ -371,8 +386,9 @@ test(
     const { runId } = manager.startInBackground(oneAgentScript);
     // Wait for completion first (fast agent)
     await new Promise((r) => setTimeout(r, 30));
-    const deleted = manager.deleteRun(runId);
-    assert.equal(deleted, true);
+    const deletion = manager.deleteRun(runId);
+    const deleted = await deletion;
+    assert.equal(deleted, "deleted");
     assert.equal(manager.getRun(runId), undefined);
   }),
 );
@@ -381,7 +397,7 @@ test(
   "deleteRun returns false for nonexistent run",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd });
-    assert.equal(manager.deleteRun("nonexistent"), false);
+    assert.equal(await manager.deleteRun("nonexistent"), "not_found");
   }),
 );
 
@@ -420,17 +436,6 @@ return { a }`;
     await manager.runSync(script);
     const run = manager.listRuns().find((r) => r.workflowName === "mm_test");
     assert.ok(run, "run should exist");
-  }),
-);
-
-test(
-  "getPersistence returns the persistence layer",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd });
-    const p = manager.getPersistence();
-    assert.ok(p, "p should be truthy");
-    assert.equal(typeof p.save, "function");
-    assert.equal(typeof p.list, "function");
   }),
 );
 
@@ -790,19 +795,14 @@ test(
     assert.equal(paused, true);
     assert.equal(manager.getRun(runId)?.status, "paused");
 
+    da.resolve("old-run-settled");
+    await origPromise.catch(() => {});
+    da.runner.run = async () => "resumed-done";
+
     // Resume — replays journal (empty for single-agent that never completed) and
     // re-runs the live agent with a fresh (non-aborted) controller.
     const resumed = await manager.resume(runId);
     assert.equal(resumed, true, "resume should succeed");
-
-    // The resumed run should be running
-    assert.equal(manager.getRun(runId)?.status, "running", "resumed run should be running");
-
-    // Resolve the deferred agent so the resumed run's agent completes
-    da.resolve("resumed-done");
-
-    // The original promise will reject (its controller was aborted). Suppress it.
-    await origPromise.catch(() => {});
 
     // Wait for the resumed run to complete
     await new Promise((r) => setTimeout(r, 50));
@@ -846,7 +846,7 @@ return { a, b }`;
       assert.equal(statusAtPause, "paused");
 
       // Journal should have at least agent 1's entry
-      const persisted = manager.listRuns().find((r) => r.runId === runId);
+      const persisted = manager.loadRun(runId);
       assert.ok(persisted?.journal && persisted.journal.length >= 1, "journal should have at least one entry");
 
       // Resume
@@ -897,7 +897,7 @@ return { a, b }`;
 
     // The run is checkpointed as paused, not failed.
     assert.equal(manager.getRun(runId)?.status, "paused");
-    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    const persisted = manager.loadRun(runId);
     assert.equal(persisted?.status, "paused");
     assert.equal(persisted?.pauseReason, "usage_limit");
     assert.equal(persisted?.resetHint, "Resets in ~3h");
@@ -935,7 +935,7 @@ test(
     const { runId, promise } = manager.startInBackground(oneAgentScript);
     await promise.catch(() => {});
     assert.equal(manager.getRun(runId)?.status, "failed");
-    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    const persisted = manager.loadRun(runId);
     assert.equal(persisted?.pauseReason, undefined, "a real failure carries no usage-limit pause reason");
   }),
 );
@@ -964,11 +964,10 @@ test(
   "cold-start resume: persisted run can be resumed from disk",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
-    const pers = manager.getPersistence();
     const runId = "cold-start-ok-1";
 
     // Manually save a persisted run — cold-start scenario, no in-memory state
-    pers.save({
+    seedRun(cwd, {
       runId,
       workflowName: "cold_start",
       script: oneAgentScript,
@@ -1003,10 +1002,9 @@ test(
   "cold-start resume: completed run cannot be resumed",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd });
-    const pers = manager.getPersistence();
     const runId = "cold-start-completed-1";
 
-    pers.save({
+    seedRun(cwd, {
       runId,
       workflowName: "completed_test",
       script: oneAgentScript,
@@ -1029,10 +1027,9 @@ test(
   "cold-start resume: persisted run with empty script cannot be resumed",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd });
-    const pers = manager.getPersistence();
     const runId = "cold-start-noscript-1";
 
-    pers.save({
+    seedRun(cwd, {
       runId,
       workflowName: "no_script_test",
       script: "",
@@ -1057,7 +1054,7 @@ test(
     const owner = new WorkflowManager({ cwd, agent: ownerAgent.runner });
     owner.on("error", () => {});
     const runId = "cold-start-leased-1";
-    owner.getPersistence().save({
+    seedRun(cwd, {
       runId,
       workflowName: "leased",
       script: oneAgentScript,
@@ -1091,28 +1088,33 @@ test(
 test(
   "cold-start recovery leaves a live leased running run untouched",
   withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd });
-    const pers = manager.getPersistence();
+    const pers = createRunPersistence(cwd);
     const runId = "live-running-lease";
-    pers.save({
-      runId,
-      workflowName: "live",
-      script: oneAgentScript,
-      status: "running",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    const lease = pers.acquireRunLease(runId);
+    const lease = pers.acquireRunLease(runId, "new");
     assert.ok(lease, "test setup should acquire the live lease");
+    pers.save(
+      {
+        runId,
+        workflowName: "live",
+        script: oneAgentScript,
+        status: "running",
+        phases: [],
+        agents: [],
+        logs: [],
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      lease,
+    );
 
     try {
-      new WorkflowManager({ cwd });
+      const observer = new WorkflowManager({ cwd });
+      observer.initialize();
       assert.equal(pers.load(runId)?.status, "running", "live leased run is not recovered to paused");
+      await observer.dispose();
     } finally {
       pers.releaseRunLease(lease);
+      pers.close();
     }
   }),
 );
@@ -1130,7 +1132,7 @@ test(
     });
     failing.on("error", () => {});
     const runId = "failed-lease-retry";
-    failing.getPersistence().save({
+    seedRun(cwd, {
       runId,
       workflowName: "failed_once",
       script: oneAgentScript,
@@ -1211,13 +1213,14 @@ test(
 
     // Stop first, then delete
     manager.stop(runId);
-    const deleted = manager.deleteRun(runId);
-    assert.equal(deleted, true);
+    const deletion = manager.deleteRun(runId);
+    da.resolve("done");
+    const deleted = await deletion;
+    assert.equal(deleted, "deleted");
 
     const run = manager.getRun(runId);
     assert.equal(run, undefined, "deleted run should not be accessible");
 
-    da.resolve("done");
     await promise.catch(() => {});
   }),
 );
@@ -1234,8 +1237,10 @@ test(
     await new Promise((r) => setTimeout(r, 20));
 
     // Delete while running — should succeed (removes from tracking)
-    const deleted = manager.deleteRun(runId);
-    assert.equal(deleted, true);
+    const deletion = manager.deleteRun(runId);
+    da.resolve("done");
+    const deleted = await deletion;
+    assert.equal(deleted, "deleted");
 
     // Should not be in memory
     assert.equal(manager.getRun(runId), undefined);
@@ -1247,7 +1252,6 @@ test(
       undefined,
     );
 
-    da.resolve("done");
     await promise.catch(() => {});
   }),
 );
@@ -1260,8 +1264,8 @@ test(
     // Wait for completion
     await new Promise((r) => setTimeout(r, 30));
 
-    const deleted = manager.deleteRun(runId);
-    assert.equal(deleted, true);
+    const deleted = await manager.deleteRun(runId);
+    assert.equal(deleted, "deleted");
 
     // Verify persistence file is gone by checking listRuns
     const runs = manager.listRuns();
@@ -1382,14 +1386,18 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 20));
     manager.pause(runId);
 
+    da.resolve("old-run-settled");
+    await promise.catch(() => {});
+    let releaseResumed: (() => void) | undefined;
+    da.runner.run = async () => new Promise<void>((resolve) => (releaseResumed = resolve));
+
     const resumed = await manager.resume(runId);
     const persisted = manager.listRuns().find((run) => run.runId === runId);
 
     assert.equal(resumed, true);
     assert.equal(persisted?.status, "running", "listRuns should show running status after resume");
 
-    da.resolve("done");
-    await promise.catch(() => {});
+    releaseResumed?.();
   }),
 );
 
@@ -1408,13 +1416,13 @@ test(
     const { runId, promise } = manager.startInBackground(oneAgentScript);
     await new Promise((r) => setTimeout(r, 20));
     manager.pause(runId);
+    da.resolve("old-run-settled");
+    await promise.catch(() => {});
+    da.runner.run = async () => "done";
     await manager.resume(runId);
 
     assert.ok(resumedEvent, "resumed event should fire");
     assert.equal(resumedEvent?.runId, runId);
-
-    da.resolve("done");
-    await promise.catch(() => {});
   }),
 );
 
@@ -1466,13 +1474,15 @@ test(
     assert.equal(manager.pause(runId), true);
     assert.equal(manager.getRun(runId)?.status, "paused", "should be paused after pause");
 
+    da.resolve("old-run-settled");
+    await origPromise.catch(() => {});
+    da.runner.run = async () => "resumed-done";
+
     const resumed = await manager.resume(runId);
     assert.equal(resumed, true);
     assert.equal(manager.getRun(runId)?.status, "running", "should be running after resume");
 
     // Complete the resumed run
-    da.resolve("resumed-done");
-    await origPromise.catch(() => {});
     await new Promise((r) => setTimeout(r, 30));
 
     assert.equal(manager.getRun(runId)?.status, "completed", "should complete after resume finishes");
@@ -1597,6 +1607,11 @@ test(
     assert.equal(manager.pause(runId), true);
     assert.equal(manager.getRun(runId)?.status, "paused");
 
+    da.resolve("old-run-settled");
+    await origPromise.catch(() => {});
+    let releaseResumed: (() => void) | undefined;
+    da.runner.run = async () => new Promise<void>((resolve) => (releaseResumed = resolve));
+
     // First resume should succeed
     const firstResume = await manager.resume(runId);
     assert.equal(firstResume, true, "first resume should succeed");
@@ -1605,8 +1620,7 @@ test(
     const secondResume = await manager.resume(runId);
     assert.equal(secondResume, false, "second resume should return false when the resumed run is already running");
 
-    da.resolve("done");
-    await origPromise.catch(() => {});
+    releaseResumed?.();
   }),
 );
 
@@ -1650,6 +1664,8 @@ test(
     // Pause while the deferred agent is in-flight
     assert.equal(manager.pause(runId), true);
     assert.equal(manager.getRun(runId)?.status, "paused");
+    da.resolve("old-run-settled");
+    await origPromise.catch(() => {});
 
     // Mock the agent runner to throw a non-recoverable WorkflowError on resume.
     // Regular Error/agent rejections get wrapped as recoverable (agent returns
@@ -1676,10 +1692,7 @@ test(
         "error code should be AGENT_EXECUTION_ERROR",
       );
     } finally {
-      // Resolve the original deferred promise so the first executeRun settles
       da.runner.run = async (_prompt: string) => "done";
-      da.resolve("done");
-      await origPromise.catch(() => {});
     }
   }),
 );
@@ -1725,6 +1738,8 @@ test(
     // Pause the running run so we can resume with a failing agent
     assert.equal(manager.pause(runId), true, "pause should succeed");
     assert.equal(manager.getRun(runId)?.status, "paused");
+    da.resolve("old-run-settled");
+    await origPromise.catch(() => {});
 
     // Mock agent to throw a non-recoverable WorkflowError, making the run fail
     test.mock.method(da.runner, "run", async (_prompt: string) => {
@@ -1748,8 +1763,6 @@ test(
       assert.equal(manager.getRun(runId)?.status, "failed", "status should remain failed after rejected pause");
     } finally {
       da.runner.run = async (_prompt: string) => "done";
-      da.resolve("done");
-      await origPromise.catch(() => {});
     }
   }),
 );
@@ -1767,6 +1780,8 @@ test(
     // Pause the running run so we can resume with a failing agent
     assert.equal(manager.pause(runId), true, "pause should succeed");
     assert.equal(manager.getRun(runId)?.status, "paused");
+    da.resolve("old-run-settled");
+    await origPromise.catch(() => {});
 
     // Mock agent to throw a non-recoverable WorkflowError
     test.mock.method(da.runner, "run", async (_prompt: string) => {
@@ -1790,8 +1805,6 @@ test(
       assert.equal(manager.getRun(runId)?.status, "failed", "status should remain failed after rejected stop");
     } finally {
       da.runner.run = async (_prompt: string) => "done";
-      da.resolve("done");
-      await origPromise.catch(() => {});
     }
   }),
 );
@@ -1809,6 +1822,8 @@ test(
     // Pause the running run
     assert.equal(manager.pause(runId), true, "pause should succeed");
     assert.equal(manager.getRun(runId)?.status, "paused");
+    da.resolve("old-run-settled");
+    await origPromise.catch(() => {});
 
     // Mock agent to throw a non-recoverable WorkflowError
     test.mock.method(da.runner, "run", async (_prompt: string) => {
@@ -1827,8 +1842,6 @@ test(
     } finally {
       // Restore the runner so the resumed run's agent call succeeds
       da.runner.run = async (_prompt: string) => "done";
-      da.resolve("done");
-      await origPromise.catch(() => {});
     }
 
     // Resume the failed run — resume() allows failed status

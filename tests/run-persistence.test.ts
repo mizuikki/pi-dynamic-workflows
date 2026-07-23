@@ -1,798 +1,526 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { WORKFLOW_RUNS_DIR } from "../src/config.js";
-import { createRunPersistence, generateRunId, type PersistedRunState } from "../src/run-persistence.js";
-import { WorkflowManager } from "../src/workflow-manager.js";
-import { workflowProjectPaths } from "../src/workflow-paths.js";
+import {
+  createRunPersistence,
+  type PersistedRunState,
+  RUN_LEASE_STALE_AFTER_MS,
+  summarizePersistedRun,
+} from "../src/run-persistence.js";
+import {
+  assertSupportedNodeRuntime,
+  openWorkflowDatabase,
+  validateWorkflowDatabase,
+  WORKFLOW_DATABASE_APPLICATION_ID,
+  WORKFLOW_DATABASE_SCHEMA_VERSION,
+  WORKFLOW_SCHEMA_DDL,
+  WorkflowPersistenceError,
+} from "../src/workflow-database.js";
+import { workflowDatabasePath, workflowHomeDir } from "../src/workflow-paths.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
-function withTempCwd(fn: (cwd: string) => Promise<void>) {
-  return async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-dw-rp-"));
-    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
-    try {
-      await withFakeHomeAsync(fakeHome, () => fn(cwd));
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
+function state(runId = "run-1", sessionId: string | undefined = "session-1"): PersistedRunState {
+  return {
+    runId,
+    workflowName: "quotes ' ; DROP TABLE workflow_runs; --",
+    script: "export const meta = { name: 'demo', description: 'demo' }",
+    args: { quote: "' OR 1=1 --" },
+    sessionId,
+    status: "running",
+    phases: ["Scan"],
+    currentPhase: "Scan",
+    agents: [{ id: 1, label: "agent", prompt: "private prompt", status: "done", result: { ok: true } }],
+    logs: ["private log"],
+    journal: [{ index: 0, hash: "abc", result: "private result" }],
+    tokenUsage: { input: 1, output: 2, total: 3, cost: 0.01, cacheRead: 4, cacheWrite: 5 },
+    startedAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
   };
 }
 
-test(
-  "createRunPersistence creates runs directory on first save",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const runsDir = workflowProjectPaths(cwd).runsDir;
-    assert.equal(existsSync(runsDir), false, "dir should not exist yet");
-    rp.save({
-      runId: "test-1",
-      workflowName: "demo",
-      script: "export const meta = { name: 'd', description: 'd' }",
-      status: "completed",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    assert.ok(existsSync(runsDir), "dir should be created");
-    assert.ok(existsSync(join(runsDir, "test-1.json")), "run file should exist");
-    assert.equal(existsSync(join(cwd, WORKFLOW_RUNS_DIR)), false, "legacy project runs dir should not be created");
-  }),
-);
+async function isolated(fn: (home: string, cwd: string, dbPath: string) => void | Promise<void>): Promise<void> {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-db-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-db-project-"));
+  try {
+    await withFakeHomeAsync(home, () => fn(home, cwd, workflowDatabasePath()));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}
 
-test(
-  "createRunPersistence save and load round-trips correctly",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const state: PersistedRunState = {
-      runId: "roundtrip-1",
-      workflowName: "test-wf",
-      script: "export const meta = { name: 't', description: 't' }",
-      args: { key: "value" },
-      status: "running",
-      phases: ["Scan", "Report"],
-      currentPhase: "Scan",
-      agents: [{ id: 1, label: "agent-1", prompt: "do it", status: "running" }],
-      logs: ["started", "phase: Scan"],
-      startedAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:01:00.000Z",
-    };
-    rp.save(state);
-
-    const loaded = rp.load("roundtrip-1");
-    assert.ok(loaded, "should load saved state");
-    assert.equal(loaded?.runId, "roundtrip-1");
-    assert.equal(loaded?.workflowName, "test-wf");
-    assert.equal(loaded?.status, "running");
-    assert.deepEqual(loaded?.phases, ["Scan", "Report"]);
-    assert.equal(loaded?.currentPhase, "Scan");
-    assert.equal(loaded?.agents.length, 1);
-    assert.equal(loaded?.agents[0].label, "agent-1");
-    assert.deepEqual(loaded?.logs, ["started", "phase: Scan"]);
-    assert.deepEqual(loaded?.args, { key: "value" });
-  }),
-);
-
-test(
-  "createRunPersistence save updates updatedAt",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const state: PersistedRunState = {
-      runId: "update-test",
-      workflowName: "wf",
-      script: "export const meta = { name: 'w', description: 'w' }",
-      status: "pending",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:00:00.000Z",
-    };
-    rp.save(state);
-    const before = rp.load("update-test");
-    const beforeTime = before?.updatedAt;
-
-    // Small delay so updatedAt changes
-    await new Promise((r) => setTimeout(r, 10));
-
-    rp.save({ ...state, status: "running" });
-    const after = rp.load("update-test");
-    assert.notEqual(after?.updatedAt, beforeTime, "updatedAt should change");
-    assert.equal(after?.status, "running");
-  }),
-);
-
-test(
-  "createRunPersistence load returns null for missing run",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const loaded = rp.load("nonexistent");
-    assert.equal(loaded, null);
-  }),
-);
-
-test(
-  "createRunPersistence reads legacy project run files",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "legacy-run.json"),
-      JSON.stringify({
-        runId: "legacy-run",
-        workflowName: "legacy",
-        script: "export const meta = { name: 'legacy', description: 'legacy' }",
-        status: "completed",
-        phases: [],
-        agents: [],
-        logs: [],
-        startedAt: "2024-01-01T00:00:00.000Z",
-        updatedAt: "2024-01-01T00:00:00.000Z",
+test("Node runtime guard rejects Node 23 before invoking a database constructor", () => {
+  assert.throws(() => assertSupportedNodeRuntime("23.9.0"), /Node\.js 24/);
+  assert.doesNotThrow(() => assertSupportedNodeRuntime("24.0.0"));
+  let constructed = false;
+  assert.throws(
+    () =>
+      openWorkflowDatabase({
+        path: ":memory:",
+        nodeVersion: "23.9.0",
+        Database: class {
+          constructor() {
+            constructed = true;
+          }
+        } as never,
       }),
-    );
+    /Node\.js 24/,
+  );
+  assert.equal(constructed, false);
+});
 
-    assert.equal(rp.load("legacy-run")?.workflowName, "legacy");
+test("creates exact schema v1, WAL/FULL pragmas, and private permissions", async () => {
+  await isolated((_home, _cwd, path) => {
+    const db = openWorkflowDatabase({ path });
+    validateWorkflowDatabase(db);
     assert.equal(
-      rp.list().some((run) => run.runId === "legacy-run"),
-      true,
+      (db.prepare("PRAGMA application_id").get() as { application_id: number }).application_id,
+      WORKFLOW_DATABASE_APPLICATION_ID,
     );
-  }),
-);
+    assert.equal(
+      (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
+      WORKFLOW_DATABASE_SCHEMA_VERSION,
+    );
+    assert.equal((db.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode, "wal");
+    assert.equal((db.prepare("PRAGMA synchronous").get() as { synchronous: number }).synchronous, 2);
+    assert.equal((db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number }).foreign_keys, 1);
+    db.close();
+    if (process.platform !== "win32") {
+      assert.equal(statSync(workflowHomeDir()).mode & 0o777, 0o700);
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+    }
+  });
+});
 
-test(
-  "createRunPersistence list returns runs sorted by updatedAt descending",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    // Save with explicit updatedAt values to guarantee order
-    // (save() overwrites updatedAt, so we need to write files directly)
-    const runsDir = workflowProjectPaths(cwd).runsDir;
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    mkdirSync(runsDir, { recursive: true });
-    const makeFile = (runId: string, date: string) => {
-      writeFileSync(
-        join(runsDir, `${runId}.json`),
-        JSON.stringify({
-          runId,
-          workflowName: `wf-${runId}`,
-          script: "export const meta = { name: 'w', description: 'w' }",
-          status: "completed",
-          phases: [],
-          agents: [],
-          logs: [],
-          startedAt: date,
-          updatedAt: date,
-        }),
+test("rejects a symlink database path", async () => {
+  if (process.platform === "win32") return;
+  await isolated((_home, _cwd, path) => {
+    mkdirSync(workflowHomeDir(), { recursive: true });
+    const target = join(workflowHomeDir(), "target");
+    writeFileSync(target, "");
+    symlinkSync(target, path);
+    assert.throws(() => openWorkflowDatabase({ path }), /regular file/);
+  });
+});
+
+test("foreign identity and extra schema objects fail closed without WAL sidecars", async () => {
+  await isolated((_home, _cwd, path) => {
+    mkdirSync(workflowHomeDir(), { recursive: true });
+    const foreign = new DatabaseSync(path);
+    foreign.exec("CREATE TABLE foreign_data(value TEXT); PRAGMA application_id = 42; PRAGMA user_version = 7");
+    foreign.close();
+    const before = readFileSync(path);
+    const mtime = statSync(path).mtimeMs;
+    assert.throws(() => openWorkflowDatabase({ path }), /unsupported identity or version/);
+    assert.deepEqual(readFileSync(path), before);
+    assert.equal(statSync(path).mtimeMs, mtime);
+    assert.equal(existsSync(`${path}-wal`), false);
+    assert.equal(existsSync(`${path}-shm`), false);
+  });
+});
+
+test("zero-identity unknown schemas and unsupported versions fail closed", async () => {
+  await isolated((_home, _cwd, path) => {
+    mkdirSync(workflowHomeDir(), { recursive: true });
+    const unknown = new DatabaseSync(path);
+    unknown.exec("CREATE TABLE unknown_data(value TEXT)");
+    unknown.close();
+    const unknownBefore = readFileSync(path);
+    assert.throws(() => openWorkflowDatabase({ path }), /unsupported identity or version/);
+    assert.deepEqual(readFileSync(path), unknownBefore);
+
+    rmSync(path);
+    openWorkflowDatabase({ path }).close();
+    const newer = new DatabaseSync(path);
+    newer.exec(`PRAGMA user_version = ${WORKFLOW_DATABASE_SCHEMA_VERSION + 1}`);
+    newer.close();
+    assert.throws(() => openWorkflowDatabase({ path }), /unsupported identity or version/);
+  });
+});
+
+test("an accepted database with an extra trigger is rejected on reopen", async () => {
+  await isolated((_home, _cwd, path) => {
+    const db = openWorkflowDatabase({ path });
+    db.exec("CREATE TRIGGER unexpected AFTER INSERT ON projects BEGIN SELECT 1; END");
+    db.close();
+    assert.throws(() => openWorkflowDatabase({ path }), /unexpected objects/);
+  });
+});
+
+test("an altered same-name schema is rejected", async () => {
+  await isolated((_home, _cwd, path) => {
+    mkdirSync(workflowHomeDir(), { recursive: true });
+    const db = new DatabaseSync(path);
+    for (const ddl of WORKFLOW_SCHEMA_DDL) {
+      db.exec(
+        ddl.includes("CREATE TABLE workflow_runs")
+          ? ddl.replace("agent_total INTEGER NOT NULL", "agent_total INTEGER")
+          : ddl,
       );
-    };
-    makeFile("oldest", "2024-01-01T00:00:00.000Z");
-    makeFile("middle", "2024-03-01T00:00:00.000Z");
-    makeFile("newest", "2024-06-01T00:00:00.000Z");
-
-    const runs = rp.list();
-    assert.equal(runs.length, 3);
-    assert.equal(runs[0].runId, "newest");
-    assert.equal(runs[1].runId, "middle");
-    assert.equal(runs[2].runId, "oldest");
-  }),
-);
-
-test(
-  "createRunPersistence list handles empty state",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const runs = rp.list();
-    assert.deepEqual(runs, []);
-    assert.equal(existsSync(workflowProjectPaths(cwd).runsDir), false, "list should not create the runs dir");
-  }),
-);
-
-test(
-  "createRunPersistence list skips corrupted files",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    // Save one valid run
-    rp.save({
-      runId: "valid",
-      workflowName: "v",
-      script: "export const meta = { name: 'v', description: 'v' }",
-      status: "completed",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:00:00.000Z",
-    });
-    // Write a corrupted file
-    const runsDir = workflowProjectPaths(cwd).runsDir;
-    const { writeFileSync } = await import("node:fs");
-    writeFileSync(join(runsDir, "corrupted.json"), "not valid json{{{");
-    writeFileSync(join(runsDir, "empty.json"), "");
-
-    const runs = rp.list();
-    assert.equal(runs.length, 1, "should only return valid run");
-    assert.equal(runs[0].runId, "valid");
-  }),
-);
-
-test(
-  "createRunPersistence delete removes run and returns true",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "delete-me",
-      workflowName: "d",
-      script: "export const meta = { name: 'd', description: 'd' }",
-      status: "completed",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:00:00.000Z",
-    });
-    assert.ok(existsSync(join(workflowProjectPaths(cwd).runsDir, "delete-me.json")), "existsSync() should succeed");
-    const deleted = rp.delete("delete-me");
-    assert.equal(deleted, true);
-    assert.equal(rp.load("delete-me"), null);
-  }),
-);
-
-test(
-  "createRunPersistence delete removes legacy project run files",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "delete-legacy.json"),
-      JSON.stringify({
-        runId: "delete-legacy",
-        workflowName: "legacy",
-        script: "export const meta = { name: 'legacy', description: 'legacy' }",
-        status: "completed",
-        phases: [],
-        agents: [],
-        logs: [],
-        startedAt: "2024-01-01T00:00:00.000Z",
-        updatedAt: "2024-01-01T00:00:00.000Z",
-      }),
+    }
+    db.exec(
+      `PRAGMA application_id = ${WORKFLOW_DATABASE_APPLICATION_ID}; PRAGMA user_version = ${WORKFLOW_DATABASE_SCHEMA_VERSION}`,
     );
-
-    assert.equal(rp.delete("delete-legacy"), true);
-    assert.equal(existsSync(join(legacyRunsDir, "delete-legacy.json")), false);
-  }),
-);
-
-test(
-  "createRunPersistence delete returns false for nonexistent run",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const deleted = rp.delete("no-such-run");
-    assert.equal(deleted, false);
-  }),
-);
-
-test(
-  "createRunPersistence getRunsDir returns the runs directory path",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    assert.equal(rp.getRunsDir(), workflowProjectPaths(cwd).runsDir);
-  }),
-);
-
-test(
-  "createRunPersistence save and load preserves journal entries",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const state: PersistedRunState = {
-      runId: "journal-test",
-      workflowName: "wf",
-      script: "export const meta = { name: 'w', description: 'w' }",
-      status: "paused",
-      phases: [],
-      agents: [],
-      logs: [],
-      journal: [
-        { index: 0, hash: "abc123", result: { ok: true } },
-        { index: 1, hash: "def456", result: { value: 42 } },
-      ],
-      startedAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:00:00.000Z",
-    };
-    rp.save(state);
-    const loaded = rp.load("journal-test");
-    assert.equal(loaded?.journal?.length, 2);
-    assert.equal(loaded?.journal?.[0].index, 0);
-    assert.equal(loaded?.journal?.[0].hash, "abc123");
-    assert.deepEqual(loaded?.journal?.[0].result, { ok: true });
-  }),
-);
-
-test(
-  "createRunPersistence save and load preserves token usage",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "tokens",
-      workflowName: "wf",
-      script: "export const meta = { name: 'w', description: 'w' }",
-      status: "completed",
-      phases: [],
-      agents: [],
-      logs: [],
-      tokenUsage: { input: 100, output: 50, total: 150 },
-      startedAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:00:00.000Z",
-    });
-    const loaded = rp.load("tokens");
-    assert.deepEqual(loaded?.tokenUsage, { input: 100, output: 50, total: 150 });
-  }),
-);
-
-test(
-  "createRunPersistence save and load preserves completedAt and durationMs",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "timing",
-      workflowName: "wf",
-      script: "export const meta = { name: 'w', description: 'w' }",
-      status: "completed",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: "2024-01-01T00:00:00.000Z",
-      updatedAt: "2024-01-01T00:00:00.000Z",
-      completedAt: "2024-01-01T00:01:00.000Z",
-      durationMs: 60000,
-    });
-    const loaded = rp.load("timing");
-    assert.equal(loaded?.completedAt, "2024-01-01T00:01:00.000Z");
-    assert.equal(loaded?.durationMs, 60000);
-  }),
-);
-
-test("generateRunId returns a string with timestamp and random parts", () => {
-  const id = generateRunId();
-  assert.equal(typeof id, "string");
-  assert.ok(id.length > 5, "run id should have reasonable length");
-  assert.ok(id.includes("-"), "run id should have separator");
+    db.close();
+    assert.throws(() => openWorkflowDatabase({ path }), /does not match schema v1/);
+  });
 });
 
-test("generateRunId produces unique ids", () => {
-  const ids = new Set(Array.from({ length: 100 }, () => generateRunId()));
-  assert.equal(ids.size, 100, "all 100 generated ids should be unique");
+test("corrupt database is preserved", async () => {
+  await isolated((_home, _cwd, path) => {
+    mkdirSync(workflowHomeDir(), { recursive: true });
+    writeFileSync(path, "not a sqlite database");
+    const before = readFileSync(path);
+    assert.throws(
+      () => openWorkflowDatabase({ path }),
+      (error) => {
+        assert.ok(error instanceof WorkflowPersistenceError);
+        assert.equal(error.message.includes(path), false);
+        assert.equal(error.cause, undefined);
+        return true;
+      },
+    );
+    assert.deepEqual(readFileSync(path), before);
+  });
 });
 
-test(
-  "createRunPersistence save throws ENOSPC when disk is full",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd, {
-      writeFileSync: () => {
-        const err = new Error("ENOSPC: no space left on device");
-        (err as { code?: string }).code = "ENOSPC";
-        throw err;
-      },
-    });
+test("partial initialization closes validation and writable connections", async () => {
+  await isolated((_home, _cwd, path) => {
+    openWorkflowDatabase({ path }).close();
+    let closes = 0;
+    class FailingDatabase extends DatabaseSync {
+      override exec(sql: string): void {
+        if (sql === "PRAGMA foreign_keys = ON") throw new Error("injected configuration failure");
+        super.exec(sql);
+      }
 
-    const state: PersistedRunState = {
-      runId: "enospc-test",
-      workflowName: "wf",
-      script: "export const meta = { name: 'w', description: 'w' }",
-      status: "pending",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    assert.throws(
-      () => rp.save(state),
-      (err: unknown) => (err as { code?: string }).code === "ENOSPC",
-    );
-  }),
-);
+      override close(): void {
+        closes += 1;
+        super.close();
+      }
+    }
+    assert.throws(() => openWorkflowDatabase({ path, Database: FailingDatabase }), /could not be initialized/);
+    assert.equal(closes, 2);
+    assert.doesNotThrow(() => openWorkflowDatabase({ path }).close());
+  });
+});
 
-test(
-  "createRunPersistence save throws EACCES when permission denied",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd, {
-      writeFileSync: () => {
-        const err = new Error("EACCES: permission denied");
-        (err as { code?: string }).code = "EACCES";
-        throw err;
-      },
-    });
+test("foreign-key corruption is rejected before writable open", async () => {
+  await isolated((_home, _cwd, path) => {
+    openWorkflowDatabase({ path }).close();
+    const db = new DatabaseSync(path);
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.prepare(
+      `INSERT INTO workflow_run_leases(
+        project_id, run_id, owner_pid, owner_token, acquired_at, heartbeat_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("missing-project", "orphan", 1, "token", "2026-01-01T00:00:00.000Z", 1);
+    db.close();
+    const walBefore = existsSync(`${path}-wal`) ? readFileSync(`${path}-wal`) : null;
+    const shmBefore = existsSync(`${path}-shm`) ? readFileSync(`${path}-shm`) : null;
+    assert.throws(() => openWorkflowDatabase({ path }), /invalid references/);
+    assert.deepEqual(existsSync(`${path}-wal`) ? readFileSync(`${path}-wal`) : null, walBefore);
+    assert.deepEqual(existsSync(`${path}-shm`) ? readFileSync(`${path}-shm`) : null, shmBefore);
+  });
+});
 
-    const state: PersistedRunState = {
-      runId: "eacces-test",
-      workflowName: "wf",
-      script: "export const meta = { name: 'w', description: 'w' }",
-      status: "pending",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    assert.throws(
-      () => rp.save(state),
-      (err: unknown) => (err as { code?: string }).code === "EACCES",
-    );
-  }),
-);
+test("summary mapping contains no payload fields", () => {
+  const summary = summarizePersistedRun("project", state());
+  assert.deepEqual(summary.agentCounts, { total: 1, running: 0, done: 1, error: 0 });
+  assert.equal(summary.hasScript, true);
+  assert.equal("agents" in summary, false);
+  assert.equal("script" in summary, false);
+});
 
-test(
-  "createRunPersistence list returns empty array when directory is unreadable",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd, {
-      readdirSync: () => {
-        throw new Error("EACCES: permission denied, scandir");
-      },
-    });
+test("repository round-trips payload and lists summary-only data", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    const lease = repository.acquireRunLease("run-1", "new");
+    assert.ok(lease);
+    const saved = state();
+    repository.save(saved, lease);
+    assert.equal(repository.listSummaries("session-1").length, 1);
+    assert.equal(repository.listSummaries("other").length, 0);
+    assert.deepEqual(repository.load("run-1")?.journal, saved.journal);
+    assert.equal(repository.getSummary("run-1")?.workflowName, saved.workflowName);
+    repository.releaseRunLease(lease);
+    repository.close();
+  });
+});
 
-    const runs = rp.list();
-    assert.deepEqual(runs, []);
-  }),
-);
+test("two projects share one database without crossing payloads", async () => {
+  await isolated((_home, cwd, path) => {
+    const otherCwd = mkdtempSync(join(tmpdir(), "pi-dw-other-"));
+    try {
+      const a = createRunPersistence(cwd, { path });
+      const b = createRunPersistence(otherCwd, { path });
+      const lease = a.acquireRunLease("same-id", "new");
+      assert.ok(lease);
+      a.save(state("same-id"), lease);
+      assert.equal(b.getSummary("same-id"), null);
+      assert.equal(b.load("same-id"), null);
+      a.releaseRunLease(lease);
+      a.close();
+      b.close();
+    } finally {
+      rmSync(otherCwd, { recursive: true, force: true });
+    }
+  });
+});
 
-test(
-  "createRunPersistence concurrent save and load returns consistent data",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
+test("project key collisions fail closed", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    repository.close();
+    const db = new DatabaseSync(path);
+    db.prepare("UPDATE projects SET canonical_path = ?").run(`${cwd}-different`);
+    db.close();
+    assert.throws(() => createRunPersistence(cwd, { path }), /project identity is already bound/);
+  });
+});
 
-    const state: PersistedRunState = {
-      runId: "concurrent-test",
-      workflowName: "test-wf",
-      script: "export const meta = { name: 't', description: 't' }",
-      args: { items: [1, 2, 3] },
-      status: "running",
-      phases: ["Scan", "Analyze", "Report"],
-      currentPhase: "Analyze",
-      agents: [
-        { id: 1, label: "agent-a", prompt: "scan", status: "done", result: { found: true } },
-        { id: 2, label: "agent-b", prompt: "analyze", status: "running" },
-      ],
-      logs: ["started", "phase: Scan", "phase: Analyze"],
-      tokenUsage: { input: 500, output: 200, total: 700 },
-      journal: [{ index: 0, hash: "abc", result: { ok: true } }],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      completedAt: undefined,
-    };
+test("fresh leases contend, renew, and ignore wrong-token release", async () => {
+  await isolated((_home, cwd, path) => {
+    let clock = 1000;
+    const a = createRunPersistence(cwd, { path, now: () => clock, pid: 101, pidIsAlive: () => true });
+    const b = createRunPersistence(cwd, { path, now: () => clock, pid: 202, pidIsAlive: () => true });
+    const lease = a.acquireRunLease("lease", "new");
+    assert.ok(lease);
+    assert.equal(b.acquireRunLease("lease", "new"), null);
+    a.releaseRunLease({ ...lease, token: "wrong" });
+    assert.equal(b.acquireRunLease("lease", "new"), null);
+    clock += 10_000;
+    assert.equal(a.renewRunLease(lease), true);
+    a.releaseRunLease(lease);
+    assert.ok(b.acquireRunLease("lease", "new"));
+    a.close();
+    b.close();
+  });
+});
 
-    rp.save(state);
-    const loaded = rp.load("concurrent-test");
+test("expired heartbeat permits takeover even when the PID appears alive and fences the old token", async () => {
+  await isolated((_home, cwd, path) => {
+    let clock = 1000;
+    const a = createRunPersistence(cwd, { path, now: () => clock, pid: 303, pidIsAlive: () => true });
+    const b = createRunPersistence(cwd, { path, now: () => clock, pid: 404, pidIsAlive: () => true });
+    const oldLease = a.acquireRunLease("takeover", "new");
+    assert.ok(oldLease);
+    a.save(state("takeover"), oldLease);
+    clock += RUN_LEASE_STALE_AFTER_MS + 1;
+    const newLease = b.acquireRunLease("takeover", "existing");
+    assert.ok(newLease);
+    assert.equal(a.renewRunLease(oldLease), false);
+    assert.throws(() => a.save({ ...state("takeover"), status: "failed" }, oldLease), /ownership was lost/);
+    assert.equal(a.delete("takeover", oldLease), "leased");
+    assert.equal(b.delete("takeover", newLease), "deleted");
+    a.close();
+    b.close();
+  });
+});
 
-    assert.ok(loaded, "should load immediately after save");
-    assert.equal(loaded.runId, state.runId);
-    assert.equal(loaded.workflowName, state.workflowName);
-    assert.equal(loaded.status, "running");
-    assert.equal(loaded.currentPhase, "Analyze");
-    assert.deepEqual(loaded.args, { items: [1, 2, 3] });
-    assert.deepEqual(loaded.phases, ["Scan", "Analyze", "Report"]);
-    assert.equal(loaded.agents.length, 2);
-    assert.deepEqual(loaded.agents[0].result, { found: true });
-    assert.equal(loaded.agents[1].status, "running");
-    assert.deepEqual(loaded.logs, ["started", "phase: Scan", "phase: Analyze"]);
-    assert.deepEqual(loaded.tokenUsage, { input: 500, output: 200, total: 700 });
-    assert.deepEqual(loaded.journal, [{ index: 0, hash: "abc", result: { ok: true } }]);
-  }),
-);
+test("dead owner permits immediate takeover", async () => {
+  await isolated((_home, cwd, path) => {
+    const a = createRunPersistence(cwd, { path, pid: 505, pidIsAlive: () => false });
+    const b = createRunPersistence(cwd, { path, pid: 606, pidIsAlive: () => false });
+    const oldLease = a.acquireRunLease("dead", "new");
+    assert.ok(oldLease);
+    assert.ok(b.acquireRunLease("dead", "new"));
+    a.close();
+    b.close();
+  });
+});
 
-// ─── P1-1: crash-safe durable resume ────────────────────────────────────────────
+test("new/existing lease modes enforce run absence and presence", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path, pidIsAlive: () => false });
+    assert.equal(repository.acquireRunLease("missing", "existing"), null);
+    const lease = repository.acquireRunLease("present", "new");
+    assert.ok(lease);
+    repository.save(state("present"), lease);
+    repository.releaseRunLease(lease);
+    assert.equal(repository.acquireRunLease("present", "new"), null);
+    const existing = repository.acquireRunLease("present", "existing");
+    assert.ok(existing);
+    assert.equal(repository.delete("present", existing), "deleted");
+    assert.equal(repository.acquireRunLease("present", "existing"), null);
+    repository.close();
+  });
+});
 
-test(
-  "save writes the primary plus a .bak (atomic temp+rename leaves no .tmp)",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "r1",
-      workflowName: "w",
-      status: "running",
-      phases: [],
-      agents: [],
-      logs: [],
-    } as PersistedRunState);
-    const runsDir = workflowProjectPaths(cwd).runsDir;
-    assert.ok(existsSync(join(runsDir, "r1.json")), "primary written");
-    assert.ok(existsSync(join(runsDir, "r1.json.bak")), ".bak written");
-    assert.equal(existsSync(join(runsDir, "r1.json.tmp")), false, "no leftover .tmp");
-  }),
-);
+test("delete after a stale summary read cannot recreate a run or orphan lease", async () => {
+  await isolated((_home, cwd, path) => {
+    const resumer = createRunPersistence(cwd, { path, pidIsAlive: () => true });
+    const deleter = createRunPersistence(cwd, { path, pidIsAlive: () => true });
+    const seedLease = deleter.acquireRunLease("race", "new");
+    assert.ok(seedLease);
+    deleter.save(state("race"), seedLease);
+    deleter.releaseRunLease(seedLease);
 
-test(
-  "load recovers from .bak when the primary is corrupt",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "r1",
-      workflowName: "w",
-      status: "running",
-      phases: [],
-      agents: [],
-      logs: [],
-    } as PersistedRunState);
-    // Corrupt the primary; the .bak from the good save should still load.
-    writeFileSync(join(workflowProjectPaths(cwd).runsDir, "r1.json"), "{ truncated", "utf-8");
-    const loaded = rp.load("r1");
-    assert.equal(loaded?.runId, "r1", "load falls back to the intact .bak");
-  }),
-);
+    assert.ok(resumer.getSummary("race"), "resume reads the summary first");
+    const deleteLease = deleter.acquireRunLease("race", "existing");
+    assert.ok(deleteLease);
+    assert.equal(deleter.delete("race", deleteLease), "deleted");
+    assert.equal(resumer.acquireRunLease("race", "existing"), null);
+    assert.equal(resumer.load("race"), null);
 
-test(
-  "delete removes the .bak sidecar too",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "r1",
-      workflowName: "w",
-      status: "completed",
-      phases: [],
-      agents: [],
-      logs: [],
-    } as PersistedRunState);
-    rp.delete("r1");
-    const runsDir = workflowProjectPaths(cwd).runsDir;
-    assert.equal(existsSync(join(runsDir, "r1.json")), false);
-    assert.equal(existsSync(join(runsDir, "r1.json.bak")), false, ".bak cleaned up");
-  }),
-);
-
-test(
-  "persistence round-trips cost and cache fields in tokenUsage",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "tu",
-      workflowName: "w",
-      status: "completed",
-      phases: [],
-      agents: [],
-      logs: [],
-      tokenUsage: { input: 1, output: 2, total: 3, cost: 0.5, cacheRead: 9, cacheWrite: 4 },
-    } as PersistedRunState);
-    const loaded = rp.load("tu");
-    assert.equal(loaded?.tokenUsage?.cost, 0.5, "cost survives reload");
-    assert.equal(loaded?.tokenUsage?.cacheRead, 9, "cacheRead survives reload");
-    assert.equal(loaded?.tokenUsage?.cacheWrite, 4, "cacheWrite survives reload");
-  }),
-);
-
-test(
-  "run lease creates an exclusive lock and releases only with the owner token",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const lease = rp.acquireRunLease("lease-1");
-    assert.ok(lease, "first acquire should succeed");
-    assert.equal(existsSync(join(workflowProjectPaths(cwd).runsDir, "lease-1.lock")), true, "lock file is created");
-
-    const second = rp.acquireRunLease("lease-1");
-    assert.equal(second, null, "second acquire should be refused while owner pid is alive");
-
-    rp.releaseRunLease({ ...lease, token: "wrong-token" });
+    const db = new DatabaseSync(path, { readOnly: true });
     assert.equal(
-      existsSync(join(workflowProjectPaths(cwd).runsDir, "lease-1.lock")),
-      true,
-      "wrong token does not release",
+      (
+        db.prepare("SELECT count(*) AS count FROM workflow_run_leases WHERE run_id = ?").get("race") as {
+          count: number;
+        }
+      ).count,
+      0,
     );
+    db.close();
+    resumer.close();
+    deleter.close();
+  });
+});
 
-    rp.releaseRunLease(lease);
-    assert.equal(existsSync(join(workflowProjectPaths(cwd).runsDir, "lease-1.lock")), false, "owner token releases");
-  }),
-);
+test("session identity is immutable and invalid JSON values write nothing", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    const lease = repository.acquireRunLease("immutable", "new");
+    assert.ok(lease);
+    repository.save(state("immutable", "owner"), lease);
+    assert.throws(() => repository.save(state("immutable", "other"), lease), /session ownership/);
+    const cyclic = state("cycle");
+    cyclic.args = cyclic;
+    const cycleLease = repository.acquireRunLease("cycle", "new");
+    assert.ok(cycleLease);
+    assert.throws(() => repository.save(cyclic, cycleLease), /cycle/);
+    assert.equal(repository.getSummary("cycle"), null);
+    const numeric = state("numeric");
+    numeric.durationMs = Number.NaN;
+    const numericLease = repository.acquireRunLease("numeric", "new");
+    assert.ok(numericLease);
+    assert.throws(() => repository.save(numeric, numericLease), /duration/);
+    assert.equal(repository.getSummary("numeric"), null);
+    repository.close();
+  });
+});
 
-test(
-  "run lease refuses while a legacy project lock owner is alive",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "legacy-live.lock"),
-      JSON.stringify({
-        runId: "legacy-live",
-        runPath: join(legacyRunsDir, "legacy-live.json"),
-        pid: process.pid,
-        startedAt: "2024-01-01T00:00:00.000Z",
-        token: "legacy-owner",
-      }),
-      "utf-8",
+test("save transaction rolls summary and payload back together", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    const lease = repository.acquireRunLease("rollback", "new");
+    assert.ok(lease);
+    repository.save(state("rollback"), lease);
+    const beforeSummary = repository.getSummary("rollback");
+    const beforePayload = repository.load("rollback");
+
+    const fault = new DatabaseSync(path);
+    fault.exec(`CREATE TRIGGER fail_payload_update BEFORE UPDATE ON workflow_run_payloads
+      BEGIN SELECT RAISE(ABORT, 'injected payload failure'); END`);
+    assert.throws(
+      () => repository.save({ ...state("rollback"), status: "failed", workflowName: "changed" }, lease),
+      /injected payload failure/,
     );
+    assert.deepEqual(repository.getSummary("rollback"), beforeSummary);
+    assert.deepEqual(repository.load("rollback"), beforePayload);
+    fault.exec("DROP TRIGGER fail_payload_update");
+    fault.close();
+    repository.releaseRunLease(lease);
+    repository.close();
+  });
+});
 
-    assert.equal(rp.acquireRunLease("legacy-live"), null);
-    assert.equal(existsSync(join(workflowProjectPaths(cwd).runsDir, "legacy-live.lock")), false);
-  }),
-);
+test("busy writer failures roll back and surface explicitly", async () => {
+  await isolated((_home, cwd, path) => {
+    openWorkflowDatabase({ path }).close();
+    const blocker = new DatabaseSync(path);
+    blocker.exec("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE");
+    class FastTimeoutDatabase extends DatabaseSync {
+      constructor(
+        databasePath: ConstructorParameters<typeof DatabaseSync>[0],
+        options?: ConstructorParameters<typeof DatabaseSync>[1],
+      ) {
+        super(databasePath, { ...options, timeout: 1 });
+      }
+    }
+    assert.throws(() => createRunPersistence(cwd, { path, Database: FastTimeoutDatabase }), /locked|busy/i);
+    blocker.exec("ROLLBACK");
+    blocker.close();
+    const repository = createRunPersistence(cwd, { path });
+    assert.deepEqual(repository.listSummaries(), []);
+    repository.close();
+  });
+});
 
-test(
-  "run lease removes a stale legacy project lock before acquiring the new lock",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    const primaryRunsDir = workflowProjectPaths(cwd).runsDir;
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "legacy-stale.lock"),
-      JSON.stringify({
-        runId: "legacy-stale",
-        runPath: join(legacyRunsDir, "legacy-stale.json"),
-        pid: 2147483647,
-        startedAt: "2024-01-01T00:00:00.000Z",
-        token: "legacy-stale",
-      }),
-      "utf-8",
+test("SQL metacharacters remain data across all scoped operations", async () => {
+  await isolated((_home, cwd, path) => {
+    const quotedCwd = join(cwd, "project ' ; --");
+    mkdirSync(quotedCwd);
+    const repository = createRunPersistence(quotedCwd, { path });
+    const runId = "run ' ; DROP TABLE projects; --";
+    const sessionId = "session ' OR 1=1 --";
+    const lease = repository.acquireRunLease(runId, "new");
+    assert.ok(lease);
+    repository.save(state(runId, sessionId), lease);
+    assert.equal(repository.listSummaries(sessionId)[0]?.runId, runId);
+    assert.equal(repository.getSummary(runId)?.sessionId, sessionId);
+    assert.equal(repository.load(runId)?.args && typeof repository.load(runId)?.args, "object");
+    assert.equal(repository.delete(runId, lease), "deleted");
+    repository.close();
+  });
+});
+
+test("malformed and identity-mismatched payloads are rejected", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    const lease = repository.acquireRunLease("bad", "new");
+    assert.ok(lease);
+    repository.save(state("bad"), lease);
+    repository.releaseRunLease(lease);
+    const db = new DatabaseSync(path);
+    db.prepare("UPDATE workflow_run_payloads SET state_json = ? WHERE run_id = ?").run(
+      JSON.stringify(state("other")),
+      "bad",
     );
+    db.close();
+    assert.throws(() => repository.load("bad"), /identity/);
+    repository.close();
+  });
+});
 
-    const lease = rp.acquireRunLease("legacy-stale");
-    assert.ok(lease, "dead-pid legacy lock should not block the new owner");
-    assert.equal(existsSync(join(legacyRunsDir, "legacy-stale.lock")), false);
-    assert.equal(existsSync(join(primaryRunsDir, "legacy-stale.lock")), true);
-    rp.releaseRunLease(lease);
-  }),
-);
+test("close is idempotent and operations after close fail explicitly", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    repository.close();
+    repository.close();
+    assert.throws(() => repository.listSummaries(), /closed/);
+  });
+});
 
-test(
-  "run lease steals a stale lock whose pid is dead",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const runsDir = workflowProjectPaths(cwd).runsDir;
-    rp.save({
-      runId: "stale-lock",
-      workflowName: "w",
-      status: "paused",
-      phases: [],
-      agents: [],
-      logs: [],
-    } as PersistedRunState);
-
-    writeFileSync(
-      join(runsDir, "stale-lock.lock"),
-      JSON.stringify({
-        runId: "stale-lock",
-        runPath: join(runsDir, "stale-lock.json"),
-        pid: 2147483647,
-        startedAt: "2024-01-01T00:00:00.000Z",
-        token: "stale",
-      }),
-      "utf-8",
-    );
-
-    const lease = rp.acquireRunLease("stale-lock");
-    assert.ok(lease, "dead-pid lock should be stolen");
-    const lock = JSON.parse(readFileSync(join(runsDir, "stale-lock.lock"), "utf-8")) as { token: string };
-    assert.equal(lock.token, lease.token, "stale lock is replaced by the new owner");
-    rp.releaseRunLease(lease);
-  }),
-);
-
-test(
-  "delete removes the lock sidecar too",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "delete-lock",
-      workflowName: "w",
-      status: "paused",
-      phases: [],
-      agents: [],
-      logs: [],
-    } as PersistedRunState);
-    const lease = rp.acquireRunLease("delete-lock");
-    assert.ok(lease, "lease exists before delete");
-    rp.delete("delete-lock");
-    assert.equal(existsSync(join(workflowProjectPaths(cwd).runsDir, "delete-lock.lock")), false, "lock cleaned up");
-  }),
-);
-
-test(
-  "WorkflowManager reconciles a stale 'running' run to 'paused' on construction",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    rp.save({
-      runId: "stale",
-      workflowName: "w",
-      status: "running",
-      script: "export const meta = { name: 'w', description: 'd' }\nawait agent('x',{label:'x'})\nreturn 1",
-      phases: [],
-      agents: [],
-      logs: [],
-    } as PersistedRunState);
-    // A fresh manager (the previous process died) should recover the orphan.
-    new WorkflowManager({ cwd });
-    assert.equal(rp.load("stale")?.status, "paused", "stale running -> paused (journal preserved for resume)");
-  }),
-);
-
-test(
-  "WorkflowManager does not recover a legacy running run while its legacy lock owner is alive",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "legacy-live.json"),
-      JSON.stringify({
-        runId: "legacy-live",
-        workflowName: "w",
-        status: "running",
-        script: "export const meta = { name: 'w', description: 'd' }\nawait agent('x',{label:'x'})\nreturn 1",
-        phases: [],
-        agents: [],
-        logs: [],
-        startedAt: "2024-01-01T00:00:00.000Z",
-        updatedAt: "2024-01-01T00:00:00.000Z",
-      }),
-      "utf-8",
-    );
-    writeFileSync(
-      join(legacyRunsDir, "legacy-live.lock"),
-      JSON.stringify({
-        runId: "legacy-live",
-        runPath: join(legacyRunsDir, "legacy-live.json"),
-        pid: process.pid,
-        startedAt: "2024-01-01T00:00:00.000Z",
-        token: "legacy-owner",
-      }),
-      "utf-8",
-    );
-
-    new WorkflowManager({ cwd });
-
-    assert.equal(rp.load("legacy-live")?.status, "running");
-    assert.equal(existsSync(join(workflowProjectPaths(cwd).runsDir, "legacy-live.json")), false);
-  }),
-);
-
-test(
-  "WorkflowManager.listRuns is scoped to the bound session and switches with setSessionId",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const run = (runId: string, sessionId: string): PersistedRunState =>
-      ({
-        runId,
-        workflowName: "w",
-        status: "completed",
-        sessionId,
-        phases: [],
-        agents: [],
-        logs: [],
-      }) as PersistedRunState;
-    rp.save(run("a", "s1"));
-    rp.save(run("b", "s2"));
-
-    const m = new WorkflowManager({ cwd, sessionId: "s1" });
-    assert.deepEqual(
-      m.listRuns().map((r) => r.runId),
-      ["a"],
-      "only the bound session's runs are listed",
-    );
-
-    m.setSessionId("s2");
-    assert.deepEqual(
-      m.listRuns().map((r) => r.runId),
-      ["b"],
-      "switching sessions re-shows that session's runs",
-    );
-
-    m.setSessionId(undefined);
-    assert.deepEqual(
-      m
-        .listRuns()
-        .map((r) => r.runId)
-        .sort(),
-      ["a", "b"],
-      "unbound lists all runs (legacy/global)",
-    );
-
-    // listAllRuns ignores the session binding.
-    assert.equal(new WorkflowManager({ cwd, sessionId: "s1" }).listAllRuns().length, 2);
-  }),
-);
+test("old JSON and lock files are ignored and left unchanged", async () => {
+  await isolated((_home, cwd, path) => {
+    const legacy = join(cwd, ".pi", "workflows", "runs");
+    mkdirSync(legacy, { recursive: true });
+    const json = join(legacy, "old.json");
+    const lock = join(legacy, "old.lock");
+    writeFileSync(json, JSON.stringify(state("old")));
+    writeFileSync(lock, "legacy lock");
+    const beforeJson = readFileSync(json);
+    const beforeLock = readFileSync(lock);
+    const repository = createRunPersistence(cwd, { path });
+    assert.deepEqual(repository.listSummaries(), []);
+    repository.close();
+    assert.deepEqual(readFileSync(json), beforeJson);
+    assert.deepEqual(readFileSync(lock), beforeLock);
+    assert.equal(lstatSync(json).isFile(), true);
+  });
+});

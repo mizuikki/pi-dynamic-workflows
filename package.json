@@ -18,6 +18,7 @@
     "dist/",
     "extensions/",
     "src/",
+    "docs/storage.md",
     "README.md"
   ],
   "scripts": {
@@ -29,6 +30,7 @@
     "format": "biome format --write .",
     "lint": "biome lint .",
     "build": "tsc",
+    "benchmark:persistence": "tsx scripts/benchmark-run-persistence.ts",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build"
   },
@@ -68,6 +70,9 @@
     }
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "dependencies": {
     "acorn": "^8.16.0"
   },
@@ -78,6 +83,7 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "@biomejs/biome": "2.4.16",
     "@earendil-works/pi-ai": "0.81.1",
     "@earendil-works/pi-coding-agent": "0.81.1",

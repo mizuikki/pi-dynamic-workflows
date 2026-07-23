@@ -17,7 +17,7 @@ import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { parseKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
-import type { PersistedRunState } from "./run-persistence.js";
+import type { PersistedRunState, WorkflowRunSummary } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
@@ -85,29 +85,43 @@ export function shortModel(model: string | undefined): string | undefined {
 
 /** Reads run/phase/agent data from the manager, preferring live snapshots. */
 export class NavigatorModel {
+  private readonly summaries: WorkflowRunSummary[];
+  private selected?: PersistedRunState;
+
   constructor(
-    private readonly manager: Pick<WorkflowManager, "listRuns" | "getRun">,
+    private readonly manager: Pick<WorkflowManager, "listRuns" | "getRun" | "loadRun">,
     private readonly storage?: { list(): SavedWorkflow[]; delete(name: string, location?: string): boolean },
-  ) {}
+  ) {
+    this.summaries = manager.listRuns();
+  }
+
+  selectRun(runId: string): void {
+    if (this.manager.getRun(runId)) return;
+    this.selected = this.manager.loadRun(runId) ?? undefined;
+  }
+
+  clearSelected(): void {
+    this.selected = undefined;
+  }
 
   private snapshot(runId: string): { snapshot: WorkflowSnapshot; status: string } | undefined {
     const live = this.manager.getRun(runId);
     if (live) return { snapshot: live.snapshot, status: live.status };
-    const p = this.manager.listRuns().find((r) => r.runId === runId);
+    const p = this.selected?.runId === runId ? this.selected : undefined;
     if (!p) return undefined;
     return { snapshot: persistedToSnapshot(p), status: p.status };
   }
 
   runs(): RunRow[] {
-    return this.manager.listRuns().map((p) => {
+    return this.summaries.map((p) => {
       const live = this.manager.getRun(p.runId);
-      const agents = (live?.snapshot.agents ?? p.agents) as WorkflowAgentSnapshot[];
+      const agents = live?.snapshot.agents;
       return {
         runId: p.runId,
         name: live?.snapshot.name ?? p.workflowName,
         status: live?.status ?? p.status,
-        done: agents.filter((a) => a.status === "done").length,
-        total: agents.length,
+        done: agents ? agents.filter((a) => a.status === "done").length : (p.agentCounts?.done ?? 0),
+        total: agents?.length ?? p.agentCounts?.total ?? 0,
         tokens: (live?.snapshot.tokenUsage ?? p.tokenUsage)?.total ?? 0,
         cost: (live?.snapshot.tokenUsage ?? p.tokenUsage)?.cost ?? 0,
       };
@@ -993,6 +1007,7 @@ export function openWorkflowNavigator(
   ui: ExtensionUIContext,
   opts: NavigatorOptions = {},
 ): Promise<void> {
+  manager.refreshRunSummaries();
   const model = new NavigatorModel(manager, opts.storage);
   const state = new NavigatorState();
 
@@ -1003,6 +1018,7 @@ export function openWorkflowNavigator(
       const onEvent = () => rerender();
       for (const ev of events) manager.on(ev, onEvent);
       const cleanup = () => {
+        model.clearSelected();
         for (const ev of events) manager.off(ev, onEvent);
       };
 
@@ -1011,15 +1027,22 @@ export function openWorkflowNavigator(
         const action = keyToAction(parseKey(data), state.kind, itemKind);
         switch (action.type) {
           case "move":
+            if (state.kind === "runs") model.clearSelected();
             state.move(action.delta, currentCount(state, model));
             break;
           case "drill":
+            if (state.kind === "runs") {
+              const selected = model.runs()[state.cursor];
+              if (selected) model.selectRun(selected.runId);
+            }
             state.drill(model);
             break;
           case "back":
             if (!state.back()) {
               cleanup();
               done(undefined);
+            } else if (state.kind === "runs") {
+              model.clearSelected();
             }
             break;
           case "close":
@@ -1054,7 +1077,7 @@ export function openWorkflowNavigator(
           }
           case "restart": {
             const id = state.activeRunId(model);
-            const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+            const run = id ? manager.loadRun(id) : undefined;
             if (!run?.script) {
               ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
               break;
@@ -1065,7 +1088,7 @@ export function openWorkflowNavigator(
           }
           case "save": {
             const id = state.activeRunId(model);
-            const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+            const run = id ? manager.loadRun(id) : undefined;
             if (!run?.script) {
               ui.notify("No saved run script to save", "warning");
             } else if (!opts.storage) {
