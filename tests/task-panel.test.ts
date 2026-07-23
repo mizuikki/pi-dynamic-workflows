@@ -19,15 +19,13 @@ before(async () => {
 // ─── Pure-function tests (tested indirectly via installResultDelivery) ─────────
 
 describe("installResultDelivery", () => {
-  function createMockManager(run?: unknown, runsDir?: string) {
+  function createMockManager(run?: unknown) {
     const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
       getRun: (...args: unknown[]) => unknown;
-      getPersistence?: () => { getRunsDir: () => string };
       __deliveryInstalled?: boolean;
       listRuns?: () => unknown[];
     };
     manager.getRun = () => run;
-    if (runsDir) manager.getPersistence = () => ({ getRunsDir: () => runsDir });
     return manager;
   }
 
@@ -162,25 +160,25 @@ describe("installResultDelivery", () => {
     assert.ok(calls[0].content.includes("null"), "should contain null for undefined result");
   });
 
-  // ── Full-result pointer + configurable threshold ──
+  // ── Status pointer + configurable threshold ──
 
-  it("appends a Full result pointer to <runsDir>/<runId>.json when persistence exists", () => {
+  it("appends a session-safe /workflows status pointer", () => {
     const pi = createMockPi();
-    const manager = createMockManager(makeRun(), "/runs");
+    const manager = createMockManager(makeRun());
 
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("complete", { runId: "test-run-1" });
 
     const content = (pi as unknown as { _calls: { content: string }[] })._calls[0].content;
-    assert.ok(content.includes("Full result:"), "should include the pointer label");
-    assert.ok(content.includes("/runs/test-run-1.json"), "should point at <runsDir>/<runId>.json");
+    assert.ok(content.includes("Run details: /workflows status test-run-1"), "should include the status command");
+    assert.ok(!content.includes("/runs/"), "should not expose a local path");
     // The verdict summary itself is unchanged apart from the appended pointer.
     assert.ok(content.includes("All tests passed"), "verdict text preserved");
   });
 
-  it("omits the pointer when the manager exposes no persistence layer", () => {
+  it("always includes the pointer without exposing a persistence API", () => {
     const pi = createMockPi();
-    const manager = createMockManager(makeRun()); // no runsDir
+    const manager = createMockManager(makeRun());
 
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("complete", { runId: "test-run-1" });
@@ -188,7 +186,7 @@ describe("installResultDelivery", () => {
     const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
     assert.equal(calls.length, 1, "the result is still delivered");
     assert.ok(calls[0].content.includes("All tests passed"), "verdict body still intact");
-    assert.ok(!calls[0].content.includes("Full result:"), "no pointer without a persisted path");
+    assert.ok(calls[0].content.includes("Run details: /workflows status test-run-1"));
   });
 
   it("honors deliveredResultMaxChars from loadSettings for the JSON-dump branch", () => {
@@ -196,7 +194,7 @@ describe("installResultDelivery", () => {
     // ~216-char JSON dump: under the default 400, so it would NOT truncate by default
     // — a truncation marker can therefore only come from the 50-char setting.
     const run = makeRun({ result: { result: { note: "z".repeat(200) } } });
-    const manager = createMockManager(run, "/runs");
+    const manager = createMockManager(run);
 
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager, {
       loadSettings: () => ({ deliveredResultMaxChars: 50 }),
@@ -206,7 +204,7 @@ describe("installResultDelivery", () => {
     const content = (pi as unknown as { _calls: { content: string }[] })._calls[0].content;
     assert.ok(/…\(truncated [\d.]+ (B|KB|MB)\)/.test(content), "the 50-char setting truncates a sub-400 dump");
     assert.ok(!content.includes("z".repeat(200)), "the body is cut at the configured threshold");
-    assert.ok(content.includes("/runs/test-run-1.json"), "pointer still appended");
+    assert.ok(content.includes("Run details: /workflows status test-run-1"), "pointer still appended");
   });
 
   // ── installResultDelivery: guard / stale ctx ──
@@ -417,8 +415,41 @@ describe("installTaskPanel", () => {
 describe("renderPanel", () => {
   const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
+  it("performs zero manager or persistence calls across 1,000 renders", async () => {
+    const { createWorkflowPanelSnapshot, renderPanel, renderPanelDetailed } = await import("../src/task-panel.js");
+    let calls = 0;
+    const manager = {
+      listRuns: () => {
+        calls++;
+        return [
+          {
+            projectId: "project",
+            runId: "run",
+            workflowName: "workflow",
+            status: "running",
+            startedAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            agentCounts: { total: 0, running: 0, done: 0, error: 0 },
+            hasScript: true,
+          },
+        ];
+      },
+      getRun: () => {
+        calls++;
+        return undefined;
+      },
+    };
+    const snapshot = createWorkflowPanelSnapshot(manager as never);
+    const preparedCalls = calls;
+    for (let i = 0; i < 1000; i++) {
+      renderPanel(snapshot, theme as never, 80);
+      renderPanelDetailed(snapshot, theme as never, 80, 8, i * 10);
+    }
+    assert.equal(calls, preparedCalls);
+  });
+
   it("hints that finished runs are kept in /workflows history", async () => {
-    const { renderPanel } = await import("../src/task-panel.js");
+    const { createWorkflowPanelSnapshot, renderPanel } = await import("../src/task-panel.js");
     const manager = {
       listRuns: () => [
         { runId: "a", workflowName: "live", status: "running", agents: [{ status: "done" }], logs: [] },
@@ -427,7 +458,7 @@ describe("renderPanel", () => {
       ],
       getRun: () => undefined,
     };
-    const lines = renderPanel(manager as never, theme as never);
+    const lines = renderPanel(createWorkflowPanelSnapshot(manager as never), theme as never);
     assert.ok(
       lines.some((l) => /2 finished kept in history/.test(l)),
       "hint should report the finished-run count",
@@ -439,16 +470,16 @@ describe("renderPanel", () => {
   });
 
   it("renders nothing when no run is active", async () => {
-    const { renderPanel } = await import("../src/task-panel.js");
+    const { createWorkflowPanelSnapshot, renderPanel } = await import("../src/task-panel.js");
     const manager = {
       listRuns: () => [{ runId: "b", workflowName: "old", status: "completed", agents: [], logs: [] }],
       getRun: () => undefined,
     };
-    assert.deepEqual(renderPanel(manager as never, theme as never), []);
+    assert.deepEqual(renderPanel(createWorkflowPanelSnapshot(manager as never), theme as never), []);
   });
 
   it("truncates every rendered line to the requested visible width", async () => {
-    const { renderPanel } = await import("../src/task-panel.js");
+    const { createWorkflowPanelSnapshot, renderPanel } = await import("../src/task-panel.js");
     const ansiTheme = {
       fg: (_c: string, t: string) => `\x1b[2m${t}\x1b[22m`,
       bold: (t: string) => `\x1b[1m${t}\x1b[22m`,
@@ -472,7 +503,7 @@ describe("renderPanel", () => {
       }),
     };
 
-    const lines = renderPanel(manager as never, ansiTheme as never, 42);
+    const lines = renderPanel(createWorkflowPanelSnapshot(manager as never), ansiTheme as never, 42);
 
     assert.ok(lines.length > 0, "panel should render active runs");
     assert.ok(
@@ -561,10 +592,18 @@ describe("renderPanelDetailed", () => {
   }
 
   it("renders aggregate tokens, cost, phases, and per-agent rows", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { createWorkflowPanelSnapshot, renderPanelDetailed, clearTokenSamples } = await import(
+      "../src/task-panel.js"
+    );
     clearTokenSamples("r1");
     // discover_routes 2100 + audit_auth 1800 = 3900 → "3.9K tok" aggregate.
-    const lines = renderPanelDetailed(detailedManager(2100) as never, theme as never, undefined, 8, 1000);
+    const lines = renderPanelDetailed(
+      createWorkflowPanelSnapshot(detailedManager(2100) as never),
+      theme as never,
+      undefined,
+      8,
+      1000,
+    );
     const text = lines.join("\n");
 
     assert.ok(/auth_audit/.test(text), "shows the run name");
@@ -596,11 +635,25 @@ describe("renderPanelDetailed", () => {
   });
 
   it("shows a live token/s after two growing samples", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { createWorkflowPanelSnapshot, renderPanelDetailed, clearTokenSamples } = await import(
+      "../src/task-panel.js"
+    );
     clearTokenSamples("r1");
     // aggregate goes 3900 → 5900 over 1s = 2000 tok/s
-    renderPanelDetailed(detailedManager(2100) as never, theme as never, undefined, 8, 1000);
-    const lines = renderPanelDetailed(detailedManager(4100) as never, theme as never, undefined, 8, 2000);
+    renderPanelDetailed(
+      createWorkflowPanelSnapshot(detailedManager(2100) as never),
+      theme as never,
+      undefined,
+      8,
+      1000,
+    );
+    const lines = renderPanelDetailed(
+      createWorkflowPanelSnapshot(detailedManager(4100) as never),
+      theme as never,
+      undefined,
+      8,
+      2000,
+    );
     assert.ok(
       lines.some((l) => /2000 tok\/s/.test(l)),
       `expected a tok/s readout, got:\n${lines.join("\n")}`,
@@ -608,9 +661,17 @@ describe("renderPanelDetailed", () => {
   });
 
   it("caps agents per phase and reports the overflow", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { createWorkflowPanelSnapshot, renderPanelDetailed, clearTokenSamples } = await import(
+      "../src/task-panel.js"
+    );
     clearTokenSamples("r1");
-    const lines = renderPanelDetailed(detailedManager(12400) as never, theme as never, undefined, 2, 1000);
+    const lines = renderPanelDetailed(
+      createWorkflowPanelSnapshot(detailedManager(12400) as never),
+      theme as never,
+      undefined,
+      2,
+      1000,
+    );
     const text = lines.join("\n");
     // Scan has 3 agents, cap 2 → most recent 2 shown + "… 1 earlier agents"
     assert.ok(/… 1 earlier agents/.test(text), "overflow line present");
@@ -619,11 +680,60 @@ describe("renderPanelDetailed", () => {
   });
 
   it("suppresses tok/s for paused runs", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { createWorkflowPanelSnapshot, renderPanelDetailed, clearTokenSamples } = await import(
+      "../src/task-panel.js"
+    );
     clearTokenSamples("r1");
-    renderPanelDetailed(detailedManager(1000, "paused") as never, theme as never, undefined, 8, 1000);
-    const lines = renderPanelDetailed(detailedManager(3000, "paused") as never, theme as never, undefined, 8, 2000);
+    renderPanelDetailed(
+      createWorkflowPanelSnapshot(detailedManager(1000, "paused") as never),
+      theme as never,
+      undefined,
+      8,
+      1000,
+    );
+    const lines = renderPanelDetailed(
+      createWorkflowPanelSnapshot(detailedManager(3000, "paused") as never),
+      theme as never,
+      undefined,
+      8,
+      2000,
+    );
     assert.ok(!lines.some((l) => /tok\/s/.test(l)), "paused run shows no token rate");
+  });
+
+  it("uses the persisted token total for a paused run without a live snapshot", async () => {
+    const { createWorkflowPanelSnapshot, renderPanelDetailed, clearTokenSamples } = await import(
+      "../src/task-panel.js"
+    );
+    clearTokenSamples("paused-persisted");
+    const manager = {
+      listRuns: () => [
+        {
+          projectId: "project",
+          runId: "paused-persisted",
+          workflowName: "paused-workflow",
+          status: "paused",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          agentCounts: { total: 2, running: 0, done: 1, error: 0 },
+          tokenUsage: { input: 2100, output: 2100, total: 4200, cost: 0.02 },
+          hasScript: true,
+        },
+      ],
+      getRun: () => undefined,
+    };
+    const lines = renderPanelDetailed(
+      createWorkflowPanelSnapshot(manager as never),
+      theme as never,
+      undefined,
+      8,
+      1000,
+    );
+    assert.ok(
+      lines.some((line) => /4\.2K tok/.test(line)),
+      `expected persisted tokens: ${lines.join("\n")}`,
+    );
+    assert.ok(!lines.some((line) => /tok\/s/.test(line)), "paused run shows no token rate");
   });
 });
 
@@ -700,43 +810,42 @@ describe("installTaskPanel mode selection", () => {
 
 describe("deliverText", () => {
   function makeResult(result: unknown) {
-    return { snapshot: { name: "wf", agentCount: 1 }, result: { agentCount: 1, result } };
+    return { runId: "x", snapshot: { name: "wf", agentCount: 1 }, result: { agentCount: 1, result } };
   }
 
-  it("appends the Full result pointer to a verdict result without altering it", async () => {
+  it("appends the status pointer to a verdict result without altering it", async () => {
     const { deliverText } = await import("../src/task-panel.js");
     // A verdict longer than the default cap must still pass through in full: the
     // verdict branch is never subject to the JSON-dump truncation.
     const verdict = "V".repeat(600);
-    const text = deliverText(makeResult({ verdict }) as never, { resultPath: "/r/x.json" });
+    const text = deliverText(makeResult({ verdict }) as never);
     assert.ok(text.includes(verdict), "long verdict passed through in full");
-    assert.ok(text.includes("↳ Full result: /r/x.json"), "pointer appended");
+    assert.ok(text.includes("Run details: /workflows status x"), "pointer appended");
     assert.ok(!/truncated/.test(text), "verdict branch bypasses truncation");
   });
 
-  it("does not append a pointer when no resultPath is given", async () => {
+  it("always appends a status pointer", async () => {
     const { deliverText } = await import("../src/task-panel.js");
     const text = deliverText(makeResult("plain string") as never);
     assert.ok(text.includes("plain string"), "string result passed through");
-    assert.ok(!text.includes("Full result:"), "no pointer without a resultPath");
+    assert.ok(text.includes("Run details: /workflows status x"));
   });
 
   it("leaves a small JSON dump untouched (no truncation marker)", async () => {
     const { deliverText } = await import("../src/task-panel.js");
-    const text = deliverText(makeResult({ ok: true, changed: 2 }) as never, { resultPath: "/r/x.json" });
+    const text = deliverText(makeResult({ ok: true, changed: 2 }) as never);
     assert.ok(text.includes('"ok": true'), "full JSON shown");
     assert.ok(!/truncated/.test(text), "no truncation under the threshold");
-    assert.ok(text.includes("↳ Full result: /r/x.json"), "pointer still appended");
+    assert.ok(text.includes("Run details: /workflows status x"), "pointer still appended");
   });
 
   it("truncates the JSON dump at maxChars and reports the dropped size", async () => {
     const { deliverText } = await import("../src/task-panel.js");
     const text = deliverText(makeResult({ note: "x".repeat(500) }) as never, {
-      resultPath: "/r/x.json",
       maxChars: 100,
     });
     assert.ok(/…\(truncated [\d.]+ (B|KB|MB)\)/.test(text), "size hint present");
-    assert.ok(text.includes("↳ Full result: /r/x.json"), "pointer still appended");
+    assert.ok(text.includes("Run details: /workflows status x"), "pointer still appended");
     // Body is capped near maxChars, so the 500-char tail is not delivered in full.
     assert.ok(!text.includes("x".repeat(500)), "the full tail is not inlined");
   });

@@ -51,6 +51,7 @@ function harness(
     listRuns: () => [],
     getSnapshot: () => null,
     getRun: () => undefined,
+    loadRun: () => null,
     stop: (id: string) => {
       calls.push(`stop:${id}`);
       return true;
@@ -63,9 +64,9 @@ function harness(
       calls.push(`resume:${id}`);
       return false;
     },
-    deleteRun: (id: string) => {
+    deleteRun: async (id: string) => {
       calls.push(`rm:${id}`);
-      return true;
+      return "deleted";
     },
     ...managerOverrides,
   };
@@ -87,7 +88,18 @@ test("/workflows list shows empty hint when no runs", async () => {
 
 test("/workflows (no args) defaults to list", async () => {
   const h = harness({
-    listRuns: () => [{ runId: "run-1", workflowName: "demo", status: "completed", phases: [], agents: [], logs: [] }],
+    listRuns: () => [
+      {
+        projectId: "project",
+        runId: "run-1",
+        workflowName: "demo",
+        status: "completed",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        agentCounts: { total: 0, running: 0, done: 0, error: 0 },
+        hasScript: false,
+      },
+    ],
   });
   await h.run("");
   assert.match(h.printed[0], /Workflow runs:/);
@@ -149,17 +161,15 @@ test("/workflows stop <id> calls manager.stop", async () => {
 
 test("/workflows status <id> renders a persisted run", async () => {
   const h = harness({
-    listRuns: () => [
-      {
-        runId: "run-7",
-        workflowName: "audit",
-        status: "completed",
-        phases: ["Scan"],
-        agents: [{ id: 1, label: "scan files", status: "done", prompt: "x" }],
-        logs: [],
-        tokenUsage: { input: 10, output: 5, total: 15 },
-      },
-    ],
+    loadRun: () => ({
+      runId: "run-7",
+      workflowName: "audit",
+      status: "completed",
+      phases: ["Scan"],
+      agents: [{ id: 1, label: "scan files", status: "done", prompt: "x" }],
+      logs: [],
+      tokenUsage: { input: 10, output: 5, total: 15 },
+    }),
   });
   await h.run("status run-7");
   assert.match(h.printed[0], /audit \(run-7\)/);
@@ -321,13 +331,20 @@ test("/workflows rm without id warns usage", async () => {
   assert.match(h.notified[0].message, /Usage/);
 });
 
-test("/workflows rm <id> warns when deleteRun returns false", async () => {
-  const h = harness({ deleteRun: () => false });
+test("/workflows rm <id> warns when deleteRun returns not_found", async () => {
+  const h = harness({ deleteRun: async () => "not_found" });
   await h.run("rm run-missing");
   assert.ok(
     h.notified.some((n) => n.message.includes("No run")),
     "should show No run",
   );
+});
+
+test("/workflows rm <id> distinguishes a live foreign lease", async () => {
+  const h = harness({ deleteRun: async () => "leased" });
+  await h.run("rm run-1");
+  assert.equal(h.notified[0]?.type, "warning");
+  assert.match(h.notified[0]?.message ?? "", /active/);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -465,7 +482,9 @@ test("/workflows save <name> <runId> saves the specified run", async () => {
       sendMessage: async () => {},
     } as unknown as ExtensionAPI,
     {
-      listRuns: () => runs,
+      listRuns: () =>
+        runs.map((run) => ({ ...run, hasScript: true, agentCounts: { total: 0, running: 0, done: 0, error: 0 } })),
+      loadRun: () => runs[0],
       getSnapshot: () => null,
       getRun: () => undefined,
       pause: () => false,
@@ -505,6 +524,7 @@ test("/workflows save <name> <runId> warns when run has no script", async () => 
     } as unknown as ExtensionAPI,
     {
       listRuns: () => [{ runId: "no-script", workflowName: "empty", status: "completed", agents: [], logs: [] }],
+      loadRun: () => null,
       getSnapshot: () => null,
       getRun: () => undefined,
       pause: () => false,

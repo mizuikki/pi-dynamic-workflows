@@ -18,6 +18,9 @@ Built for **codebase-wide audits, multi-perspective review, large refactors, and
 
 ## Install
 
+Node.js 24 or newer is required. Workflow persistence uses Node's built-in
+`node:sqlite` module and rejects older runtimes before opening any storage path.
+
 ```bash
 pi install npm:@quintinshaw/pi-dynamic-workflows
 ```
@@ -155,7 +158,9 @@ In the navigator: `↑/↓` select · `enter`/`→` open · `esc`/`←` back · 
 
 ## Storage
 
-Workflow state is stored under `~/.pi/workflows` so projects do not accumulate extension-owned `.pi/workflows` directories. Global settings and model tiers live at `~/.pi/workflows/settings.json` and `~/.pi/workflows/model-tiers.json`; project-scoped run history, resume journals, locks, and saved workflow overrides live under `~/.pi/workflows/projects/<project>/`. Older project-local `.pi/workflows/runs` and `.pi/workflows/saved` data is still read as a fallback, but new writes go to the user-level workflow store.
+Workflow run history and resume journals for every project are stored in one SQLite database at `~/.pi/workflows/workflows.sqlite3`. Runs remain isolated by a stable project key and Pi session ID. Listing and the live panel use summary records; private prompts, scripts, results, errors, and journals are loaded only for an authorized run detail or resume operation. The workflow home is user-only and the database file is created with user-only permissions on supported platforms.
+
+Global settings and model tiers remain text files at `~/.pi/workflows/settings.json` and `~/.pi/workflows/model-tiers.json`. Saved workflow definitions and project settings also remain file-backed under `~/.pi/workflows/projects/<project>/`. Existing run JSON, backup, temporary, and lock files are deliberately ignored: they are not imported, read as a fallback, or deleted. See [docs/storage.md](docs/storage.md) for the schema, durability, lease, backup, and recovery contract.
 
 `model-tiers.json` uses Pi CLI-style model parsing. A tier can be a plain model spec or include an optional thinking suffix:
 
@@ -259,11 +264,11 @@ By default, workflows do not set a run-wide token budget or per-agent hard timeo
 
 For larger or flakier fan-outs, the `workflow` tool also accepts `concurrency` (max agents running at once, clamped to the runtime maximum of `16`) and `agentRetries` (retry attempts after a recoverable agent failure such as a timeout, connection failure, or empty output). Both can be defaulted in `~/.pi/workflows/settings.json` as `{ "defaultConcurrency": 4, "defaultAgentRetries": 2 }`; a per-run tool value overrides the default, and a per-agent `retries` overrides `agentRetries`. Retries default to `0` (off) unless configured or passed, and only recoverable failures retry — nonrecoverable errors still abort the run.
 
-By default, each workflow subagent runs in an in-memory session: the full transcript is discarded when the run ends, and only a compacted excerpt survives inside the run JSON. Set `{ "persistAgentSessions": true }` in `~/.pi/workflows/settings.json` (or a project-level override, which wins) to persist every subagent transcript as a real pi session file in the standard sessions directory for the project (`~/.pi/agent/sessions/<encoded-cwd>/`), named `workflow:<runId> <agent label>` so it's identifiable in `/resume` and other session tooling. Sessions are keyed by the project cwd even when an agent runs in a temporary git worktree. Default is `false` (current behavior). Caveat: large fan-out runs create one session file per agent, which can clutter session pickers. Caveat: unlike the compacted run JSON, the persisted transcript is full and untruncated, so anything a subagent reads into context — including secrets — lands on disk when this is enabled. If a session can't be created or written (permissions, disk full), that agent silently falls back to an in-memory session rather than aborting the run.
+By default, each workflow subagent runs in an in-memory session: the full transcript is discarded when the run ends, and only a compacted excerpt survives in the workflow run payload. Set `{ "persistAgentSessions": true }` in `~/.pi/workflows/settings.json` (or a project-level override, which wins) to persist every subagent transcript as a real pi session file in the standard sessions directory for the project (`~/.pi/agent/sessions/<encoded-cwd>/`), named `workflow:<runId> <agent label>` so it's identifiable in `/resume` and other session tooling. Sessions are keyed by the project cwd even when an agent runs in a temporary git worktree. Default is `false` (current behavior). Caveat: large fan-out runs create one session file per agent, which can clutter session pickers. Caveat: unlike the compacted run payload, the persisted transcript is full and untruncated, so anything a subagent reads into context — including secrets — lands on disk when this is enabled. If a session can't be created or written (permissions, disk full), that agent silently falls back to an in-memory session rather than aborting the run.
 
 The live "Workflows running" panel is configured in the same `~/.pi/workflows/settings.json`: `"progressPanelMode"` is `"compact"` (default, one line per run) or `"detailed"` (per-phase/per-agent rows with tokens, cost, and a live tok/s rate), and `"progressPanelMaxAgents"` (default `8`, range `1`–`1000`) caps how many agents each phase shows in detailed mode before a `… N earlier agents` line. Toggle them live with `/workflows-progress compact|detailed` and `/workflows-progress-max <N>` — changes take effect on the next render without a restart.
 
-When a background run finishes, its result is delivered back into the conversation with a `↳ Full result: <path>` pointer to the persisted `~/.pi/workflows/projects/<project>/runs/<id>.json`, so nothing is lost even when the summary is shortened. Only the JSON-dump fallback (a result object without a `verdict`/`report`/`summary` string field) is truncated — at `"deliveredResultMaxChars"` characters (default `400`) in the same `~/.pi/workflows/settings.json` — and the dropped size is shown inline, e.g. `…(truncated 3.2 KB)`.
+When a background run finishes, its bounded result summary is followed by `Run details: /workflows status <runId>`. The status command authorizes the run against the current Pi session and then loads that one payload. Only the JSON-dump fallback (a result object without a `verdict`/`report`/`summary` string field) is truncated — at `"deliveredResultMaxChars"` characters (default `400`) in the same `~/.pi/workflows/settings.json` — and the dropped size is shown inline, e.g. `…(truncated 3.2 KB)`.
 
 Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()`, and `require`/`import`/`fs`/network are unavailable, so runs stay reproducible — which is what makes resume reliable.
 

@@ -138,7 +138,7 @@ describe("config", () => {
     assert.equal(c.MAX_AGENTS_PER_RUN, 1000);
     assert.equal(c.MAX_CONCURRENCY, 16);
     assert.equal(c.DEFAULT_AGENT_TIMEOUT_MS, null);
-    assert.equal(c.WORKFLOW_RUNS_DIR, ".pi/workflows/runs");
+    assert.equal(c.WORKFLOW_RUNS_DIR, undefined);
     assert.equal(c.WORKFLOW_SAVED_DIR, ".pi/workflows/saved");
     assert.equal(c.WORKFLOW_SETTINGS_FILE, ".pi/workflows/settings.json");
     assert.equal(c.USER_WORKFLOW_SAVED_DIR, "~/.pi/workflows/saved");

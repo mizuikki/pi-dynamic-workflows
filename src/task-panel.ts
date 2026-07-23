@@ -6,10 +6,10 @@
  *    conversation so the paused task continues with the outcome.
  */
 
-import { join } from "node:path";
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
+import type { WorkflowRunSummary } from "./run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import type { WorkflowSettings } from "./workflow-settings.js";
@@ -59,8 +59,8 @@ function formatBytes(n: number): string {
  * Pick a clean human-readable summary from a workflow result, in order of
  * preference: a `verdict`/`report`/`summary` string field, a bare string
  * result, else a JSON dump capped at `maxChars`. When the dump is truncated the
- * dropped size is reported (the full result is still reachable via the pointer
- * that {@link deliverText} appends).
+ * dropped size is reported (the full result is still reachable through the
+ * status command that {@link deliverText} appends).
  */
 function summarizeResult(result: unknown, maxChars: number = DEFAULT_DELIVERED_MAX_CHARS): string {
   if (typeof result === "string") return result;
@@ -88,7 +88,7 @@ function fitLine(line: string, width?: number): string {
   return truncateToWidth(line, maxWidth);
 }
 
-export function deliverText(run: ManagedRun, opts: { resultPath?: string; maxChars?: number } = {}): string {
+export function deliverText(run: ManagedRun, opts: { maxChars?: number } = {}): string {
   const summary = summarizeResult(run.result?.result, opts.maxChars);
   const tokens = run.result?.tokenUsage ? ` · ${run.result.tokenUsage.total.toLocaleString()} tokens` : "";
   const agents = run.result?.agentCount ?? run.snapshot.agentCount;
@@ -98,20 +98,8 @@ export function deliverText(run: ManagedRun, opts: { resultPath?: string; maxCha
     "",
     summary,
   ];
-  // Always point at the full persisted result so the tail is never lost — even when
-  // the summary above is a complete verdict/summary field or an untruncated dump.
-  if (opts.resultPath) lines.push("", `↳ Full result: ${opts.resultPath}`);
+  lines.push("", `Run details: /workflows status ${run.runId}`);
   return lines.join("\n");
-}
-
-/** Absolute path to a run's persisted result JSON. Undefined if the persistence
- *  layer can't be resolved — delivery must never throw in the complete handler. */
-function persistedResultPath(manager: WorkflowManager, runId: string): string | undefined {
-  try {
-    return join(manager.getPersistence().getRunsDir(), `${runId}.json`);
-  } catch {
-    return undefined;
-  }
 }
 
 /** Delivered JSON-dump truncation threshold from settings (already normalized),
@@ -171,7 +159,7 @@ export function installResultDelivery(
     // Only background/resumed runs are delivered: a foreground (sync) run already
     // returns its result inline as the tool result, so re-delivering would dup it.
     if (run?.background) {
-      deliver(deliverText(run, { resultPath: persistedResultPath(manager, runId), maxChars: deliveredMaxChars(opts) }));
+      deliver(deliverText(run, { maxChars: deliveredMaxChars(opts) }));
     }
   });
   manager.on("error", ({ runId, error }: { runId: string; error?: { message?: string } }) => {
@@ -207,25 +195,58 @@ export function installResultDelivery(
   );
 }
 
-export function renderPanel(manager: WorkflowManager, theme: Theme, width?: number): string[] {
-  const all = manager.listRuns();
-  const active = all.filter((r) => r.status === "running" || r.status === "paused");
+export interface WorkflowPanelRunSnapshot {
+  summary: WorkflowRunSummary;
+  live?: WorkflowSnapshot;
+}
+
+export interface WorkflowPanelSnapshot {
+  active: WorkflowPanelRunSnapshot[];
+  finishedCount: number;
+}
+
+export function createWorkflowPanelSnapshot(manager: WorkflowManager): WorkflowPanelSnapshot {
+  const all = manager.listRuns().map((summary) => {
+    if (summary.agentCounts) return summary;
+    const legacyAgents = (summary as unknown as { agents?: Array<{ status: string }> }).agents ?? [];
+    return {
+      ...summary,
+      projectId: summary.projectId ?? "",
+      startedAt: summary.startedAt ?? "",
+      updatedAt: summary.updatedAt ?? "",
+      agentCounts: {
+        total: legacyAgents.length,
+        running: legacyAgents.filter((agent) => agent.status === "running").length,
+        done: legacyAgents.filter((agent) => agent.status === "done").length,
+        error: legacyAgents.filter((agent) => agent.status === "error").length,
+      },
+      hasScript: Boolean((summary as unknown as { script?: string }).script),
+    };
+  });
+  return {
+    active: all
+      .filter((summary) => summary.status === "running" || summary.status === "paused")
+      .map((summary) => ({ summary, live: manager.getRun(summary.runId)?.snapshot })),
+    finishedCount: all.filter((summary) => summary.status !== "running" && summary.status !== "paused").length,
+  };
+}
+
+export function renderPanel(snapshot: WorkflowPanelSnapshot, theme: Theme, width?: number): string[] {
+  const { active } = snapshot;
   if (!active.length) return [];
-  const rows = active.map((r) => {
-    const live = manager.getRun(r.runId);
-    const agents = live?.snapshot.agents ?? r.agents;
-    const done = agents.filter((a) => a.status === "done").length;
-    const icon = r.status === "paused" ? "⏸" : "◆";
-    const phase = live?.snapshot.currentPhase ? ` · ${live.snapshot.currentPhase}` : "";
-    return `  ${icon} ${r.workflowName}  ${done}/${agents.length} agents${phase}`;
+  const rows = active.map(({ summary, live }) => {
+    const done = live ? live.agents.filter((agent) => agent.status === "done").length : summary.agentCounts.done;
+    const total = live?.agents.length ?? summary.agentCounts.total;
+    const icon = summary.status === "paused" ? "⏸" : "◆";
+    const phase = live?.currentPhase ?? summary.currentPhase;
+    return `  ${icon} ${summary.workflowName}  ${done}/${total} agents${phase ? ` · ${phase}` : ""}`;
   });
   // Finished runs leave this live panel but are kept in the navigator. Tell the
   // user so a completed run doesn't look like it vanished.
-  const finished = all.filter((r) => r.status !== "running" && r.status !== "paused").length;
   const hint = theme.fg(
     "dim",
-    finished > 0
-      ? `  /workflows — open navigator (${finished} finished kept in history)`
+    snapshot.finishedCount > 0
+      ? `  /workflows — open navigator (${snapshot.finishedCount} finished kept in history)`
       : "  /workflows — open navigator",
   );
   return [theme.bold(`Workflows running (${active.length}):`), ...rows, hint].map((line) => fitLine(line, width));
@@ -341,38 +362,36 @@ function renderRunBody(
  * (capped at `maxAgents` per phase). `now` is injected for testability.
  */
 export function renderPanelDetailed(
-  manager: WorkflowManager,
+  snapshot: WorkflowPanelSnapshot,
   theme: Theme,
   width: number | undefined,
   maxAgents: number,
   now: number,
 ): string[] {
-  const all = manager.listRuns();
-  const active = all.filter((r) => r.status === "running" || r.status === "paused");
+  const { active } = snapshot;
   if (!active.length) return [];
   const dim = (t: string) => theme.fg("dim", t);
   const out: string[] = [theme.bold(`Workflows running (${active.length}):`)];
 
-  for (const r of active) {
-    const live = manager.getRun(r.runId);
-    const snap = live?.snapshot;
-    const agents = (snap?.agents ?? r.agents) as WorkflowAgentSnapshot[];
-    const done = agents.filter((a) => a.status === "done").length;
-    const icon = r.status === "paused" ? "⏸" : "◆";
-    const usage = snap?.tokenUsage ?? r.tokenUsage;
+  for (const { summary, live: snap } of active) {
+    const agents = (snap?.agents ?? []) as WorkflowAgentSnapshot[];
+    const done = snap ? agents.filter((a) => a.status === "done").length : summary.agentCounts.done;
+    const agentTotal = snap ? agents.length : summary.agentCounts.total;
+    const icon = summary.status === "paused" ? "⏸" : "◆";
+    const usage = snap?.tokenUsage ?? summary.tokenUsage;
     // The run-level tokenUsage aggregate is only finalized when the run ends, so
     // it reads 0 for the whole live run. Per-agent `tokens` update on each agent
     // completion, so sum those for a live total (and keep the header consistent
     // with the per-phase subtotals). Note: tokens land at agent-completion
     // granularity, so the rate reflects completion throughput — it decays to 0
     // during a single long-running agent or a stall (which is the intended signal).
-    const total = agents.reduce((n, a) => n + (a.tokens ?? 0), 0);
+    const total = snap ? agents.reduce((n, a) => n + (a.tokens ?? 0), 0) : (summary.tokenUsage?.total ?? 0);
     // Sample the running total and derive the rolling token/s. Paused runs don't
     // accrue tokens, so their rate is suppressed (a stalled rate would mislead).
-    sampleTokens(r.runId, total, now);
-    const rate = r.status === "running" ? tokensPerSecond(r.runId) : 0;
+    sampleTokens(summary.runId, total, now);
+    const rate = summary.status === "running" ? tokensPerSecond(summary.runId) : 0;
     const meta = [
-      `${done}/${agents.length} agents`,
+      `${done}/${agentTotal} agents`,
       snap?.currentPhase || "",
       total > 0 ? `${fmtTokensShort(total)} tok` : "",
       // 2 decimals for ≥1¢, 4 for sub-cent so a real cost never shows as "$0.00".
@@ -382,15 +401,14 @@ export function renderPanelDetailed(
     ]
       .filter(Boolean)
       .join(" · ");
-    out.push(`  ${icon} ${theme.bold(r.workflowName)}  ${dim(meta)}`);
+    out.push(`  ${icon} ${theme.bold(summary.workflowName)}  ${dim(meta)}`);
     if (snap) out.push(...renderRunBody(snap, agents, maxAgents, theme));
   }
 
-  const finished = all.filter((r) => r.status !== "running" && r.status !== "paused").length;
   out.push(
     dim(
-      finished > 0
-        ? `  /workflows — open navigator (${finished} finished kept in history)`
+      snapshot.finishedCount > 0
+        ? `  /workflows — open navigator (${snapshot.finishedCount} finished kept in history)`
         : "  /workflows — open navigator",
     ),
   );
@@ -412,26 +430,23 @@ export function installTaskPanel(
   // be wasteful, but re-reading at most once a second still makes
   // /workflows-progress take effect "immediately" (no restart).
   let cached: WorkflowSettings = {};
-  let cachedAt = Number.NEGATIVE_INFINITY;
-  const settings = (): WorkflowSettings => {
-    if (!opts.loadSettings) return cached;
-    const now = Date.now();
-    if (now - cachedAt > 1000) {
-      try {
-        cached = opts.loadSettings() ?? {};
-      } catch {
-        cached = {};
-      }
-      cachedAt = now;
+  let panelSnapshot = createWorkflowPanelSnapshot(manager);
+  const refreshSettings = () => {
+    try {
+      cached = opts.loadSettings?.() ?? cached;
+    } catch {
+      cached = {};
     }
-    return cached;
   };
-  const hasActiveRun = () => manager.listRuns().some((r) => r.status === "running" || r.status === "paused");
+  refreshSettings();
 
   ui.setWidget(
     "workflow-tasks",
     (tui: TUI, theme: Theme) => {
-      const onEvent = () => tui.requestRender();
+      const onEvent = () => {
+        panelSnapshot = createWorkflowPanelSnapshot(manager);
+        tui.requestRender();
+      };
       for (const ev of RUN_EVENTS) manager.on(ev, onEvent);
       const onRunEnd = ({ runId }: { runId: string }) => clearTokenSamples(runId);
       for (const ev of RUN_END_EVENTS) manager.on(ev, onRunEnd);
@@ -439,18 +454,24 @@ export function installTaskPanel(
       // token/s rate keeps updating between sparse token events — and decays to 0
       // when an agent stalls. Gated + unref'd so it costs nothing when idle.
       const timer = setInterval(() => {
-        if (settings().progressPanelMode === "detailed" && hasActiveRun()) tui.requestRender();
+        refreshSettings();
+        if (cached.progressPanelMode === "detailed" && panelSnapshot.active.length > 0) tui.requestRender();
       }, 2000);
       (timer as { unref?: () => void }).unref?.();
       // Purely informational: it lists running runs and re-renders on events. To
       // open the navigator, the user runs /workflows (the panel takes no input).
       const comp: Component & { dispose?(): void } = {
         render: (width: number) => {
-          const s = settings();
-          if (s.progressPanelMode === "detailed") {
-            return renderPanelDetailed(manager, theme, width, clampMaxAgents(s.progressPanelMaxAgents), Date.now());
+          if (cached.progressPanelMode === "detailed") {
+            return renderPanelDetailed(
+              panelSnapshot,
+              theme,
+              width,
+              clampMaxAgents(cached.progressPanelMaxAgents),
+              Date.now(),
+            );
           }
-          return renderPanel(manager, theme, width);
+          return renderPanel(panelSnapshot, theme, width);
         },
         invalidate: () => {},
         dispose: () => {

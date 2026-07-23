@@ -3,7 +3,7 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { WorkflowSnapshot } from "../src/display.js";
 import { WorkflowErrorCode } from "../src/errors.js";
-import type { PersistedRunState } from "../src/run-persistence.js";
+import type { PersistedRunState, WorkflowRunSummary } from "../src/run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
 import type { SavedWorkflow } from "../src/workflow-saved.js";
 import { keyToAction, NavigatorModel, NavigatorState, renderNavigator } from "../src/workflow-ui.js";
@@ -123,19 +123,31 @@ function multiRunManager(): Pick<WorkflowManager, "listRuns" | "getRun"> {
   };
 }
 
-function persistedRunManager(): Pick<WorkflowManager, "listRuns" | "getRun"> {
+function persistedRunManager(): Pick<WorkflowManager, "listRuns" | "getRun" | "loadRun"> {
+  const persisted = {
+    projectId: "project-old",
+    runId: "r-old",
+    workflowName: "old-run",
+    status: "completed",
+    phases: ["Build"],
+    agents: [{ id: 1, label: "builder", phase: "Build", status: "done", prompt: "build it", result: "ok" }],
+    logs: ["done"],
+  } as unknown as PersistedRunState;
   return {
     listRuns: () => [
       {
+        projectId: "project-old",
         runId: "r-old",
         workflowName: "old-run",
         status: "completed",
-        phases: ["Build"],
-        agents: [{ id: 1, label: "builder", phase: "Build", status: "done", prompt: "build it", result: "ok" }],
-        logs: ["done"],
-      } as unknown as PersistedRunState,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:01.000Z",
+        agentCounts: { total: 1, running: 0, done: 1, error: 0 },
+        hasScript: true,
+      },
     ],
     getRun: () => undefined,
+    loadRun: (runId: string) => (runId === persisted.runId ? persisted : null),
   };
 }
 
@@ -224,6 +236,7 @@ test("NavigatorModel reads from persisted runs when no live snapshot", () => {
   assert.equal(runs[0].done, 1);
   assert.equal(runs[0].total, 1);
 
+  model.selectRun("r-old");
   const phases = model.phases("r-old");
   assert.equal(phases.length, 1);
   assert.equal(phases[0].title, "Build");
@@ -231,6 +244,70 @@ test("NavigatorModel reads from persisted runs when no live snapshot", () => {
   const agents = model.agents("r-old", "Build");
   assert.equal(agents.length, 1);
   assert.equal(agents[0].label, "builder");
+});
+
+test("NavigatorModel snapshots summaries and loads one selected payload", () => {
+  const delegate = persistedRunManager();
+  let listCalls = 0;
+  let loadCalls = 0;
+  const model = new NavigatorModel({
+    listRuns: () => {
+      listCalls += 1;
+      return delegate.listRuns();
+    },
+    getRun: delegate.getRun,
+    loadRun: (runId) => {
+      loadCalls += 1;
+      return delegate.loadRun(runId);
+    },
+  });
+
+  for (let i = 0; i < 1_000; i += 1) model.runs();
+  assert.equal(listCalls, 1);
+  assert.equal(loadCalls, 0);
+
+  model.selectRun("r-old");
+  for (let i = 0; i < 1_000; i += 1) model.phases("r-old");
+  assert.equal(listCalls, 1);
+  assert.equal(loadCalls, 1);
+  model.clearSelected();
+  assert.deepEqual(model.phases("r-old"), []);
+});
+
+test("NavigatorModel refreshes summaries without loading payloads", () => {
+  const first: WorkflowRunSummary = {
+    projectId: "project",
+    runId: "first",
+    workflowName: "first workflow",
+    status: "completed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    agentCounts: { total: 1, running: 0, done: 1, error: 0 },
+    hasScript: true,
+  };
+  const second: WorkflowRunSummary = { ...first, runId: "second", workflowName: "second workflow", status: "running" };
+  let summaries: WorkflowRunSummary[] = [first];
+  let loads = 0;
+  const model = new NavigatorModel({
+    listRuns: () => summaries,
+    getRun: () => undefined,
+    loadRun: () => {
+      loads += 1;
+      return null;
+    },
+  });
+
+  assert.deepEqual(
+    model.runs().map((run) => run.runId),
+    ["first"],
+  );
+  summaries = [second, first];
+  model.refreshRuns();
+  assert.deepEqual(
+    model.runs().map((run) => run.runId),
+    ["second", "first"],
+  );
+  assert.equal(loads, 0);
 });
 
 test("NavigatorState drills runs -> phases -> agents -> detail and back", () => {

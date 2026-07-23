@@ -14,13 +14,19 @@ import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import {
   createRunPersistence,
+  type DeleteRunResult,
   generateRunId,
   type PersistedRunState,
+  RUN_LEASE_HEARTBEAT_INTERVAL_MS,
+  RUN_LEASE_STALE_AFTER_MS,
   type RunLease,
   type RunPersistence,
   type RunStatus,
+  summarizePersistedRun,
+  type WorkflowRunSummary,
 } from "./run-persistence.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import { WorkflowPersistenceError } from "./workflow-database.js";
 
 export interface ManagedRun {
   runId: string;
@@ -46,6 +52,11 @@ export interface ManagedRun {
    * result, so re-delivering would duplicate it.
    */
   background: boolean;
+  executionPromise?: Promise<WorkflowRunResult>;
+  heartbeatTimer?: NodeJS.Timeout;
+  lastLeaseRenewalAt?: number;
+  leaseLost?: boolean;
+  finalizationIntent?: "release" | "delete";
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
@@ -111,11 +122,22 @@ export interface WorkflowManagerOptions {
   contextLoader?: WorkflowAgentOptions["contextLoader"];
   /** Extra extension path filters for child sessions. */
   extensionPathFilters?: WorkflowAgentOptions["extensionPathFilters"];
+  /** Internal test seam. Production always uses the project-bound SQLite repository. */
+  persistenceFactory?: (cwd: string) => RunPersistence;
+  /** Internal timing seams for deterministic lease-heartbeat tests. */
+  leaseHeartbeatIntervalMs?: number;
+  leaseStaleAfterMs?: number;
 }
 
 export class WorkflowManager extends EventEmitter {
   private runs = new Map<string, ManagedRun>();
-  private persistence: RunPersistence;
+  private persistence?: RunPersistence;
+  private persistenceFactory: (cwd: string) => RunPersistence;
+  private persistedSummaries = new Map<string, WorkflowRunSummary>();
+  private initialized = false;
+  private disposing = false;
+  private disposed = false;
+  private disposalPromise?: Promise<void>;
   private cwd: string;
   private concurrency: number;
   private loadSavedWorkflow?: (name: string) => string | undefined;
@@ -136,6 +158,8 @@ export class WorkflowManager extends EventEmitter {
   private projectTrusted?: boolean;
   private contextLoader?: WorkflowAgentOptions["contextLoader"];
   private extensionPathFilters?: WorkflowAgentOptions["extensionPathFilters"];
+  private leaseHeartbeatIntervalMs: number;
+  private leaseStaleAfterMs: number;
 
   constructor(options: WorkflowManagerOptions = {}) {
     super();
@@ -155,8 +179,60 @@ export class WorkflowManager extends EventEmitter {
     this.projectTrusted = options.projectTrusted;
     this.contextLoader = options.contextLoader;
     this.extensionPathFilters = options.extensionPathFilters;
-    this.persistence = createRunPersistence(this.cwd);
-    this.recoverStaleRuns();
+    this.persistenceFactory = options.persistenceFactory ?? createRunPersistence;
+    this.leaseHeartbeatIntervalMs = options.leaseHeartbeatIntervalMs ?? RUN_LEASE_HEARTBEAT_INTERVAL_MS;
+    this.leaseStaleAfterMs = options.leaseStaleAfterMs ?? RUN_LEASE_STALE_AFTER_MS;
+  }
+
+  initialize(): void {
+    if (this.disposing || this.disposed) throw new Error("Workflow manager is disposed.");
+    if (this.initialized) return;
+    const persistence = this.persistenceFactory(this.cwd);
+    this.persistence = persistence;
+    try {
+      this.recoverStaleRuns();
+      this.refreshRunSummaries();
+      this.initialized = true;
+    } catch (error) {
+      persistence.close();
+      this.persistence = undefined;
+      throw error;
+    }
+  }
+
+  private repository(): RunPersistence {
+    if (this.disposing || this.disposed) throw new Error("Workflow manager is disposed.");
+    if (!this.initialized) this.initialize();
+    if (!this.persistence) throw new Error("Workflow persistence is unavailable.");
+    return this.persistence;
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposalPromise) return this.disposalPromise;
+    if (this.disposed) return;
+    this.disposing = true;
+    this.disposalPromise = (async () => {
+      const pending: Promise<unknown>[] = [];
+      for (const run of this.runs.values()) {
+        if (run.status === "running") {
+          run.status = "paused";
+          run.controller.abort();
+          this.persistRun(run);
+        }
+        if (run.executionPromise) pending.push(run.executionPromise.catch(() => undefined));
+        else this.releaseRunLease(run);
+      }
+      await Promise.allSettled(pending);
+      for (const run of this.runs.values()) {
+        this.stopLeaseHeartbeat(run);
+        this.releaseRunLease(run);
+      }
+      this.persistence?.close();
+      this.persistence = undefined;
+      this.disposed = true;
+      this.disposing = false;
+    })();
+    return this.disposalPromise;
   }
 
   /** Bind the manager to the current pi session, so new runs are tagged with it and
@@ -172,20 +248,20 @@ export class WorkflowManager extends EventEmitter {
    * replay the completed prefix and finish the rest.
    */
   private recoverStaleRuns(): void {
-    try {
-      for (const p of this.listAllRuns()) {
-        if (p.status === "running" && !this.runs.has(p.runId)) {
-          const lease = this.persistence.acquireRunLease(p.runId);
-          if (!lease) continue;
-          try {
-            this.persistence.save({ ...p, status: "paused" });
-          } finally {
-            this.persistence.releaseRunLease(lease);
-          }
-        }
+    const persistence = this.persistence;
+    if (!persistence) return;
+    for (const summary of persistence.listSummaries()) {
+      if (summary.status !== "running" || this.runs.has(summary.runId)) continue;
+      const lease = persistence.acquireRunLease(summary.runId, "existing");
+      if (!lease) continue;
+      try {
+        const state = persistence.load(summary.runId);
+        if (!state || state.runId !== summary.runId || state.sessionId !== summary.sessionId) continue;
+        state.status = "paused";
+        persistence.save(state, lease);
+      } finally {
+        persistence.releaseRunLease(lease);
       }
-    } catch {
-      // Recovery is best-effort; never let it block manager construction.
     }
   }
 
@@ -247,6 +323,7 @@ export class WorkflowManager extends EventEmitter {
     args?: unknown,
     exec: ExecOptions = {},
   ): { runId: string; promise: Promise<WorkflowRunResult> } {
+    const persistence = this.repository();
     const parsed = parseWorkflowScript(script);
     const slug = parsed.meta.name
       ? parsed.meta.name
@@ -257,7 +334,7 @@ export class WorkflowManager extends EventEmitter {
       : "";
     const runId = slug ? `${slug}-${generateRunId()}` : generateRunId();
     const controller = new AbortController();
-    const lease = this.persistence.acquireRunLease(runId);
+    const lease = persistence.acquireRunLease(runId, "new");
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${runId}`);
 
     const managed: ManagedRun = {
@@ -289,7 +366,7 @@ export class WorkflowManager extends EventEmitter {
 
     try {
       // Persist initial state
-      this.persistence.save({
+      const initialState: PersistedRunState = {
         runId,
         workflowName: parsed.meta.name,
         script,
@@ -301,7 +378,9 @@ export class WorkflowManager extends EventEmitter {
         logs: [],
         startedAt: managed.startedAt.toISOString(),
         updatedAt: managed.startedAt.toISOString(),
-      });
+      };
+      persistence.save(initialState, lease);
+      this.persistedSummaries.set(runId, summarizePersistedRun(lease.projectId, initialState));
     } catch (err) {
       this.releaseRunLease(managed);
       this.runs.delete(runId);
@@ -313,7 +392,7 @@ export class WorkflowManager extends EventEmitter {
     // when a workflow is aborted/paused/stopped — executeRun()'s catch block
     // already records status/event/persist, but the promise still rejects.
     // The original promise is returned so callers can await it in try/catch.
-    const promise = this.executeRun(managed, script, args, exec);
+    const promise = this.beginExecution(managed, script, args, exec);
     promise.catch(() => {});
 
     return { runId, promise };
@@ -326,15 +405,36 @@ export class WorkflowManager extends EventEmitter {
    * a caller (e.g. the workflow tool) drive its own inline display.
    */
   async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
+    const persistence = this.repository();
     const managed = this.createManaged(script, args);
-    const lease = this.persistence.acquireRunLease(managed.runId);
+    const lease = persistence.acquireRunLease(managed.runId, "new");
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
     managed.lease = lease;
     this.runs.set(managed.runId, managed);
     // Persist the initial state immediately so listRuns()/the task panel can see
     // the run the moment it starts, not only after the first agent journals.
-    this.persistRun(managed);
-    return this.executeRun(managed, script, args, exec);
+    try {
+      this.persistRun(managed, true);
+    } catch (error) {
+      this.releaseRunLease(managed);
+      this.runs.delete(managed.runId);
+      throw error;
+    }
+    return this.beginExecution(managed, script, args, exec);
+  }
+
+  private beginExecution(
+    managed: ManagedRun,
+    script: string,
+    args: unknown,
+    exec: ExecOptions,
+  ): Promise<WorkflowRunResult> {
+    managed.finalizationIntent = "release";
+    this.startLeaseHeartbeat(managed);
+    const promise = this.executeRun(managed, script, args, exec);
+    managed.executionPromise = promise;
+    void promise.finally(() => this.stopLeaseHeartbeat(managed)).catch(() => {});
+    return promise;
   }
 
   /** Build a fresh managed run with an empty snapshot. */
@@ -404,6 +504,7 @@ export class WorkflowManager extends EventEmitter {
     try {
       const result = await runWorkflow(script, {
         cwd: this.cwd,
+        persistLogs: false,
         args,
         agent: this.agent,
         tools: runTools,
@@ -422,7 +523,7 @@ export class WorkflowManager extends EventEmitter {
         projectTrusted: this.projectTrusted,
         contextLoader: this.contextLoader,
         extensionPathFilters: this.extensionPathFilters,
-        sessionId: this.sessionId,
+        sessionId: managed.sessionId,
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRetries: resolvedAgentRetries,
@@ -500,11 +601,9 @@ export class WorkflowManager extends EventEmitter {
 
       managed.status = "completed";
       managed.result = result;
-      this.emit("complete", { runId: managed.runId, result });
-
-      // Persist final state
       this.persistRun(managed);
-      this.releaseRunLease(managed);
+      if (!managed.leaseLost) this.emit("complete", { runId: managed.runId, result });
+      this.finalizeRunLease(managed);
 
       return result;
     } catch (error) {
@@ -516,6 +615,11 @@ export class WorkflowManager extends EventEmitter {
               WorkflowErrorCode.WORKFLOW_ABORTED,
               { recoverable: true },
             );
+
+      if (managed.leaseLost) {
+        this.finalizeRunLease(managed);
+        throw workflowError;
+      }
 
       const usageLimitPaused =
         !managed.controller.signal.aborted && workflowError.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT;
@@ -533,6 +637,7 @@ export class WorkflowManager extends EventEmitter {
         managed.status = "failed";
       }
       managed.error = workflowError;
+      this.persistRun(managed);
       if (usageLimitPaused) {
         this.emit("paused", {
           runId: managed.runId,
@@ -541,12 +646,10 @@ export class WorkflowManager extends EventEmitter {
           resetHint: workflowError.resetHint,
         });
       } else {
-        this.emit("error", { runId: managed.runId, error: workflowError });
+        if (this.listenerCount("error") > 0) this.emit("error", { runId: managed.runId, error: workflowError });
       }
 
-      // Persist final state
-      this.persistRun(managed);
-      this.releaseRunLease(managed);
+      this.finalizeRunLease(managed);
 
       throw workflowError;
     }
@@ -554,61 +657,107 @@ export class WorkflowManager extends EventEmitter {
 
   private releaseRunLease(managed: ManagedRun): void {
     if (!managed.lease) return;
-    this.persistence.releaseRunLease(managed.lease);
+    try {
+      this.persistence?.releaseRunLease(managed.lease);
+    } catch {
+      // A token-guarded release can be retried by stale recovery.
+    }
     managed.lease = undefined;
   }
 
-  private persistRun(managed: ManagedRun) {
-    try {
-      this.persistence.save({
-        runId: managed.runId,
-        workflowName: managed.snapshot.name,
-        // Persist the real script + journal so the run can be resumed. Runs live
-        // in workflow run storage — protect via directory permissions, not blanking.
-        script: managed.script,
-        args: managed.args,
-        sessionId: managed.sessionId,
-        journal: managed.journal,
-        status: managed.status,
-        // Why a usage-limit pause happened, so the navigator / a future cold start
-        // can show it and (eventually) re-arm resume after the budget refills.
-        pauseReason:
-          managed.status === "paused" && managed.error?.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT
-            ? "usage_limit"
-            : undefined,
-        resetHint:
-          managed.status === "paused" && managed.error?.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT
-            ? managed.error.resetHint
-            : undefined,
-        phases: managed.snapshot.phases,
-        currentPhase: managed.snapshot.currentPhase,
-        agents: managed.snapshot.agents.map((a) => ({
-          ...a,
-          startedAt: managed.startedAt.toISOString(),
-          endedAt: new Date().toISOString(),
-        })),
-        logs: managed.snapshot.logs,
-        result: managed.result?.result,
-        tokenUsage: managed.snapshot.tokenUsage
-          ? {
-              input: managed.snapshot.tokenUsage.input,
-              output: managed.snapshot.tokenUsage.output,
-              total: managed.snapshot.tokenUsage.total,
-              cost: managed.snapshot.tokenUsage.cost,
-              cacheRead: managed.snapshot.tokenUsage.cacheRead,
-              cacheWrite: managed.snapshot.tokenUsage.cacheWrite,
-            }
+  private finalizeRunLease(managed: ManagedRun): void {
+    if (managed.finalizationIntent !== "delete") this.releaseRunLease(managed);
+  }
+
+  private startLeaseHeartbeat(managed: ManagedRun): void {
+    if (!managed.lease) return;
+    managed.lastLeaseRenewalAt = Date.now();
+    const timer = setInterval(() => {
+      if (!managed.lease || managed.leaseLost) return;
+      try {
+        if (this.persistence?.renewRunLease(managed.lease)) {
+          managed.lastLeaseRenewalAt = Date.now();
+          return;
+        }
+        this.markLeaseLost(managed);
+      } catch {
+        if (Date.now() - (managed.lastLeaseRenewalAt ?? 0) >= this.leaseStaleAfterMs) this.markLeaseLost(managed);
+      }
+    }, this.leaseHeartbeatIntervalMs);
+    timer.unref?.();
+    managed.heartbeatTimer = timer;
+  }
+
+  private stopLeaseHeartbeat(managed: ManagedRun): void {
+    if (managed.heartbeatTimer) clearInterval(managed.heartbeatTimer);
+    managed.heartbeatTimer = undefined;
+  }
+
+  private markLeaseLost(managed: ManagedRun): void {
+    if (managed.leaseLost) return;
+    managed.leaseLost = true;
+    managed.controller.abort();
+    console.warn(`[workflow-manager] Workflow run ownership lost (${managed.runId}).`);
+  }
+
+  private persistedState(managed: ManagedRun): PersistedRunState {
+    return {
+      runId: managed.runId,
+      workflowName: managed.snapshot.name,
+      script: managed.script,
+      args: managed.args,
+      sessionId: managed.sessionId,
+      journal: managed.journal,
+      status: managed.status,
+      pauseReason:
+        managed.status === "paused" && managed.error?.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT
+          ? "usage_limit"
           : undefined,
+      resetHint:
+        managed.status === "paused" && managed.error?.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT
+          ? managed.error.resetHint
+          : undefined,
+      phases: managed.snapshot.phases,
+      currentPhase: managed.snapshot.currentPhase,
+      agents: managed.snapshot.agents.map((a) => ({
+        ...a,
         startedAt: managed.startedAt.toISOString(),
-        updatedAt: new Date().toISOString(),
-        completedAt: managed.status === "completed" ? new Date().toISOString() : undefined,
-        durationMs: managed.result?.durationMs,
-      });
+        endedAt: new Date().toISOString(),
+      })),
+      logs: managed.snapshot.logs,
+      result: managed.result?.result,
+      tokenUsage: managed.snapshot.tokenUsage
+        ? {
+            input: managed.snapshot.tokenUsage.input,
+            output: managed.snapshot.tokenUsage.output,
+            total: managed.snapshot.tokenUsage.total,
+            cost: managed.snapshot.tokenUsage.cost,
+            cacheRead: managed.snapshot.tokenUsage.cacheRead,
+            cacheWrite: managed.snapshot.tokenUsage.cacheWrite,
+          }
+        : undefined,
+      startedAt: managed.startedAt.toISOString(),
+      updatedAt: new Date().toISOString(),
+      completedAt: managed.status === "completed" ? new Date().toISOString() : undefined,
+      durationMs: managed.result?.durationMs,
+    };
+  }
+
+  private persistRun(managed: ManagedRun, required = false): boolean {
+    if (!managed.lease || managed.leaseLost) return false;
+    const state = this.persistedState(managed);
+    try {
+      const persistence = this.persistence;
+      if (!persistence) throw new Error("Workflow persistence is unavailable.");
+      persistence.save(state, managed.lease);
+      this.persistedSummaries.set(managed.runId, summarizePersistedRun(managed.lease.projectId, state));
+      managed.lastLeaseRenewalAt = Date.now();
+      return true;
     } catch (err) {
-      // Persistence is best-effort: the run is still healthy in memory.
-      // Log so an operator debugging state-loss has a lead, but never crash
-      // the workflow over a disk-full situation.
-      console.warn("[workflow-manager] Persist run failed:", err);
+      if (err instanceof WorkflowPersistenceError && err.code === "LEASE_LOST") this.markLeaseLost(managed);
+      if (required) throw err;
+      console.warn("[workflow-manager] Workflow checkpoint failed.");
+      return false;
     }
   }
 
@@ -621,9 +770,8 @@ export class WorkflowManager extends EventEmitter {
 
     managed.controller.abort();
     managed.status = "paused";
-    this.emit("paused", { runId });
     this.persistRun(managed);
-    this.releaseRunLease(managed);
+    this.emit("paused", { runId });
     return true;
   }
 
@@ -637,19 +785,37 @@ export class WorkflowManager extends EventEmitter {
     const active = this.getRun(runId);
     if (active?.status === "running") return false;
     if (active?.status === "aborted") return false;
+    if (active?.executionPromise) await active.executionPromise.catch(() => undefined);
 
-    const persisted = this.persistence.load(runId);
-    if (!persisted?.script || persisted.status === "completed" || persisted.status === "aborted") return false;
-    // A session may resume its own persisted runs, while legacy runs without a
-    // session id remain globally resumable for backward compatibility.
-    if (this.sessionId && persisted.sessionId && persisted.sessionId !== this.sessionId) return false;
-    const lease = this.persistence.acquireRunLease(runId);
+    const persistence = this.repository();
+    const summary = persistence.getSummary(runId);
+    if (!summary || !this.canAccessSummary(summary) || summary.status === "completed" || summary.status === "aborted") {
+      return false;
+    }
+    const lease = persistence.acquireRunLease(runId, "existing");
     if (!lease) return false;
+    let persisted: PersistedRunState | null;
+    try {
+      persisted = persistence.load(runId);
+    } catch (error) {
+      persistence.releaseRunLease(lease);
+      throw error;
+    }
+    if (
+      !persisted?.script ||
+      persisted.runId !== summary.runId ||
+      persisted.sessionId !== summary.sessionId ||
+      persisted.status === "completed" ||
+      persisted.status === "aborted"
+    ) {
+      persistence.releaseRunLease(lease);
+      return false;
+    }
 
     const controller = new AbortController();
     const managed: ManagedRun = {
       runId,
-      sessionId: this.sessionId,
+      sessionId: persisted.sessionId,
       tools: active?.tools,
       status: "running",
       snapshot: {
@@ -671,14 +837,20 @@ export class WorkflowManager extends EventEmitter {
       lease,
     };
     this.runs.set(runId, managed);
-    // Persist before notifying renderers: listRuns() is their source of truth for
-    // lifecycle status, while getRun() supplies the live in-memory snapshot.
-    this.persistRun(managed);
+    try {
+      // Persist before notifying renderers: listRuns() is their source of truth for
+      // lifecycle status, while getRun() supplies the live in-memory snapshot.
+      this.persistRun(managed, true);
+    } catch (error) {
+      this.runs.delete(runId);
+      this.releaseRunLease(managed);
+      throw error;
+    }
 
     const resumeJournal = new Map((persisted.journal ?? []).map((e) => [e.index, e] as const));
     this.emit("resumed", { runId });
     // Run in the background; executeRun records status/errors on the managed run.
-    void this.executeRun(managed, persisted.script, persisted.args, { resumeJournal }).catch(() => {});
+    void this.beginExecution(managed, persisted.script, persisted.args, { resumeJournal }).catch(() => {});
     return true;
   }
 
@@ -691,9 +863,8 @@ export class WorkflowManager extends EventEmitter {
 
     managed.controller.abort();
     managed.status = "aborted";
-    this.emit("stopped", { runId });
     this.persistRun(managed);
-    this.releaseRunLease(managed);
+    this.emit("stopped", { runId });
     return true;
   }
 
@@ -713,14 +884,33 @@ export class WorkflowManager extends EventEmitter {
    * that session's runs are returned — runs from other sessions stay on disk and
    * reappear when you switch back. Unbound (tests/legacy) returns everything.
    */
-  listRuns(): PersistedRunState[] {
-    const all = this.persistence.list();
-    return this.sessionId ? all.filter((r) => r.sessionId === this.sessionId) : all;
+  listRuns(): WorkflowRunSummary[] {
+    this.repository();
+    const summaries = [...this.persistedSummaries.values()];
+    return summaries
+      .filter((summary) => this.canAccessSummary(summary))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  /** All persisted runs regardless of session (used by cross-session recovery). */
-  listAllRuns(): PersistedRunState[] {
-    return this.persistence.list();
+  refreshRunSummaries(): void {
+    const persistence = this.persistence ?? this.repository();
+    this.persistedSummaries = new Map(persistence.listSummaries().map((summary) => [summary.runId, summary]));
+  }
+
+  private canAccessSummary(summary: WorkflowRunSummary): boolean {
+    return this.sessionId === undefined || summary.sessionId === this.sessionId;
+  }
+
+  loadRun(runId: string): PersistedRunState | null {
+    const persistence = this.repository();
+    const summary = persistence.getSummary(runId);
+    if (!summary || !this.canAccessSummary(summary)) return null;
+    const state = persistence.load(runId);
+    if (!state || state.runId !== summary.runId || state.sessionId !== summary.sessionId) {
+      throw new WorkflowPersistenceError("CORRUPT_RUN", "A workflow run payload identity is invalid.");
+    }
+    this.persistedSummaries.set(runId, summary);
+    return state;
   }
 
   /**
@@ -733,18 +923,35 @@ export class WorkflowManager extends EventEmitter {
   /**
    * Delete a persisted run.
    */
-  deleteRun(runId: string): boolean {
+  async deleteRun(runId: string): Promise<DeleteRunResult> {
+    const persistence = this.repository();
+    const summary = persistence.getSummary(runId);
+    if (!summary || !this.canAccessSummary(summary)) return "not_found";
     const managed = this.getRun(runId);
-    if (this.sessionId && !managed) return false;
-    if (managed) this.releaseRunLease(managed);
-    this.runs.delete(runId);
-    return this.persistence.delete(runId);
-  }
-
-  /**
-   * Get the persistence layer (for saving workflows).
-   */
-  getPersistence(): RunPersistence {
-    return this.persistence;
+    let lease: RunLease | null | undefined = managed?.lease;
+    let acquiredLease = false;
+    if (managed?.lease) {
+      managed.finalizationIntent = "delete";
+      managed.controller.abort();
+      if (managed.executionPromise) await managed.executionPromise.catch(() => undefined);
+      lease = managed.lease;
+    } else {
+      lease = persistence.acquireRunLease(runId, "existing");
+      if (!lease) return persistence.getSummary(runId) ? "leased" : "not_found";
+      acquiredLease = true;
+    }
+    if (!lease) return "leased";
+    try {
+      const result = persistence.delete(runId, lease);
+      if (result === "deleted") {
+        this.runs.delete(runId);
+        this.persistedSummaries.delete(runId);
+        if (managed) managed.lease = undefined;
+      }
+      return result;
+    } catch (error) {
+      if (acquiredLease) persistence.releaseRunLease(lease);
+      throw error;
+    }
   }
 }

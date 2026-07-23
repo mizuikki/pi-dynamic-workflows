@@ -213,6 +213,7 @@ export default function extension(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event: unknown, ctx: ExtensionContext) => {
     await syncWorkflowRuntime(ctx, true);
+    manager.initialize();
     // Deliver a background run's result into the conversation when it finishes.
     // The live settings loader lets `deliveredResultMaxChars` take effect without
     // a restart.
@@ -230,6 +231,10 @@ export default function extension(pi: ExtensionAPI) {
       });
       editorInstalled = true;
     }
+  });
+
+  pi.on("session_shutdown", async () => {
+    await manager.dispose();
   });
 
   pi.on("input", async (_event, ctx) => {

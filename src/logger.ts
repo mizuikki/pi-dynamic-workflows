@@ -30,7 +30,7 @@ export function createWorkflowLogger(options: WorkflowLoggerOptions = {}): Workf
   const persistLogs = options.persist ?? true;
   const cwd = options.cwd ?? process.cwd();
   const runId = options.runId ?? `run-${Date.now()}`;
-  const runsDir = workflowProjectPaths(cwd).runsDir;
+  const logsDir = join(workflowProjectPaths(cwd).rootDir, "logs");
   let logFile: string | null = null;
 
   const write = (level: string, message: string) => {
@@ -64,8 +64,8 @@ export function createWorkflowLogger(options: WorkflowLoggerOptions = {}): Workf
     persist() {
       if (!persistLogs) return null;
       try {
-        mkdirSync(runsDir, { recursive: true });
-        logFile = join(runsDir, `${runId}.log`);
+        mkdirSync(logsDir, { recursive: true });
+        logFile = join(logsDir, `${runId}.log`);
         writeFileSync(logFile, `${logs.join("\n")}\n`);
         return logFile;
       } catch {
@@ -77,8 +77,8 @@ export function createWorkflowLogger(options: WorkflowLoggerOptions = {}): Workf
   // Initialize log file if persisting
   if (persistLogs) {
     try {
-      mkdirSync(runsDir, { recursive: true });
-      logFile = join(runsDir, `${runId}.log`);
+      mkdirSync(logsDir, { recursive: true });
+      logFile = join(logsDir, `${runId}.log`);
     } catch {
       // Silent fail
     }

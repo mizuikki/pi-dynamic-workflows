@@ -11,6 +11,7 @@ import {
   enableWorkflowMainPrompt,
   getWorkflowMainPromptSettingsPath,
 } from "../src/main-agent-prompt.js";
+import { workflowDatabasePath } from "../src/workflow-paths.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 test("workflow extension refreshes live model guidance on model_select without re-enabling the tool", async () => {
@@ -225,6 +226,8 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
       setStatus: () => {},
       setTitle: () => {},
       notify: () => {},
+      getEditorComponent: () => undefined,
+      setEditorComponent: () => {},
     },
     modelRegistry: {
       getAvailable: async () => [],
@@ -257,6 +260,34 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
     ctx,
   };
 }
+
+test("session_start initializes SQLite after binding and session_shutdown is idempotent", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-lifecycle-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-lifecycle-cwd-"));
+  try {
+    const harness = makeExtensionHarness({ cwd });
+    await withFakeHomeAsync(home, async () => {
+      const originalCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      const start = harness.handlers.get("session_start");
+      const shutdown = harness.handlers.get("session_shutdown");
+      assert.ok(start);
+      assert.ok(shutdown);
+      await start?.({ type: "session_start" }, harness.ctx);
+      assert.equal(existsSync(workflowDatabasePath()), true);
+      await shutdown?.({ type: "session_shutdown" }, harness.ctx);
+      await shutdown?.({ type: "session_shutdown" }, harness.ctx);
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("registers trellis_subagent on model_select when native extension is absent", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-trellis-ext-home-"));

@@ -9,18 +9,17 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { WORKFLOW_RUNS_DIR, WORKFLOW_SAVED_DIR } from "./config.js";
+import { WORKFLOW_SAVED_DIR } from "./config.js";
 
 export const WORKFLOW_HOME_RELATIVE_DIR = ".pi/workflows";
 export const WORKFLOW_PROJECTS_SUBDIR = "projects";
+export const WORKFLOW_DATABASE_FILENAME = "workflows.sqlite3";
 
 export interface WorkflowProjectPaths {
   key: string;
   rootDir: string;
-  runsDir: string;
   savedDir: string;
   settingsPath: string;
-  legacyRunsDir: string;
   legacySavedDir: string;
 }
 
@@ -32,8 +31,16 @@ export function workflowUserSavedDir(): string {
   return join(workflowHomeDir(), "saved");
 }
 
+export function workflowDatabasePath(): string {
+  return join(workflowHomeDir(), WORKFLOW_DATABASE_FILENAME);
+}
+
+export function workflowCanonicalProjectPath(cwd: string): string {
+  return resolve(cwd);
+}
+
 export function workflowProjectKey(cwd: string): string {
-  const projectPath = resolve(cwd);
+  const projectPath = workflowCanonicalProjectPath(cwd);
   const slug = sanitizePathSegment(basename(projectPath) || "project");
   const hash = createHash("sha256").update(projectPath).digest("hex").slice(0, 12);
   return `${slug}-${hash}`;
@@ -45,10 +52,8 @@ export function workflowProjectPaths(cwd: string): WorkflowProjectPaths {
   return {
     key,
     rootDir,
-    runsDir: join(rootDir, "runs"),
     savedDir: join(rootDir, "saved"),
     settingsPath: join(rootDir, "settings.json"),
-    legacyRunsDir: resolve(cwd, WORKFLOW_RUNS_DIR),
     legacySavedDir: resolve(cwd, WORKFLOW_SAVED_DIR),
   };
 }

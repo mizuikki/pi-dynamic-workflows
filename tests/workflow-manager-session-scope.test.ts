@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createRunPersistence, type PersistedRunState } from "../src/run-persistence.js";
 import { installResultDelivery } from "../src/task-panel.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
@@ -24,6 +25,15 @@ function withTempCwd(fn: (cwd: string) => Promise<void>) {
 const oneAgentScript = `export const meta = { name: 'session_scope', description: 'session scope' }
 const a = await agent('report session ownership', { label: 'a' })
 return { a }`;
+
+function seedRun(cwd: string, state: PersistedRunState) {
+  const repository = createRunPersistence(cwd);
+  const lease = repository.acquireRunLease(state.runId, "new");
+  assert.ok(lease);
+  repository.save(state, lease);
+  repository.releaseRunLease(lease);
+  repository.close();
+}
 
 test(
   "WorkflowManager persists the run under its original session id even if the manager session changes later",
@@ -46,7 +56,8 @@ test(
     releaseAgentRun?.();
     await promise;
 
-    const persisted = manager.listAllRuns().find((run) => run.runId === runId);
+    manager.setSessionId("session-a");
+    const persisted = manager.loadRun(runId);
     assert.equal(persisted?.sessionId, "session-a");
   }),
 );
@@ -67,24 +78,24 @@ test(
     const manager = new WorkflowManager({ cwd, agent });
     manager.setSessionId("session-a");
 
-    const { runId } = manager.startInBackground(oneAgentScript);
+    const { runId, promise } = manager.startInBackground(oneAgentScript);
     manager.setSessionId("session-b");
 
     assert.equal(manager.getRun(runId), undefined);
-    assert.equal(manager.deleteRun(runId), false);
+    assert.equal(await manager.deleteRun(runId), "not_found");
     assert.equal(manager.stop(runId), false);
 
     manager.setSessionId("session-a");
     releaseAgentRun?.();
+    await promise;
   }),
 );
 
 test(
   "WorkflowManager refuses to resume a persisted run owned by another session",
   withTempCwd(async (cwd) => {
-    const owner = new WorkflowManager({ cwd, sessionId: "session-a" });
     const runId = "persisted-session-a";
-    owner.getPersistence().save({
+    seedRun(cwd, {
       runId,
       workflowName: "session_owned",
       script: oneAgentScript,
@@ -99,7 +110,7 @@ test(
 
     const other = new WorkflowManager({ cwd, sessionId: "session-b" });
     assert.equal(await other.resume(runId), false);
-    assert.equal(other.getPersistence().load(runId)?.sessionId, "session-a");
+    assert.equal(other.loadRun(runId), null, "the foreign session payload must not be selected");
   }),
 );
 

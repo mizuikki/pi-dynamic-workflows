@@ -128,7 +128,7 @@ return { a, b }`;
     await promise.catch(() => {});
 
     assert.equal(manager.getRun(runId)?.status, "paused", "run is checkpointed as paused, not failed");
-    const persisted = manager.listRuns().find((r) => r.runId === runId);
+    const persisted = manager.loadRun(runId);
     assert.equal(persisted?.pauseReason, "usage_limit");
     assert.equal(persisted?.resetHint, "Resets in ~3h");
     assert.ok((persisted?.journal?.length ?? 0) >= 1, "agent 1's result is journaled");
