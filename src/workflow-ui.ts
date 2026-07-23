@@ -85,7 +85,7 @@ export function shortModel(model: string | undefined): string | undefined {
 
 /** Reads run/phase/agent data from the manager, preferring live snapshots. */
 export class NavigatorModel {
-  private readonly summaries: WorkflowRunSummary[];
+  private summaries: WorkflowRunSummary[];
   private selected?: PersistedRunState;
 
   constructor(
@@ -102,6 +102,10 @@ export class NavigatorModel {
 
   clearSelected(): void {
     this.selected = undefined;
+  }
+
+  refreshRuns(): void {
+    this.summaries = this.manager.listRuns();
   }
 
   private snapshot(runId: string): { snapshot: WorkflowSnapshot; status: string } | undefined {
@@ -1015,7 +1019,10 @@ export function openWorkflowNavigator(
     (tui: TUI, theme: Theme, _keybindings, done: (r: undefined) => void) => {
       const rerender = () => tui.requestRender();
       const events = ["agentStart", "agentEnd", "phase", "log", "complete", "error", "stopped", "paused", "resumed"];
-      const onEvent = () => rerender();
+      const onEvent = () => {
+        model.refreshRuns();
+        rerender();
+      };
       for (const ev of events) manager.on(ev, onEvent);
       const cleanup = () => {
         model.clearSelected();
@@ -1083,6 +1090,7 @@ export function openWorkflowNavigator(
               break;
             }
             const { runId: newId } = manager.startInBackground(run.script, run.args);
+            model.refreshRuns();
             ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
             break;
           }

@@ -3,7 +3,7 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { WorkflowSnapshot } from "../src/display.js";
 import { WorkflowErrorCode } from "../src/errors.js";
-import type { PersistedRunState } from "../src/run-persistence.js";
+import type { PersistedRunState, WorkflowRunSummary } from "../src/run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
 import type { SavedWorkflow } from "../src/workflow-saved.js";
 import { keyToAction, NavigatorModel, NavigatorState, renderNavigator } from "../src/workflow-ui.js";
@@ -272,6 +272,42 @@ test("NavigatorModel snapshots summaries and loads one selected payload", () => 
   assert.equal(loadCalls, 1);
   model.clearSelected();
   assert.deepEqual(model.phases("r-old"), []);
+});
+
+test("NavigatorModel refreshes summaries without loading payloads", () => {
+  const first: WorkflowRunSummary = {
+    projectId: "project",
+    runId: "first",
+    workflowName: "first workflow",
+    status: "completed",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    agentCounts: { total: 1, running: 0, done: 1, error: 0 },
+    hasScript: true,
+  };
+  const second: WorkflowRunSummary = { ...first, runId: "second", workflowName: "second workflow", status: "running" };
+  let summaries: WorkflowRunSummary[] = [first];
+  let loads = 0;
+  const model = new NavigatorModel({
+    listRuns: () => summaries,
+    getRun: () => undefined,
+    loadRun: () => {
+      loads += 1;
+      return null;
+    },
+  });
+
+  assert.deepEqual(
+    model.runs().map((run) => run.runId),
+    ["first"],
+  );
+  summaries = [second, first];
+  model.refreshRuns();
+  assert.deepEqual(
+    model.runs().map((run) => run.runId),
+    ["second", "first"],
+  );
+  assert.equal(loads, 0);
 });
 
 test("NavigatorState drills runs -> phases -> agents -> detail and back", () => {

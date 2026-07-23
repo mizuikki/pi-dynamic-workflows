@@ -929,6 +929,7 @@ export class WorkflowManager extends EventEmitter {
     if (!summary || !this.canAccessSummary(summary)) return "not_found";
     const managed = this.getRun(runId);
     let lease: RunLease | null | undefined = managed?.lease;
+    let acquiredLease = false;
     if (managed?.lease) {
       managed.finalizationIntent = "delete";
       managed.controller.abort();
@@ -937,6 +938,7 @@ export class WorkflowManager extends EventEmitter {
     } else {
       lease = persistence.acquireRunLease(runId, "existing");
       if (!lease) return persistence.getSummary(runId) ? "leased" : "not_found";
+      acquiredLease = true;
     }
     if (!lease) return "leased";
     try {
@@ -948,7 +950,7 @@ export class WorkflowManager extends EventEmitter {
       }
       return result;
     } catch (error) {
-      if (!managed) persistence.releaseRunLease(lease);
+      if (acquiredLease) persistence.releaseRunLease(lease);
       throw error;
     }
   }

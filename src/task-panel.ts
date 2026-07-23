@@ -385,7 +385,7 @@ export function renderPanelDetailed(
     // with the per-phase subtotals). Note: tokens land at agent-completion
     // granularity, so the rate reflects completion throughput — it decays to 0
     // during a single long-running agent or a stall (which is the intended signal).
-    const total = agents.reduce((n, a) => n + (a.tokens ?? 0), 0);
+    const total = snap ? agents.reduce((n, a) => n + (a.tokens ?? 0), 0) : (summary.tokenUsage?.total ?? 0);
     // Sample the running total and derive the rolling token/s. Paused runs don't
     // accrue tokens, so their rate is suppressed (a stalled rate would mislead).
     sampleTokens(summary.runId, total, now);

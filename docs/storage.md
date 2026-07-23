@@ -55,8 +55,8 @@ sync behavior.
 See the [Node.js 24 SQLite API](https://nodejs.org/docs/latest-v24.x/api/sqlite.html)
 and [SQLite synchronous pragma](https://www.sqlite.org/pragma.html#pragma_synchronous)
 for the runtime and durability contracts. Node documents `node:sqlite` as
-Stability 1.2 (release candidate), so upgrading Node should include the full
-storage test suite.
+Stability 1.1 in Node 24.0.0 and Stability 1.2 (release candidate) from Node
+24.15.0, so upgrading Node should include the full storage test suite.
 
 ## Scoping and privacy
 

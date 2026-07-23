@@ -700,6 +700,41 @@ describe("renderPanelDetailed", () => {
     );
     assert.ok(!lines.some((l) => /tok\/s/.test(l)), "paused run shows no token rate");
   });
+
+  it("uses the persisted token total for a paused run without a live snapshot", async () => {
+    const { createWorkflowPanelSnapshot, renderPanelDetailed, clearTokenSamples } = await import(
+      "../src/task-panel.js"
+    );
+    clearTokenSamples("paused-persisted");
+    const manager = {
+      listRuns: () => [
+        {
+          projectId: "project",
+          runId: "paused-persisted",
+          workflowName: "paused-workflow",
+          status: "paused",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          agentCounts: { total: 2, running: 0, done: 1, error: 0 },
+          tokenUsage: { input: 2100, output: 2100, total: 4200, cost: 0.02 },
+          hasScript: true,
+        },
+      ],
+      getRun: () => undefined,
+    };
+    const lines = renderPanelDetailed(
+      createWorkflowPanelSnapshot(manager as never),
+      theme as never,
+      undefined,
+      8,
+      1000,
+    );
+    assert.ok(
+      lines.some((line) => /4\.2K tok/.test(line)),
+      `expected persisted tokens: ${lines.join("\n")}`,
+    );
+    assert.ok(!lines.some((line) => /tok\/s/.test(line)), "paused run shows no token rate");
+  });
 });
 
 // ─── mode selection in installTaskPanel ───────────────────────────────────────────

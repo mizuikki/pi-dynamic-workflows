@@ -432,6 +432,37 @@ export function createRunPersistence(cwd: string, options: PersistenceOptions = 
   const leaseStatement = prepare(
     "SELECT owner_pid, owner_token, heartbeat_at_ms FROM workflow_run_leases WHERE project_id = ? AND run_id = ?",
   );
+  const existingRunStatement = prepare("SELECT session_id FROM workflow_runs WHERE project_id = ? AND run_id = ?");
+  const saveRunStatement = prepare(
+    `INSERT INTO workflow_runs(
+      project_id, run_id, session_id, workflow_name, status, current_phase, started_at, updated_at,
+      completed_at, duration_ms, agent_total, agent_running, agent_done, agent_error, token_input,
+      token_output, token_total, token_cost, token_cache_read, token_cache_write, has_script, payload_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(project_id, run_id) DO UPDATE SET
+      workflow_name=excluded.workflow_name, status=excluded.status, current_phase=excluded.current_phase,
+      updated_at=excluded.updated_at, completed_at=excluded.completed_at, duration_ms=excluded.duration_ms,
+      agent_total=excluded.agent_total, agent_running=excluded.agent_running, agent_done=excluded.agent_done,
+      agent_error=excluded.agent_error, token_input=excluded.token_input, token_output=excluded.token_output,
+      token_total=excluded.token_total, token_cost=excluded.token_cost, token_cache_read=excluded.token_cache_read,
+      token_cache_write=excluded.token_cache_write, has_script=excluded.has_script, payload_version=excluded.payload_version`,
+  );
+  const savePayloadStatement = prepare(
+    `INSERT INTO workflow_run_payloads(project_id, run_id, state_json) VALUES (?, ?, ?)
+     ON CONFLICT(project_id, run_id) DO UPDATE SET state_json = excluded.state_json`,
+  );
+  const updateLeaseHeartbeatStatement = prepare(
+    "UPDATE workflow_run_leases SET heartbeat_at_ms = ? WHERE project_id = ? AND run_id = ? AND owner_token = ?",
+  );
+  const runExistsStatement = prepare("SELECT 1 AS present FROM workflow_runs WHERE project_id = ? AND run_id = ?");
+  const deleteRunStatement = prepare("DELETE FROM workflow_runs WHERE project_id = ? AND run_id = ?");
+  const deleteLeaseStatement = prepare(
+    "DELETE FROM workflow_run_leases WHERE project_id = ? AND run_id = ? AND owner_token = ?",
+  );
+  const insertLeaseStatement = prepare(
+    `INSERT INTO workflow_run_leases(project_id, run_id, owner_pid, owner_token, acquired_at, heartbeat_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
 
   const validateLease = (lease: RunLease, runId: string): void => {
     if (lease.projectId !== projectId || lease.runId !== runId || !lease.token) {
@@ -453,26 +484,11 @@ export function createRunPersistence(cwd: string, options: PersistenceOptions = 
         const storedLease = leaseStatement.get(projectId, state.runId) as { owner_token: string } | undefined;
         if (!storedLease || storedLease.owner_token !== lease.token)
           fail("LEASE_LOST", "Workflow run ownership was lost.");
-        const existing = db
-          .prepare("SELECT session_id FROM workflow_runs WHERE project_id = ? AND run_id = ?")
-          .get(projectId, state.runId) as { session_id: string | null } | undefined;
+        const existing = existingRunStatement.get(projectId, state.runId) as { session_id: string | null } | undefined;
         if (existing && (existing.session_id ?? undefined) !== state.sessionId) {
           fail("SESSION_REBIND", "Workflow run session ownership cannot be changed.");
         }
-        db.prepare(
-          `INSERT INTO workflow_runs(
-            project_id, run_id, session_id, workflow_name, status, current_phase, started_at, updated_at,
-            completed_at, duration_ms, agent_total, agent_running, agent_done, agent_error, token_input,
-            token_output, token_total, token_cost, token_cache_read, token_cache_write, has_script, payload_version
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(project_id, run_id) DO UPDATE SET
-            workflow_name=excluded.workflow_name, status=excluded.status, current_phase=excluded.current_phase,
-            updated_at=excluded.updated_at, completed_at=excluded.completed_at, duration_ms=excluded.duration_ms,
-            agent_total=excluded.agent_total, agent_running=excluded.agent_running, agent_done=excluded.agent_done,
-            agent_error=excluded.agent_error, token_input=excluded.token_input, token_output=excluded.token_output,
-            token_total=excluded.token_total, token_cost=excluded.token_cost, token_cache_read=excluded.token_cache_read,
-            token_cache_write=excluded.token_cache_write, has_script=excluded.has_script, payload_version=excluded.payload_version`,
-        ).run(
+        saveRunStatement.run(
           projectId,
           summary.runId,
           summary.sessionId ?? null,
@@ -496,13 +512,8 @@ export function createRunPersistence(cwd: string, options: PersistenceOptions = 
           summary.hasScript ? 1 : 0,
           WORKFLOW_PAYLOAD_VERSION,
         );
-        db.prepare(
-          `INSERT INTO workflow_run_payloads(project_id, run_id, state_json) VALUES (?, ?, ?)
-           ON CONFLICT(project_id, run_id) DO UPDATE SET state_json = excluded.state_json`,
-        ).run(projectId, state.runId, stateJson);
-        db.prepare(
-          "UPDATE workflow_run_leases SET heartbeat_at_ms = ? WHERE project_id = ? AND run_id = ? AND owner_token = ?",
-        ).run(now(), projectId, state.runId, lease.token);
+        savePayloadStatement.run(projectId, state.runId, stateJson);
+        updateLeaseHeartbeatStatement.run(now(), projectId, state.runId, lease.token);
         db.exec("COMMIT");
       } catch (error) {
         rollback(db);
@@ -558,9 +569,7 @@ export function createRunPersistence(cwd: string, options: PersistenceOptions = 
       validateLease(lease, runId);
       db.exec("BEGIN IMMEDIATE");
       try {
-        const exists = db
-          .prepare("SELECT 1 AS present FROM workflow_runs WHERE project_id = ? AND run_id = ?")
-          .get(projectId, runId);
+        const exists = runExistsStatement.get(projectId, runId);
         if (!exists) {
           db.exec("ROLLBACK");
           return "not_found";
@@ -570,12 +579,8 @@ export function createRunPersistence(cwd: string, options: PersistenceOptions = 
           db.exec("ROLLBACK");
           return "leased";
         }
-        db.prepare("DELETE FROM workflow_runs WHERE project_id = ? AND run_id = ?").run(projectId, runId);
-        db.prepare("DELETE FROM workflow_run_leases WHERE project_id = ? AND run_id = ? AND owner_token = ?").run(
-          projectId,
-          runId,
-          lease.token,
-        );
+        deleteRunStatement.run(projectId, runId);
+        deleteLeaseStatement.run(projectId, runId, lease.token);
         db.exec("COMMIT");
         return "deleted";
       } catch (error) {
@@ -590,11 +595,7 @@ export function createRunPersistence(cwd: string, options: PersistenceOptions = 
       if (mode !== "new" && mode !== "existing") fail("INVALID_LEASE_MODE", "Invalid workflow run lease mode.");
       db.exec("BEGIN IMMEDIATE");
       try {
-        const runExists = Boolean(
-          db
-            .prepare("SELECT 1 AS present FROM workflow_runs WHERE project_id = ? AND run_id = ?")
-            .get(projectId, runId),
-        );
+        const runExists = Boolean(runExistsStatement.get(projectId, runId));
         if ((mode === "new" && runExists) || (mode === "existing" && !runExists)) {
           db.exec("ROLLBACK");
           return null;
@@ -609,17 +610,10 @@ export function createRunPersistence(cwd: string, options: PersistenceOptions = 
             db.exec("ROLLBACK");
             return null;
           }
-          db.prepare("DELETE FROM workflow_run_leases WHERE project_id = ? AND run_id = ? AND owner_token = ?").run(
-            projectId,
-            runId,
-            existing.owner_token,
-          );
+          deleteLeaseStatement.run(projectId, runId, existing.owner_token);
         }
         const token = randomUUID();
-        db.prepare(
-          `INSERT INTO workflow_run_leases(project_id, run_id, owner_pid, owner_token, acquired_at, heartbeat_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        ).run(projectId, runId, ownerPid, token, new Date(timestamp).toISOString(), timestamp);
+        insertLeaseStatement.run(projectId, runId, ownerPid, token, new Date(timestamp).toISOString(), timestamp);
         db.exec("COMMIT");
         return { projectId, runId, token };
       } catch (error) {
@@ -631,22 +625,14 @@ export function createRunPersistence(cwd: string, options: PersistenceOptions = 
     renewRunLease(lease) {
       requireOpen();
       validateLease(lease, lease.runId);
-      const result = db
-        .prepare(
-          "UPDATE workflow_run_leases SET heartbeat_at_ms = ? WHERE project_id = ? AND run_id = ? AND owner_token = ?",
-        )
-        .run(now(), projectId, lease.runId, lease.token);
+      const result = updateLeaseHeartbeatStatement.run(now(), projectId, lease.runId, lease.token);
       return result.changes === 1;
     },
 
     releaseRunLease(lease) {
       requireOpen();
       validateLease(lease, lease.runId);
-      db.prepare("DELETE FROM workflow_run_leases WHERE project_id = ? AND run_id = ? AND owner_token = ?").run(
-        projectId,
-        lease.runId,
-        lease.token,
-      );
+      deleteLeaseStatement.run(projectId, lease.runId, lease.token);
     },
 
     close() {

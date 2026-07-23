@@ -86,6 +86,39 @@ test(
 );
 
 test(
+  "delete releases a self-acquired lease when persistence deletion fails",
+  isolated(async (cwd) => {
+    let repository: RunPersistence | undefined;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: { run: async () => "done" },
+      persistenceFactory: (project) => {
+        const delegate = createRunPersistence(project);
+        repository = delegate;
+        return {
+          ...delegate,
+          delete: () => {
+            throw new Error("injected delete failure");
+          },
+        };
+      },
+    });
+    const { runId, promise } = manager.startInBackground(script);
+    await promise;
+    assert.equal(manager.getRun(runId)?.lease, undefined, "completed run has no managed lease");
+
+    await assert.rejects(manager.deleteRun(runId), /injected delete failure/);
+    const observer = createRunPersistence(cwd);
+    const lease = observer.acquireRunLease(runId, "existing");
+    assert.ok(lease, "the self-acquired deletion lease must be released on error");
+    observer.releaseRunLease(lease);
+    observer.close();
+    await manager.dispose();
+    repository?.close();
+  }),
+);
+
+test(
   "active deletion waits for execution settlement before guarded deletion",
   isolated(async (cwd) => {
     const deferred = deferredAgent();
