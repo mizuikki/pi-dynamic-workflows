@@ -509,6 +509,61 @@ export interface AgentUsage {
   cost: number;
 }
 
+/**
+ * Keep a workflow run alive until its child session has acknowledged an abort.
+ * `session.abort()` propagates cancellation to the active model/tool operation
+ * and resolves only after the session becomes idle. Returning before that point
+ * lets a stopped workflow release its bookkeeping while the child can still use
+ * the provider connection in the background.
+ */
+export async function awaitAbortableSubagentPrompt<T>(
+  prompt: () => Promise<T>,
+  signal: AbortSignal | undefined,
+  abort: () => Promise<void>,
+): Promise<T> {
+  if (!signal) return prompt();
+
+  let abortPromise: Promise<void> | undefined;
+  const beginAbort = (): Promise<void> => {
+    abortPromise ??= Promise.resolve().then(abort);
+    return abortPromise;
+  };
+  const abortError = () => new Error("Subagent was aborted");
+
+  // Already cancelled before entry: never schedule or invoke prompt.
+  if (signal.aborted) {
+    await beginAbort();
+    throw abortError();
+  }
+
+  let rejectWhenAborted: ((reason?: unknown) => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    rejectWhenAborted = reject;
+  });
+  const onAbort = () => {
+    void beginAbort().then(
+      () => rejectWhenAborted?.(abortError()),
+      (error) => rejectWhenAborted?.(error),
+    );
+  };
+
+  signal.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    const result = await Promise.race([Promise.resolve().then(prompt), aborted]);
+    if (!signal.aborted) return result;
+
+    await beginAbort();
+    throw abortError();
+  } catch (error) {
+    if (!signal.aborted) throw error;
+    await beginAbort();
+    throw abortError();
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefined> {
   label?: string;
   /**
@@ -887,7 +942,6 @@ export class WorkflowAgent {
       }
     }
 
-    let removeAbortListener: (() => void) | undefined;
     let removeHistoryListener: (() => void) | undefined;
     let lastHistoryEmit = 0;
     const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
@@ -900,11 +954,6 @@ export class WorkflowAgent {
     };
     try {
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
-      if (options.signal) {
-        const onAbort = () => void session.abort();
-        options.signal.addEventListener("abort", onAbort, { once: true });
-        removeAbortListener = () => options.signal?.removeEventListener("abort", onAbort);
-      }
       if (options.onHistory) {
         removeHistoryListener = session.subscribe(() => maybeEmitHistory());
       }
@@ -913,7 +962,11 @@ export class WorkflowAgent {
         ...(options as AgentRunOptions<any>),
         instructions: finalInstructions,
       };
-      await session.prompt(this.buildPrompt(finalPrompt, promptOptions, Boolean(options.schema)));
+      await awaitAbortableSubagentPrompt(
+        () => session.prompt(this.buildPrompt(finalPrompt, promptOptions, Boolean(options.schema))),
+        options.signal,
+        () => session.abort(),
+      );
 
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
 
@@ -939,7 +992,6 @@ export class WorkflowAgent {
       }
       return text as AgentRunResult<TSchemaDef>;
     } finally {
-      removeAbortListener?.();
       removeHistoryListener?.();
       try {
         emitHistory();
