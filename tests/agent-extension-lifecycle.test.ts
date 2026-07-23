@@ -100,6 +100,94 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
   }
 });
 
+test("WorkflowAgent preserves adaptor-owned tools required by a restricted child profile", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-profile-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-profile-cwd-"));
+  const agentDir = join(home, ".pi", "agent");
+  const faux = createExplicitFauxModels({
+    provider: "provider-fixture",
+    models: [{ id: "profile-model", name: "Profile Model", contextWindow: 128000, maxTokens: 16384 }],
+  });
+  const profileToolReadiness: boolean[] = [];
+
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const settingsManager = SettingsManager.create(cwd, agentDir);
+      const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        extensionFactories: [
+          (pi: ExtensionAPI) => {
+            let profileToolVisible = false;
+            pi.registerTool({
+              name: "profile_tool",
+              label: "Profile Tool",
+              description: "Fixture profile-owned tool.",
+              promptSnippet: "Call profile_tool.",
+              parameters: Type.Object({}),
+              async execute() {
+                return {
+                  content: [{ type: "text", text: profileToolVisible ? "profile-ready" : "profile-missing" }],
+                  details: {},
+                  isError: !profileToolVisible,
+                };
+              },
+            });
+            pi.on("session_start", () => {
+              profileToolVisible = pi.getAllTools().some((tool) => tool.name === "profile_tool");
+              profileToolReadiness.push(profileToolVisible);
+            });
+          },
+        ],
+      });
+      await resourceLoader.reload();
+      const getExtensions = resourceLoader.getExtensions.bind(resourceLoader);
+      resourceLoader.getExtensions = () => {
+        const result = getExtensions();
+        return {
+          ...result,
+          extensions: result.extensions.map((extension, index) =>
+            index === 0
+              ? {
+                  ...extension,
+                  path: "/extensions/pi-codex-adaptor/src/extension.ts",
+                  resolvedPath: "/extensions/pi-codex-adaptor/src/extension.ts",
+                }
+              : extension,
+          ),
+        };
+      };
+
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("profile_tool", {}), { type: "text", text: "profile tool completed" }], {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("profile tool completed"),
+      ]);
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+      const agent = new WorkflowAgent({
+        cwd,
+        modelRegistry,
+        modelRuntime,
+        session: { model: faux.model, resourceLoader, settingsManager, sessionManager: SessionManager.inMemory() },
+      });
+
+      const result = await agent.run("Use the profile tool.", {
+        label: "profile-tools",
+        toolNames: ["bash"],
+      });
+
+      assert.equal(result, "profile tool completed");
+      assert.deepEqual(profileToolReadiness, [true]);
+    });
+  } finally {
+    faux.dispose();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("WorkflowAgent uses the per-run cwd when loading default project settings under explicit Models", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-run-cwd-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-run-cwd-base-"));

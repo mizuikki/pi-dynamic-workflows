@@ -102,6 +102,25 @@ function configuredFilterMatches(pathValues: string[], filters: ExtensionPathFil
   return filters.some((filter) => pathValues.some((pathValue) => filter(pathValue)));
 }
 
+function isCodexAdaptorExtension(extension: Extension): boolean {
+  return extensionPathValues(extension).some((pathValue) =>
+    pathValue.replace(/\\/g, "/").toLowerCase().includes("/pi-codex-adaptor/"),
+  );
+}
+
+function includeProviderProfileTools(
+  allowlist: string[] | undefined,
+  extensions: readonly Extension[],
+): string[] | undefined {
+  if (!allowlist) return undefined;
+  const result = new Set(allowlist);
+  for (const extension of extensions) {
+    if (!isCodexAdaptorExtension(extension)) continue;
+    for (const name of extension.tools.keys()) result.add(name);
+  }
+  return [...result];
+}
+
 function filterExtensions(
   result: LoadExtensionsResult,
   extraFilters: ExtensionPathFilter[] = [],
@@ -293,6 +312,26 @@ export function throwIfProviderLimit(messages: unknown[], label?: string): void 
     WorkflowErrorCode.PROVIDER_USAGE_LIMIT,
     { recoverable: false, agentLabel: label, resetHint },
   );
+}
+
+/**
+ * Preserve a provider terminal error instead of reporting it as an empty
+ * response. Capability/profile failures are local configuration errors and
+ * cannot be repaired by retrying the same child session.
+ */
+export function throwIfAssistantError(messages: unknown[], label?: string): void {
+  const err = lastAssistantError(messages);
+  if (err?.stopReason !== "error") return;
+
+  const message = err.errorMessage ?? "Subagent provider request failed";
+  const localProviderSetupError =
+    /tool profile is unavailable for the selected capability|provider route is unavailable for the current Pi session/i.test(
+      message,
+    );
+  throw new WorkflowError(message, WorkflowErrorCode.AGENT_EXECUTION_ERROR, {
+    recoverable: !localProviderSetupError,
+    agentLabel: label,
+  });
 }
 
 /** Minimal session surface resolveStructuredOutput needs (real session or a test double). */
@@ -795,6 +834,10 @@ export class WorkflowAgent {
             resolveProjectTrust: async () => projectTrusted,
           },
     );
+    const childSessionAllowlist = includeProviderProfileTools(
+      sessionToolAllowlist,
+      resourceLoader.getExtensions().extensions,
+    );
     const sessionManager = this.sessionOptions.sessionManager ?? this.createSessionManager();
     const childSessionOptions: CreateAgentSessionOptions = {
       cwd: runCwd,
@@ -813,7 +856,7 @@ export class WorkflowAgent {
           : {}),
       // Re-assert after baseSessionOptions so caller overrides cannot drop the allowlist.
       customTools,
-      ...(sessionToolAllowlist ? { tools: sessionToolAllowlist } : {}),
+      ...(childSessionAllowlist ? { tools: childSessionAllowlist } : {}),
       ...(excludeTools.length ? { excludeTools } : {}),
     };
     const { session } = await createAgentSession(childSessionOptions);
@@ -879,6 +922,7 @@ export class WorkflowAgent {
       // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
       // (schema path) or a silent empty-output null (non-schema path).
       throwIfProviderLimit(session.messages, options.label);
+      throwIfAssistantError(session.messages, options.label);
 
       if (options.schema) {
         return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
