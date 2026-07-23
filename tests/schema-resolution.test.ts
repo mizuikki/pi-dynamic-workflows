@@ -176,7 +176,7 @@ describe("lastAssistantError / throwIfProviderLimit", () => {
     );
   });
 
-  it("preserves a terminal profile error instead of treating it as empty output", () => {
+  it("preserves terminal local-provider setup errors instead of treating them as empty output", () => {
     assert.throws(
       () =>
         throwIfAssistantError(
@@ -194,6 +194,28 @@ describe("lastAssistantError / throwIfProviderLimit", () => {
         assert.equal((err as { code?: string }).code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
         assert.equal((err as { recoverable?: boolean }).recoverable, false);
         assert.equal((err as { agentLabel?: string }).agentLabel, "profile");
+        return true;
+      },
+    );
+  });
+
+  it("does not retry a missing provider session route", () => {
+    assert.throws(
+      () =>
+        throwIfAssistantError(
+          [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "Codex provider route is unavailable for the current Pi session",
+            },
+          ],
+          "route",
+        ),
+      (err: unknown) => {
+        assert.equal((err as { code?: string }).code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+        assert.equal((err as { recoverable?: boolean }).recoverable, false);
         return true;
       },
     );

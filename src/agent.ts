@@ -77,21 +77,11 @@ const WORKFLOW_EXTENSION_SUFFIXES = [
   "extensions/workflow.cjs",
 ] as const;
 
-// The adaptor owns a provider-local tool profile which is initialized against
-// the host session. A workflow child creates an independent session and must
-// retain its normal Pi tool surface, so do not load that host-only profile into
-// the child.
-const CODEX_ADAPTOR_PATH_SEGMENT = "/pi-codex-adaptor/";
-
 export type ExtensionPathFilter = (pathValue: string) => boolean;
 
 function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
   const normalized = pathValue.replace(/\\/g, "/").toLowerCase();
   return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
-}
-
-function shouldFilterCodexAdaptorExtensionPath(pathValue: string): boolean {
-  return pathValue.replace(/\\/g, "/").toLowerCase().includes(CODEX_ADAPTOR_PATH_SEGMENT);
 }
 
 function extensionPathValues(extension: { path: string; resolvedPath?: string }): string[] {
@@ -112,14 +102,32 @@ function configuredFilterMatches(pathValues: string[], filters: ExtensionPathFil
   return filters.some((filter) => pathValues.some((pathValue) => filter(pathValue)));
 }
 
+function isCodexAdaptorExtension(extension: Extension): boolean {
+  return extensionPathValues(extension).some((pathValue) =>
+    pathValue.replace(/\\/g, "/").toLowerCase().includes("/pi-codex-adaptor/"),
+  );
+}
+
+function includeProviderProfileTools(
+  allowlist: string[] | undefined,
+  extensions: readonly Extension[],
+): string[] | undefined {
+  if (!allowlist) return undefined;
+  const result = new Set(allowlist);
+  for (const extension of extensions) {
+    if (!isCodexAdaptorExtension(extension)) continue;
+    for (const name of extension.tools.keys()) result.add(name);
+  }
+  return [...result];
+}
+
 function filterExtensions(
   result: LoadExtensionsResult,
   extraFilters: ExtensionPathFilter[] = [],
 ): LoadExtensionsResult {
   const shouldDrop = (pathValues: string[]) =>
-    pathValues.some(
-      (pathValue) => shouldFilterWorkflowExtensionPath(pathValue) || shouldFilterCodexAdaptorExtensionPath(pathValue),
-    ) || configuredFilterMatches(pathValues, extraFilters);
+    pathValues.some((pathValue) => shouldFilterWorkflowExtensionPath(pathValue)) ||
+    configuredFilterMatches(pathValues, extraFilters);
   return {
     ...result,
     extensions: result.extensions.filter(
@@ -316,9 +324,12 @@ export function throwIfAssistantError(messages: unknown[], label?: string): void
   if (err?.stopReason !== "error") return;
 
   const message = err.errorMessage ?? "Subagent provider request failed";
-  const profileUnavailable = /tool profile is unavailable for the selected capability/i.test(message);
+  const localProviderSetupError =
+    /tool profile is unavailable for the selected capability|provider route is unavailable for the current Pi session/i.test(
+      message,
+    );
   throw new WorkflowError(message, WorkflowErrorCode.AGENT_EXECUTION_ERROR, {
-    recoverable: !profileUnavailable,
+    recoverable: !localProviderSetupError,
     agentLabel: label,
   });
 }
@@ -823,6 +834,10 @@ export class WorkflowAgent {
             resolveProjectTrust: async () => projectTrusted,
           },
     );
+    const childSessionAllowlist = includeProviderProfileTools(
+      sessionToolAllowlist,
+      resourceLoader.getExtensions().extensions,
+    );
     const sessionManager = this.sessionOptions.sessionManager ?? this.createSessionManager();
     const childSessionOptions: CreateAgentSessionOptions = {
       cwd: runCwd,
@@ -841,7 +856,7 @@ export class WorkflowAgent {
           : {}),
       // Re-assert after baseSessionOptions so caller overrides cannot drop the allowlist.
       customTools,
-      ...(sessionToolAllowlist ? { tools: sessionToolAllowlist } : {}),
+      ...(childSessionAllowlist ? { tools: childSessionAllowlist } : {}),
       ...(excludeTools.length ? { excludeTools } : {}),
     };
     const { session } = await createAgentSession(childSessionOptions);
