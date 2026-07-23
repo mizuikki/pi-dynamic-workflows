@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
-import { listAvailableModelSpecs, resolveAgentModelSpec, WorkflowAgent } from "../src/agent.js";
+import {
+  awaitAbortableSubagentPrompt,
+  listAvailableModelSpecs,
+  resolveAgentModelSpec,
+  WorkflowAgent,
+} from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { resolveModelSpecWithThinking } from "../src/model-spec.js";
 import type { ModelTierConfig } from "../src/model-tier-config.js";
@@ -17,6 +22,50 @@ type WorkflowAgentPrivates = {
   lastAssistantText(messages: unknown[]): string;
   createSessionManager(): { isPersisted(): boolean; getCwd(): string };
 };
+
+test("awaitAbortableSubagentPrompt waits for child session cancellation before rejecting", async () => {
+  const controller = new AbortController();
+  let promptStarted = false;
+  let abortCalls = 0;
+  let releaseAbort: (() => void) | undefined;
+  const abortFinished = new Promise<void>((resolve) => {
+    releaseAbort = resolve;
+  });
+
+  const run = awaitAbortableSubagentPrompt(
+    async () => {
+      promptStarted = true;
+      return await new Promise<string>(() => {});
+    },
+    controller.signal,
+    async () => {
+      abortCalls++;
+      await abortFinished;
+    },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(promptStarted, true);
+  controller.abort();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(abortCalls, 1);
+
+  let settled = false;
+  void run.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settled, false, "must not complete before the child session is idle");
+
+  releaseAbort?.();
+  await assert.rejects(run, /Subagent was aborted/);
+  assert.equal(abortCalls, 1, "abort is issued exactly once");
+});
 
 // ═══════════════════════════════════════════════════════════════════════
 // persistAgentSessions — in-memory by default, file-backed keyed by project cwd
