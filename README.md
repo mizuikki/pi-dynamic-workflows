@@ -1,6 +1,5 @@
 # pi-dynamic-workflows
 
-[![npm](https://img.shields.io/npm/v/@quintinshaw/pi-dynamic-workflows?color=cb3837&logo=npm)](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 [![for Pi](https://img.shields.io/badge/for-Pi-7c3aed)](https://pi.dev)
 [![tests](https://img.shields.io/badge/tests-679%20passing-success)](#development)
@@ -8,7 +7,7 @@
 > **Claude Code–style dynamic workflows for [Pi](https://pi.dev).**
 > Turn one prompt into a fleet of subagents that fan out in parallel, cross-check each other, and hand back a single synthesized answer.
 
-**[Website](https://quintinshaw.github.io/pi-dynamic-workflows/) · [npm](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows) · [Pi package](https://pi.dev/packages/@quintinshaw/pi-dynamic-workflows) · [GitHub](https://github.com/QuintinShaw/pi-dynamic-workflows)**
+**[Website](https://quintinshaw.github.io/pi-dynamic-workflows/) · [GitHub](https://github.com/QuintinShaw/pi-dynamic-workflows)**
 
 ![pi-dynamic-workflows demo](https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/docs/media/demo.gif)
 
@@ -22,10 +21,18 @@ Node.js 24 or newer is required. Workflow persistence uses Node's built-in
 `node:sqlite` module and rejects older runtimes before opening any storage path.
 
 ```bash
-pi install npm:@quintinshaw/pi-dynamic-workflows
+pi install -l /absolute/path/to/pi-dynamic-workflows
 ```
 
-Then `/reload` in Pi. You get the `workflow` tool plus the `/workflows`, `/deep-research`, and `/adversarial-review` commands.
+Then `/reload` in Pi. This extension requires the sibling private Pi fork with
+extension SDK API version `1` and model runtime API version `1`; upstream Pi is
+not a compatible host. Remove the project-local source with:
+
+```bash
+pi remove /absolute/path/to/pi-dynamic-workflows -l
+```
+
+You get the `workflow` tool plus the `/workflows`, `/deep-research`, and `/adversarial-review` commands.
 
 ## Try it
 
@@ -400,17 +407,25 @@ trellis_subagent({
 ## Development
 
 ```bash
-npm install
+npm install --ignore-scripts
 npm test     # biome + tsc + unit tests
 ```
 
-The standard contract uses `@earendil-works/pi-*` `0.81.1` packages from the lockfile. The Pi fork contract is fixed to commit `ae166c1366239363ccc1cab1906f8a5b4e07c6f0` (`0.81.1`) and is tested without changing this checkout's `node_modules`:
+Keep the Pi fork as sibling `../pi`. The direct Pi imports are runtime peers
+with wildcard versions and local `file:../pi/packages/...` development
+dependencies. Runtime capabilities, not Pi product versions, define
+compatibility; do not add Pi packages as production dependencies or import Pi source.
+Verify an immutable, clean fork commit without changing this checkout's
+`node_modules`:
 
 ```bash
-PI_FORK_DIR=../pi PI_FORK_REF=ae166c13 npm run test:pi-fork
+PI_FORK_DIR=../pi PI_FORK_REF=<commit> npm run test:pi-fork
 ```
 
-The fork verifier builds and packs `tui`, `ai`, `agent`, and `coding-agent` in temporary directories, installs those exact tarballs into an isolated project copy, checks module provenance and fork capabilities, then runs check, build, and unit tests. Do not add sibling `file:` dependencies to `package.json` or `package-lock.json`.
+The fork verifier consumes Pi's manifest after checking every SDK tarball digest,
+then creates a system temporary fixture with `<temp>/pi` and `<temp>/project`.
+It checks the real loader alias with poison packages and rejects an upstream host
+before tools are registered. The fixture is not a repository `tmp/` directory.
 
 ## Credits
 

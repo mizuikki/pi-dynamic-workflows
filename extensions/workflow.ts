@@ -31,6 +31,13 @@ import {
 import { createPluginModelRuntime } from "../src/model-runtime.js";
 
 export default function extension(pi: ExtensionAPI) {
+  if (capabilityVersion(pi, "extensionSdkApiVersion") !== 1) {
+    throw new Error("Pi host is incompatible: requires extension SDK API version 1");
+  }
+  if (capabilityVersion(pi, "modelRuntimeApiVersion") !== 1) {
+    throw new Error("Pi host is incompatible: requires model runtime API version 1");
+  }
+
   // Single manager/storage shared by the workflow tool and the /workflows command,
   // so background runs started by the tool are reachable from the command.
   const cwd = process.cwd();
@@ -249,4 +256,9 @@ export default function extension(pi: ExtensionAPI) {
     manager.setThinkingLevel(event.level);
     hostThinkingLevel = event.level;
   });
+}
+
+function capabilityVersion(value: unknown, name: string): unknown {
+  if (typeof value !== "object" || value === null) return undefined;
+  return (value as Record<string, unknown>)[name];
 }

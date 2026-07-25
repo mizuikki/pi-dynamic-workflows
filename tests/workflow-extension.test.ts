@@ -35,6 +35,8 @@ test("workflow extension refreshes live model guidance on model_select without r
   } satisfies Model<"faux">;
 
   const pi = {
+    extensionSdkApiVersion: 1,
+    modelRuntimeApiVersion: 1,
     registerTool: (tool: ToolDefinition) => {
       registeredTools.push(tool);
     },
@@ -202,6 +204,8 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
   let activeTools = options.activeTools ?? ["read"];
   let workflowMainPromptFlag = false;
   const pi = {
+    extensionSdkApiVersion: 1,
+    modelRuntimeApiVersion: 1,
     registerTool: (tool: ToolDefinition) => {
       registeredTools.push(tool);
     },
@@ -260,6 +264,34 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
     ctx,
   };
 }
+
+test("workflow extension rejects an incompatible host before registering tools", () => {
+  let registrations = 0;
+  const pi = {
+    extensionSdkApiVersion: 1,
+    modelRuntimeApiVersion: undefined,
+    registerTool: () => {
+      registrations += 1;
+    },
+  } as unknown as ExtensionAPI;
+
+  assert.throws(() => extension(pi), /requires model runtime API version 1/);
+  assert.equal(registrations, 0);
+});
+
+test("workflow extension rejects an incompatible extension SDK before registering tools", () => {
+  let registrations = 0;
+  const pi = {
+    extensionSdkApiVersion: undefined,
+    modelRuntimeApiVersion: 1,
+    registerTool: () => {
+      registrations += 1;
+    },
+  } as unknown as ExtensionAPI;
+
+  assert.throws(() => extension(pi), /requires extension SDK API version 1/);
+  assert.equal(registrations, 0);
+});
 
 test("session_start initializes SQLite after binding and session_shutdown is idempotent", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-lifecycle-home-"));
