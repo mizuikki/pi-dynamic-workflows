@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  PI_FORK_COMMIT: de0c8472c432ca6561657d20ab7b10413da62cc9
+  PI_FORK_COMMIT: 15702b969be73bf115cdbd4694f1ce89782c62af
 
 jobs:
   local-fork-contract:
@@ -32,11 +32,6 @@ jobs:
         run: |
           git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
           git -C ../pi checkout --detach "$PI_FORK_COMMIT"
-      - name: Build local Pi SDK
-        run: |
-          npm ci --ignore-scripts --prefix ../pi
-          npm run generate:models --prefix ../pi
-          npm run build:offline --prefix ../pi
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Lint, build, and test
@@ -56,10 +51,6 @@ jobs:
         run: |
           git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
           git -C ../pi checkout --detach "$PI_FORK_COMMIT"
-      - name: Generate Pi model data
-        run: |
-          npm ci --ignore-scripts --prefix ../pi
-          npm run generate:models --prefix ../pi
       - name: Build isolated Pi tarballs and test the project copy
         run: PI_FORK_DIR=../pi PI_FORK_REF="$PI_FORK_COMMIT" npm run test:pi-fork
 
@@ -77,11 +68,6 @@ jobs:
         run: |
           git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
           git -C ../pi checkout --detach "$PI_FORK_COMMIT"
-      - name: Build local Pi SDK
-        run: |
-          npm ci --ignore-scripts --prefix ../pi
-          npm run generate:models --prefix ../pi
-          npm run build:offline --prefix ../pi
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Verify clean package installation and consumer types
