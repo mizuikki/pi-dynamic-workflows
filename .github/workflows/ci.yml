@@ -15,7 +15,8 @@ permissions:
   contents: read
 
 env:
-  PI_FORK_COMMIT: 15702b969be73bf115cdbd4694f1ce89782c62af
+  PI_EXTENSION_SDK_REF: local-fork-extension-unification
+  PI_EXTENSION_SDK_API_VERSION: "1"
 
 jobs:
   local-fork-contract:
@@ -30,13 +31,13 @@ jobs:
           cache: npm
       - name: Check out local Pi fork
         run: |
-          git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout --detach "$PI_FORK_COMMIT"
+          git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
+          git -C ../pi checkout --detach
       - name: Build local Pi SDK
         run: |
           npm ci --ignore-scripts --prefix ../pi
           PI_SDK_DIR=$(mktemp -d)
-          node ../pi/scripts/pack-local-sdk.mjs --out "$PI_SDK_DIR" --ref "$PI_FORK_COMMIT"
+          node ../pi/scripts/pack-local-sdk.mjs --out "$PI_SDK_DIR" --ref "$(git -C ../pi rev-parse HEAD)"
           cp -R "$PI_SDK_DIR/pi/packages/tui/dist" ../pi/packages/tui/dist
           cp -R "$PI_SDK_DIR/pi/packages/ai/dist" ../pi/packages/ai/dist
           cp -R "$PI_SDK_DIR/pi/packages/agent/dist" ../pi/packages/agent/dist
@@ -58,10 +59,10 @@ jobs:
           cache: npm
       - name: Check out local Pi fork
         run: |
-          git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout --detach "$PI_FORK_COMMIT"
+          git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
+          git -C ../pi checkout --detach
       - name: Build isolated Pi tarballs and test the project copy
-        run: PI_FORK_DIR=../pi PI_FORK_REF="$PI_FORK_COMMIT" npm run test:pi-fork
+        run: PI_FORK_DIR=../pi PI_FORK_REF="$(git -C ../pi rev-parse HEAD)" npm run test:pi-fork
 
   package-smoke:
     runs-on: ubuntu-latest
@@ -75,13 +76,13 @@ jobs:
           cache: npm
       - name: Check out local Pi fork
         run: |
-          git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout --detach "$PI_FORK_COMMIT"
+          git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
+          git -C ../pi checkout --detach
       - name: Build local Pi SDK
         run: |
           npm ci --ignore-scripts --prefix ../pi
           PI_SDK_DIR=$(mktemp -d)
-          node ../pi/scripts/pack-local-sdk.mjs --out "$PI_SDK_DIR" --ref "$PI_FORK_COMMIT"
+          node ../pi/scripts/pack-local-sdk.mjs --out "$PI_SDK_DIR" --ref "$(git -C ../pi rev-parse HEAD)"
           cp -R "$PI_SDK_DIR/pi/packages/tui/dist" ../pi/packages/tui/dist
           cp -R "$PI_SDK_DIR/pi/packages/ai/dist" ../pi/packages/ai/dist
           cp -R "$PI_SDK_DIR/pi/packages/agent/dist" ../pi/packages/agent/dist
@@ -89,4 +90,4 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Verify clean package installation and consumer types
-        run: PI_FORK_DIR=../pi PI_FORK_REF="$PI_FORK_COMMIT" npm run test:package-smoke
+        run: PI_FORK_DIR=../pi PI_FORK_REF="$(git -C ../pi rev-parse HEAD)" npm run test:package-smoke

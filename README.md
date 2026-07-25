@@ -24,9 +24,9 @@ Node.js 24 or newer is required. Workflow persistence uses Node's built-in
 pi install -l /absolute/path/to/pi-dynamic-workflows
 ```
 
-Then `/reload` in Pi. This extension requires the sibling private Pi fork SDK
-at `0.81.1-local.1` and model runtime API version `1`; upstream Pi is not a
-compatible host. Remove the project-local source with:
+Then `/reload` in Pi. This extension requires the sibling private Pi fork with
+extension SDK API version `1` and model runtime API version `1`; upstream Pi is
+not a compatible host. Remove the project-local source with:
 
 ```bash
 pi remove /absolute/path/to/pi-dynamic-workflows -l
@@ -412,8 +412,9 @@ npm test     # biome + tsc + unit tests
 ```
 
 Keep the Pi fork as sibling `../pi`. The direct Pi imports are runtime peers
-at `0.81.1-local.1` and local `file:../pi/packages/...` development
-dependencies; do not add them as production dependencies or import Pi source.
+with wildcard versions and local `file:../pi/packages/...` development
+dependencies. Runtime capabilities, not Pi product versions, define
+compatibility; do not add Pi packages as production dependencies or import Pi source.
 Verify an immutable, clean fork commit without changing this checkout's
 `node_modules`:
 

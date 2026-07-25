@@ -5,6 +5,9 @@ const manifestPath = process.argv[2];
 if (manifestPath === undefined) throw new Error("Pi SDK manifest path is required");
 
 const manifest = readLocalSdkManifest(manifestPath);
+if (manifest.capabilities.extensionSdkApiVersion !== 1) {
+  throw new Error("Pi extension SDK API version is not 1");
+}
 if (manifest.capabilities.modelRuntimeApiVersion !== 1) {
   throw new Error("Pi model runtime API version is not 1");
 }

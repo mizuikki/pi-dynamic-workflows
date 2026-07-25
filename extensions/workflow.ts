@@ -31,7 +31,10 @@ import {
 import { createPluginModelRuntime } from "../src/model-runtime.js";
 
 export default function extension(pi: ExtensionAPI) {
-  if (modelRuntimeApiVersion(pi) !== 1) {
+  if (capabilityVersion(pi, "extensionSdkApiVersion") !== 1) {
+    throw new Error("Pi host is incompatible: requires extension SDK API version 1");
+  }
+  if (capabilityVersion(pi, "modelRuntimeApiVersion") !== 1) {
     throw new Error("Pi host is incompatible: requires model runtime API version 1");
   }
 
@@ -255,7 +258,7 @@ export default function extension(pi: ExtensionAPI) {
   });
 }
 
-function modelRuntimeApiVersion(value: unknown): unknown {
+function capabilityVersion(value: unknown, name: string): unknown {
   if (typeof value !== "object" || value === null) return undefined;
-  return (value as Record<string, unknown>).modelRuntimeApiVersion;
+  return (value as Record<string, unknown>)[name];
 }

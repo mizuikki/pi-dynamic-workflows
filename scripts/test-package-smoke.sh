@@ -36,9 +36,12 @@ if grep -Eq '/home/|/tmp/' "$PACK_INSPECT_DIR/package/package.json"; then
 fi
 PACKAGE_JSON="$PACKAGE_JSON" node --input-type=module -e '
   const packageJson = JSON.parse(process.env.PACKAGE_JSON);
-  for (const [name, specifier] of Object.entries(packageJson.dependencies ?? {})) {
-    if (name.startsWith("@earendil-works/pi-") && typeof specifier === "string" && specifier.startsWith("file:")) {
-      throw new Error(`package tarball has a local Pi production dependency: ${name}`);
+  for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
+    if (packageJson.peerDependencies?.[name] !== "*") {
+      throw new Error(`package tarball does not declare a host-provided Pi peer: ${name}`);
+    }
+    if (packageJson.dependencies?.[name] !== undefined) {
+      throw new Error(`package tarball has a Pi production dependency: ${name}`);
     }
   }
   if (packageJson.private !== true) throw new Error("package tarball is not private");
@@ -80,7 +83,7 @@ if HOME="$UPSTREAM_DIR/home" node "$UPSTREAM_DIR/verify-upstream-host.mjs" 2>"$U
   printf '%s\n' 'upstream Pi host unexpectedly loaded the extension' >&2
   exit 1
 fi
-if ! grep -Fq 'Pi host is incompatible: requires model runtime API version 1' "$UPSTREAM_DIR/upstream-error.log"; then
+if ! grep -Fq 'Pi host is incompatible: requires extension SDK API version 1' "$UPSTREAM_DIR/upstream-error.log"; then
   cat "$UPSTREAM_DIR/upstream-error.log" >&2
   exit 1
 fi
