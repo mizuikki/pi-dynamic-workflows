@@ -34,6 +34,7 @@ jobs:
           git -C ../pi checkout --detach "$PI_FORK_COMMIT"
       - name: Build local Pi SDK
         run: |
+          npm ci --ignore-scripts --prefix ../pi
           PI_SDK_DIR=$(mktemp -d)
           node ../pi/scripts/pack-local-sdk.mjs --out "$PI_SDK_DIR" --ref "$PI_FORK_COMMIT"
           cp -R "$PI_SDK_DIR/pi/packages/tui/dist" ../pi/packages/tui/dist
@@ -78,6 +79,7 @@ jobs:
           git -C ../pi checkout --detach "$PI_FORK_COMMIT"
       - name: Build local Pi SDK
         run: |
+          npm ci --ignore-scripts --prefix ../pi
           PI_SDK_DIR=$(mktemp -d)
           node ../pi/scripts/pack-local-sdk.mjs --out "$PI_SDK_DIR" --ref "$PI_FORK_COMMIT"
           cp -R "$PI_SDK_DIR/pi/packages/tui/dist" ../pi/packages/tui/dist
