@@ -14,8 +14,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  PI_FORK_COMMIT: de0c8472c432ca6561657d20ab7b10413da62cc9
+
 jobs:
-  upstream-contract:
+  local-fork-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -25,19 +28,19 @@ jobs:
         with:
           node-version: 24.0.0
           cache: npm
+      - name: Check out local Pi fork
+        run: |
+          git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
+          git -C ../pi checkout --detach "$PI_FORK_COMMIT"
+      - name: Build local Pi SDK
+        run: |
+          npm ci --ignore-scripts --prefix ../pi
+          npm run generate:models --prefix ../pi
+          npm run build:offline --prefix ../pi
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Lint, build, and test
         run: npm test
-      - name: Assert isolated standard Pi resolution
-        run: |
-          node --input-type=module -e '
-            for (const specifier of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) {
-              const resolved = await import.meta.resolve(specifier);
-              if (!resolved.startsWith(`file://${process.cwd()}/node_modules/`)) throw new Error(`${specifier} resolved to ${resolved}`);
-              console.log(`${specifier}: ${resolved}`);
-            }
-          '
 
   fork-contract:
     runs-on: ubuntu-latest
@@ -49,19 +52,16 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Checkout and generate Pi ModelRuntime contract source
+      - name: Check out local Pi fork
         run: |
-          git clone --filter=blob:none https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout --detach fd5308db5250c674f3e4cfe6059730d8f865e948
-          test "$(git -C ../pi rev-parse HEAD)" = "fd5308db5250c674f3e4cfe6059730d8f865e948"
+          git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
+          git -C ../pi checkout --detach "$PI_FORK_COMMIT"
+      - name: Generate Pi model data
+        run: |
           npm ci --ignore-scripts --prefix ../pi
-          # hydrate:model-data fails when live provider catalogs drop models that
-          # the pinned fork still lists. generate:models regenerates both the
-          # typed structure and offline data from current catalogs so the fork
-          # contract stays buildable without depending on a frozen NVIDIA list.
           npm run generate:models --prefix ../pi
       - name: Build isolated Pi tarballs and test the project copy
-        run: PI_FORK_DIR=../pi PI_FORK_REF=fd5308db5250c674f3e4cfe6059730d8f865e948 npm run test:pi-fork
+        run: PI_FORK_DIR=../pi PI_FORK_REF="$PI_FORK_COMMIT" npm run test:pi-fork
 
   package-smoke:
     runs-on: ubuntu-latest
@@ -73,7 +73,16 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Check out local Pi fork
+        run: |
+          git clone --filter=blob:none --branch local-fork-extension-unification https://github.com/mizuikki/pi.git ../pi
+          git -C ../pi checkout --detach "$PI_FORK_COMMIT"
+      - name: Build local Pi SDK
+        run: |
+          npm ci --ignore-scripts --prefix ../pi
+          npm run generate:models --prefix ../pi
+          npm run build:offline --prefix ../pi
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Verify clean package installation and consumer types
-        run: npm run test:package-smoke
+        run: PI_FORK_DIR=../pi PI_FORK_REF="$PI_FORK_COMMIT" npm run test:package-smoke

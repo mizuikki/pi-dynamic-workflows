@@ -1,13 +1,11 @@
 {
   "name": "@quintinshaw/pi-dynamic-workflows",
   "version": "2.13.1",
+  "private": true,
   "description": "Claude-Code-style dynamic workflows for Pi — fan a task out across 100s of subagents with real model routing, token/cost accounting, resume, git-worktree isolation, an interactive /workflows TUI, and a real /deep-research.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "publishConfig": {
-    "access": "public"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -24,15 +22,14 @@
   "scripts": {
     "test": "npm run check && npm run build && npm run test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
-    "test:pi-fork": "bash scripts/test-pi-fork.sh",
+    "test:pi-fork": "node scripts/test-pi-fork.mjs",
     "test:package-smoke": "bash scripts/test-package-smoke.sh",
     "check": "biome check .",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "build": "tsc",
     "benchmark:persistence": "tsx scripts/benchmark-run-persistence.ts",
-    "dev": "tsx src/index.ts",
-    "prepublishOnly": "npm run build"
+    "dev": "tsx src/index.ts"
   },
   "keywords": [
     "pi-package",
@@ -77,17 +74,17 @@
     "acorn": "^8.16.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.10",
-    "@earendil-works/pi-coding-agent": ">=0.80.10",
-    "@earendil-works/pi-tui": ">=0.80.10",
+    "@earendil-works/pi-ai": "0.81.1-local.1",
+    "@earendil-works/pi-coding-agent": "0.81.1-local.1",
+    "@earendil-works/pi-tui": "0.81.1-local.1",
     "typebox": "*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@biomejs/biome": "2.4.16",
-    "@earendil-works/pi-ai": "0.81.1",
-    "@earendil-works/pi-coding-agent": "0.81.1",
-    "@earendil-works/pi-tui": "0.81.1",
+    "@earendil-works/pi-ai": "file:../pi/packages/ai",
+    "@earendil-works/pi-coding-agent": "file:../pi/packages/coding-agent",
+    "@earendil-works/pi-tui": "file:../pi/packages/tui",
     "fast-check": "^4.8.0",
     "tsx": "latest",
     "typebox": "latest",
