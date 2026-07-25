@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  PI_EXTENSION_SDK_REF: local-fork-extension-unification
+  PI_EXTENSION_SDK_REF: pi-extension-sdk-v1.0.0
   PI_EXTENSION_SDK_API_VERSION: "1"
 
 jobs:
@@ -33,6 +33,7 @@ jobs:
         run: |
           git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
           git -C ../pi checkout --detach
+          test "$(git -C ../pi rev-parse HEAD)" = "$(git -C ../pi rev-parse "$PI_EXTENSION_SDK_REF^{commit}")"
       - name: Build local Pi SDK
         run: |
           npm ci --ignore-scripts --prefix ../pi
@@ -61,6 +62,7 @@ jobs:
         run: |
           git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
           git -C ../pi checkout --detach
+          test "$(git -C ../pi rev-parse HEAD)" = "$(git -C ../pi rev-parse "$PI_EXTENSION_SDK_REF^{commit}")"
       - name: Build isolated Pi tarballs and test the project copy
         run: PI_FORK_DIR=../pi PI_FORK_REF="$(git -C ../pi rev-parse HEAD)" npm run test:pi-fork
 
@@ -78,6 +80,7 @@ jobs:
         run: |
           git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
           git -C ../pi checkout --detach
+          test "$(git -C ../pi rev-parse HEAD)" = "$(git -C ../pi rev-parse "$PI_EXTENSION_SDK_REF^{commit}")"
       - name: Build local Pi SDK
         run: |
           npm ci --ignore-scripts --prefix ../pi
