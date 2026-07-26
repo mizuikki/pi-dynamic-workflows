@@ -6,16 +6,25 @@ import test from "node:test";
 import {
   buildTrellisTaskContext,
   createTrellisContextLoader,
+  hasSupportedTrellisProject,
   hasTrellisProject,
   isTrellisAgent,
   MAX_TRELLIS_TASK_CONTEXT_BYTES,
   parseActiveTaskLine,
   resolveActiveTaskPath,
   shouldEnableTrellisAdapter,
+  shouldRegisterTrellisSubagentTool,
   trellisExtensionPathFilter,
 } from "../src/adapters/trellis.js";
 import { runWorkflow } from "../src/workflow.js";
 import { loadWorkflowSettings, saveWorkflowSettings } from "../src/workflow-settings.js";
+import {
+  TRELLIS_1_0_1_LIMITS,
+  TRELLIS_1_0_1_NOTICES,
+  TRELLIS_1_0_1_TEMPLATE_SHA256,
+  V01_TRELLIS_1_0_1_PAYLOAD,
+  writeCanonicalTaskFixture,
+} from "./fixtures/trellis-1.0.1-context.js";
 
 function makeProject(): string {
   return mkdtempSync(join(tmpdir(), "pi-dw-trellis-"));
@@ -24,10 +33,205 @@ function makeProject(): string {
 function writeTask(cwd: string, name = "04-17-demo"): string {
   const taskDir = join(cwd, ".trellis", "tasks", name);
   mkdirSync(taskDir, { recursive: true });
+  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
   writeFileSync(join(taskDir, "prd.md"), "# PRD\nImplement the adapter.", "utf-8");
   writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: name, status: "in_progress" }), "utf-8");
   return taskDir;
 }
+
+test("V01: canonical 1.0.1 fixture payload is byte-identical", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeCanonicalTaskFixture(cwd);
+    assert.equal(buildTrellisTaskContext(cwd, taskDir, "trellis-research"), V01_TRELLIS_1_0_1_PAYLOAD);
+    assert.match(TRELLIS_1_0_1_TEMPLATE_SHA256, /^[a-f0-9]{64}$/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V02: missing artifacts do not create synthetic sections", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = join(cwd, ".trellis", "tasks", "missing-prd");
+    mkdirSync(taskDir, { recursive: true });
+    assert.equal(
+      buildTrellisTaskContext(cwd, taskDir, "trellis-research"),
+      "## Trellis Task Context\n\nTask directory: .trellis/tasks/missing-prd",
+    );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V03: invalid UTF-8 stays within the rendered artifact ceiling", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "invalid-utf8");
+    writeFileSync(join(taskDir, "prd.md"), Buffer.alloc(30_000, 0xff));
+    const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
+    assert.match(payload, /Truncated .+prd\.md at 65536 UTF-8 bytes/);
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_1_LIMITS.taskContext);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V04: a partial multi-byte boundary is bounded with the canonical notice", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "multibyte");
+    writeFileSync(join(taskDir, "prd.md"), `${"a".repeat(65_535)}é`, "utf-8");
+    const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
+    assert.match(payload, /Truncated .+prd\.md at 65536 UTF-8 bytes/);
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_1_LIMITS.taskContext);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V05: a source-truncated manifest retains its on-demand notice", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "source-truncated");
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      JSON.stringify({ file: "docs/late.md", reason: "x".repeat(300_000) }),
+    );
+    const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
+    assert.match(payload, /implement\.jsonl candidate context index/);
+    assert.ok(payload.includes(TRELLIS_1_0_1_NOTICES.manifestSource));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V06: malformed rows are skipped and legacy path rows remain valid", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "legacy-path");
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    writeFileSync(join(cwd, "docs", "legacy.md"), "legacy", "utf-8");
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      ["not-json", JSON.stringify({ file: " ", path: "docs/legacy.md" })].join("\n"),
+    );
+    const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
+    assert.match(payload, /path: docs\/legacy\.md \| type: file \| bytes: 6/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V07: file has precedence over path", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "file-precedence");
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    writeFileSync(join(cwd, "docs", "file.md"), "file", "utf-8");
+    writeFileSync(join(cwd, "docs", "path.md"), "path", "utf-8");
+    writeFileSync(join(taskDir, "implement.jsonl"), JSON.stringify({ file: "docs/file.md", path: "docs/path.md" }));
+    const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
+    assert.match(payload, /path: docs\/file\.md/);
+    assert.doesNotMatch(payload, /path: docs\/path\.md/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V08: declared directories and missing targets retain metadata rows", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "directory-missing");
+    mkdirSync(join(cwd, "docs", "directory"), { recursive: true });
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      [JSON.stringify({ file: "docs/directory", type: "directory" }), JSON.stringify({ file: "docs/missing.md" })].join(
+        "\n",
+      ),
+    );
+    const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
+    assert.match(payload, /path: docs\/directory \| type: directory \| revision:/);
+    assert.match(payload, /path: docs\/missing\.md \| type: file \| status: missing-or-unreadable/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V09: realpath aliases are deduplicated by their canonical target", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "aliases");
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    writeFileSync(join(cwd, "docs", "target.md"), "target", "utf-8");
+    symlinkSync(join(cwd, "docs", "target.md"), join(cwd, "docs", "alias.md"));
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      [
+        JSON.stringify({ file: "docs/alias.md", reason: "first" }),
+        JSON.stringify({ file: "docs/target.md", reason: "second" }),
+      ].join("\n"),
+    );
+    const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
+    assert.equal(payload.match(/path: docs\/target\.md/g)?.length, 1);
+    assert.match(payload, /reason: first/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V10: manifest and aggregate ceilings retain canonical limit notices", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "limits");
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    const rows: string[] = [];
+    for (let index = 0; index < 257; index += 1) {
+      const name = `docs/${index}.md`;
+      writeFileSync(join(cwd, name), "x", "utf-8");
+      rows.push(JSON.stringify({ file: name, reason: "r".repeat(240) }));
+    }
+    writeFileSync(join(taskDir, "implement.jsonl"), rows.join("\n"));
+    const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_1_LIMITS.taskContext);
+    assert.ok(payload.includes(TRELLIS_1_0_1_NOTICES.manifestRendered));
+    assert.ok(payload.includes(TRELLIS_1_0_1_NOTICES.manifestEntry));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V11: reasons sanitize lone surrogates and preserve emoji boundaries", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "reasons");
+    mkdirSync(join(cwd, "docs"), { recursive: true });
+    writeFileSync(join(cwd, "docs", "reason.md"), "x", "utf-8");
+    writeFileSync(
+      join(taskDir, "implement.jsonl"),
+      JSON.stringify({ file: "docs/reason.md", reason: `\ud800${"😀".repeat(250)}` }),
+    );
+    const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
+    assert.match(payload, /reason: �😀/);
+    assert.ok(payload.includes("..."));
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("V12: artifact notice text does not trigger an aggregate notice", () => {
+  const cwd = makeProject();
+  try {
+    const taskDir = writeTask(cwd, "notice-text");
+    const notice =
+      "[Task context for .trellis/tasks/notice-text exceeded 131072 bytes; artifact limits applied to none; load the remaining task artifacts and manifest sources on demand.]";
+    writeFileSync(join(taskDir, "prd.md"), notice, "utf-8");
+    const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
+    assert.equal(payload.split(notice).length - 1, 1);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("T15: without .trellis loader stays inactive under auto", async () => {
   const cwd = makeProject();
@@ -37,6 +241,28 @@ test("T15: without .trellis loader stays inactive under auto", async () => {
     const loader = createTrellisContextLoader({ enabled: "auto" });
     const ctx = await loader({ cwd, prompt: "Active task: .trellis/tasks/x\ndo work", agentType: "trellis-implement" });
     assert.equal(ctx, undefined);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T15b: every adapter entry point rejects a missing or incompatible Trellis version", async () => {
+  const cwd = makeProject();
+  try {
+    mkdirSync(join(cwd, ".trellis", "tasks", "unsupported"), { recursive: true });
+    writeFileSync(join(cwd, ".trellis", ".version"), "0.6.7\n", "utf-8");
+    assert.equal(hasSupportedTrellisProject(cwd), false);
+    assert.equal(shouldEnableTrellisAdapter(cwd, { enabled: "auto" }), false);
+    assert.equal(shouldEnableTrellisAdapter(cwd, { enabled: "on" }), false);
+    assert.equal(shouldRegisterTrellisSubagentTool(cwd, { enabled: "on", registerSubagentTool: "on" }), false);
+    const loader = createTrellisContextLoader({ enabled: "on" });
+    assert.equal(
+      await loader({ cwd, prompt: "Active task: .trellis/tasks/unsupported\nwork", agentType: "trellis-implement" }),
+      undefined,
+    );
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+    assert.equal(hasSupportedTrellisProject(cwd), true);
+    assert.equal(shouldEnableTrellisAdapter(cwd, { enabled: "on" }), true);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -54,7 +280,7 @@ test("T16: Active task line injects Trellis Task Context with prd", async () => 
     });
     assert.ok(ctx?.promptPrefix?.includes("## Trellis Task Context"));
     assert.ok(ctx?.promptPrefix?.includes("Implement the adapter."));
-    assert.ok(ctx?.promptPrefix?.includes("### prd.md"));
+    assert.ok(ctx?.promptPrefix?.includes("### .trellis/tasks/04-17-demo/prd.md (Requirements)"));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -65,16 +291,16 @@ test("T17: only prd present does not block; missing design/implement/jsonl ok", 
   try {
     const taskDir = writeTask(cwd);
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.ok(text.includes("### prd.md"));
-    assert.ok(!text.includes("### design.md"));
-    assert.ok(!text.includes("### implement.md"));
-    assert.ok(!text.includes("Curated Spec"));
+    assert.ok(text.includes("### .trellis/tasks/04-17-demo/prd.md (Requirements)"));
+    assert.ok(!text.includes("Technical Design"));
+    assert.ok(!text.includes("Execution Plan"));
+    assert.ok(!text.includes("candidate context index"));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
 
-test("T18: jsonl renders a read-on-demand manifest and skips _example / illegal JSON", () => {
+test("T18: jsonl renders canonical metadata rows; _example is metadata, not a skip marker", () => {
   const cwd = makeProject();
   try {
     const taskDir = writeTask(cwd);
@@ -83,6 +309,7 @@ test("T18: jsonl renders a read-on-demand manifest and skips _example / illegal 
     writeFileSync(
       join(taskDir, "implement.jsonl"),
       [
+        // A usable `_example` path is still rendered; only absent/invalid paths are skipped.
         JSON.stringify({ _example: true, file: "docs/ignore.md", reason: "seed" }),
         "not-json",
         JSON.stringify({ file: "docs/note.md", reason: "real" }),
@@ -91,10 +318,10 @@ test("T18: jsonl renders a read-on-demand manifest and skips _example / illegal 
       "utf-8",
     );
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.ok(text.includes("Curated Spec / Research Manifest"));
-    assert.match(text, /`docs\/note\.md` \(9 bytes, rev [0-9a-f]{12}\): real/);
+    assert.ok(text.includes("### implement.jsonl candidate context index (load sources on demand)"));
+    assert.match(text, /path: docs\/note\.md \| type: file \| bytes: 9 \| revision: \d+(?:\.\d+)? \| reason: real/);
     assert.ok(!text.includes("SPEC BODY"));
-    assert.ok(!text.includes("docs/ignore.md"));
+    assert.ok(text.includes("docs/ignore.md"));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -115,7 +342,7 @@ test("T18b: manifest deduplicates paths and never inlines large referenced files
       "utf-8",
     );
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.equal(text.match(/`docs\/large\.md`/g)?.length, 1);
+    assert.equal(text.match(/path: docs\/large\.md/g)?.length, 1);
     assert.ok(!text.includes("LARGE_SECRET"));
     assert.ok(Buffer.byteLength(text, "utf8") <= MAX_TRELLIS_TASK_CONTEXT_BYTES);
   } finally {
@@ -133,8 +360,8 @@ test("T18c: a truncated manifest with no parsed rows retains its on-demand point
       "utf-8",
     );
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.ok(text.includes("Curated Spec / Research Manifest"));
-    assert.ok(text.includes("additional entries omitted; inspect `implement.jsonl` directly"));
+    assert.ok(text.includes("### implement.jsonl candidate context index (load sources on demand)"));
+    assert.ok(text.includes("Stopped reading implement.jsonl after 262144 bytes; load the remainder on demand."));
     assert.ok(!text.includes("`docs/late.md`"));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -147,7 +374,7 @@ test("T18d: oversized task artifacts are bounded with an on-demand notice", () =
     const taskDir = writeTask(cwd);
     writeFileSync(join(taskDir, "prd.md"), "大型需求\n".repeat(50_000), "utf-8");
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.match(text, /prd\.md truncated at 65536 bytes/);
+    assert.match(text, /Truncated \.trellis\/tasks\/04-17-demo\/prd\.md at 65536 UTF-8 bytes/);
     assert.ok(Buffer.byteLength(text, "utf8") <= MAX_TRELLIS_TASK_CONTEXT_BYTES);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -162,7 +389,7 @@ test("T18e: combined task artifacts cannot exceed the total context budget", () 
       writeFileSync(join(taskDir, fileName), `${fileName} body\n`.repeat(10_000), "utf-8");
     }
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.match(text, /Trellis task context truncated at 131072 bytes/);
+    assert.match(text, /Task context for \.trellis\/tasks\/04-17-demo exceeded 131072 bytes/);
     assert.equal(Buffer.byteLength(text, "utf8"), MAX_TRELLIS_TASK_CONTEXT_BYTES);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -410,7 +637,7 @@ test("path safety: jsonl file rows cannot escape project cwd", () => {
     mkdirSync(join(cwd, "docs"), { recursive: true });
     writeFileSync(join(cwd, "docs", "ok.md"), "SAFE", "utf-8");
     const text = buildTrellisTaskContext(cwd, taskDir, "trellis-implement");
-    assert.ok(text.includes("`docs/ok.md`"));
+    assert.ok(text.includes("path: docs/ok.md"));
     assert.ok(!text.includes("SAFE"));
     assert.ok(!text.includes("TOP SECRET"));
     assert.ok(!text.includes("pi-dw-secret-file.md"));

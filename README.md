@@ -285,7 +285,7 @@ When no `~/.pi/workflows/model-tiers.json` exists, pi-dynamic-workflows builds a
 
 ## Optional Trellis adapter
 
-When a project contains a `.trellis/` directory, pi-dynamic-workflows can optionally:
+For a Trellis `1.0.1` project, pi-dynamic-workflows can optionally:
 
 1. Inject **read-only Trellis task context** into workflow subagents (`agent()`), and
 2. Register a host-facing **`trellis_subagent`** tool (`single` / `parallel` / `chain`) when the **native** Trellis extension is **absent**.
@@ -308,9 +308,13 @@ Configured in `~/.pi/workflows/settings.json` (or a project override):
 
 | `enabled` | Behavior |
 | --- | --- |
-| `"auto"` (default) | Enable context injection only when `<cwd>/.trellis/` exists |
-| `"on"` | Always attempt Trellis context resolution |
+| `"auto"` (default) | Enable context injection only when `<cwd>/.trellis/` exists and `.trellis/.version` is `1.0.1` |
+| `"on"` | Attempt Trellis context resolution only for a `1.0.1` project |
 | `"off"` | Never inject Trellis context (tool also stays off) |
+
+At extension startup, any Trellis project whose `.trellis/.version` is not
+`1.0.1` disables the adapter, registers no fallback tool, and emits a warning.
+There is no compatibility renderer or fallback mode for another Trellis version.
 
 | `registerSubagentTool` | Behavior |
 | --- | --- |
@@ -320,10 +324,10 @@ Configured in `~/.pi/workflows/settings.json` (or a project override):
 
 ### Duplicate registration / migration
 
-- **Native Trellis extension present** (`.pi/extensions/trellis*` or `extensions/trellis*`): adapter keeps **context injection** only; it does **not** register a second `trellis_subagent`.
+- **Native Trellis extension present** (`.pi/extensions/trellis*` or `extensions/trellis*`): native Trellis owns the main session and its one `trellis_subagent`; the adapter injects context only into Workflow children and does **not** register a second tool.
 - **Native extension removed**: set `registerSubagentTool` to `"auto"` (default). On `session_start`, the workflow extension registers `trellis_subagent` if the public API reports no existing tool with that name.
 - Pi SDK has no official “unregister other extension’s tool” API and first registration per name wins. Fail closed: if `getAllTools()` throws or is unavailable, we **skip** registration rather than risk a silent dual tool.
-- Prefer installing **either** the native Trellis extension **or** this package’s tool — not both.
+- A supported project may load both extensions: native Trellis owns native dispatch, while this package owns only Workflow-child context injection.
 
 ### What context injection does
 
@@ -333,7 +337,12 @@ For `agent(prompt, { agentType: "trellis-implement" })` (or `trellis-check` / sh
 2. A bounded `## Trellis Task Context` block with `prd.md`, optional `design.md` / `implement.md`, and a read-on-demand index of curated `implement.jsonl` / `check.jsonl` entries; referenced files are never inlined
 3. A per-run `env.TRELLIS_CONTEXT_ID` applied to nested **bash** tool calls via a session-local `tool_call` interceptor (does **not** mutate parent `process.env` under parallel runs)
 
-The manifest index records each path, reason, byte size, and a short metadata revision so resume invalidation still notices referenced-file edits without reading or inlining their bodies. The complete task-context prefix is capped at 128 KiB, each directly included task artifact at 64 KiB, and the manifest index at 32 KiB. Source reads are bounded as well as prompt output. Oversized content is marked with its source path so the subagent can use targeted searches or ranged reads instead of paying for an unbounded first request.
+The canonical payload follows the Trellis `1.0.1` native renderer byte-for-byte:
+the complete task-context prefix is capped at 128 KiB, each directly included
+task artifact at 64 KiB, the manifest index at 32 KiB, and manifest source reads
+at 256 KiB. Oversized content is marked with its source path so the subagent can
+use targeted searches or ranged reads instead of paying for an unbounded first
+request.
 
 Resolution order (fail closed — never guess when ambiguous):
 
@@ -402,6 +411,18 @@ trellis_subagent({
 3. Remove or disable `.pi/extensions/trellis` if you want this package to own dispatch.
 4. Leave `trellisAdapter.registerSubagentTool` at `"auto"`.
 5. Confirm the host tool list shows a single `trellis_subagent` (and `workflow`).
+
+### Supported release pair
+
+The supported clean-slate pair is Trellis `1.0.1` plus workflow `2.14.0`.
+For a project-local Pi installation, use the immutable Git tag:
+
+```bash
+pi install -l git:github.com/mizuikki/pi-dynamic-workflows@v2.14.0
+```
+
+Run `npm run smoke:trellis-context` after `npm run build` to emit the V01-V12
+bounded-context renderer evidence.
 
 
 ## Development

@@ -11,16 +11,16 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { SubagentContextLoader } from "../subagent-context.js";
 
 export type TrellisAdapterEnabled = "off" | "auto" | "on";
 export type TrellisSubagentToolSetting = "off" | "auto" | "on";
 
 export interface TrellisAdapterSettings {
-  /** Default "auto": enable only when `<cwd>/.trellis/` exists. */
+  /** Default "auto": enable only for a supported Trellis project. */
   enabled?: TrellisAdapterEnabled;
   /** When a task path is resolved without an Active task line, prepend one. Default true. */
   autoPrependActiveTaskLine?: boolean;
@@ -70,6 +70,19 @@ export function hasTrellisProject(cwd: string): boolean {
   }
 }
 
+export function trellisProjectVersion(cwd: string): string | undefined {
+  try {
+    const version = readFileSync(join(cwd, ".trellis", ".version"), "utf-8").trim();
+    return version || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function hasSupportedTrellisProject(cwd: string): boolean {
+  return hasTrellisProject(cwd) && trellisProjectVersion(cwd) === "1.0.1";
+}
+
 export function hasNativeTrellisExtension(cwd: string): boolean {
   return (
     existsSync(join(cwd, ".pi", "extensions", "trellis")) ||
@@ -85,8 +98,10 @@ export function hasNativeTrellisExtension(cwd: string): boolean {
 export function shouldEnableTrellisAdapter(cwd: string, settings?: TrellisAdapterSettings): boolean {
   const enabled = settings?.enabled ?? "auto";
   if (enabled === "off") return false;
-  if (enabled === "on") return true;
-  return hasTrellisProject(cwd);
+  // The adapter mirrors the frozen 1.0.1 renderer. An explicit opt-in may
+  // enable it within that support matrix, but cannot inject 1.0.1 semantics
+  // into a missing or incompatible Trellis project.
+  return hasSupportedTrellisProject(cwd);
 }
 
 /**
@@ -230,162 +245,185 @@ export function resolveActiveTaskPath(
 
 export function buildTrellisTaskContext(cwd: string, taskDir: string, agentType?: string): string {
   const dir = resolveTaskDirectory(cwd, taskDir);
-  if (!dir) {
-    return ["## Trellis Task Context", "Task directory: (unresolved)", "", "### prd.md", "(missing)"].join("\n");
-  }
+  if (!dir) return "";
   const jsonlName = agentType
     ? (TRELLIS_AGENT_JSONL[agentType] ?? TRELLIS_AGENT_JSONL[normalizeAgentName(agentType)])
     : undefined;
-  const manifest = jsonlName ? buildTrellisManifestIndex(cwd, dir, jsonlName) : "";
-  const prd = buildBoundedTaskArtifact(cwd, dir, "prd.md", true);
-  const design = buildBoundedTaskArtifact(cwd, dir, "design.md", false);
-  const impl = buildBoundedTaskArtifact(cwd, dir, "implement.md", false);
-  const context = [
-    "## Trellis Task Context",
-    `Task directory: ${toRepoRelativeTaskPath(cwd, dir)}`,
-    manifest,
-    prd,
-    design,
-    impl,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const displayTaskDir = relative(resolve(cwd), resolve(dir)).replace(/\\/g, "/") || ".";
+  const parts = ["## Trellis Task Context", `Task directory: ${displayTaskDir}`];
+  if (jsonlName) {
+    const index = buildTrellisManifestIndex(cwd, dir, jsonlName);
+    if (index) parts.push(index);
+  }
+  const truncatedArtifacts: string[] = [];
+  for (const [name, label] of [
+    ["prd.md", "Requirements"],
+    ["design.md", "Technical Design"],
+    ["implement.md", "Execution Plan"],
+  ] as const) {
+    const displayPath = `${displayTaskDir}/${name}`;
+    const { content, truncated } = readBoundedArtifactDetailed(join(dir, name), displayPath);
+    if (truncated) truncatedArtifacts.push(displayPath);
+    if (content) parts.push(`### ${displayPath} (${label})\n${content}`);
+  }
 
-  return limitUtf8WithNotice(
-    context,
+  return truncateUtf8(
+    parts.join("\n\n"),
     MAX_TRELLIS_TASK_CONTEXT_BYTES,
-    `[Trellis task context truncated at ${MAX_TRELLIS_TASK_CONTEXT_BYTES} bytes. Read task artifacts and manifest paths on demand.]`,
+    `[Task context for ${displayTaskDir} exceeded ${MAX_TRELLIS_TASK_CONTEXT_BYTES} bytes; artifact limits applied to ${truncatedArtifacts.join(", ") || "none"}; load the remaining task artifacts and manifest sources on demand.]`,
   );
 }
 
 function buildTrellisManifestIndex(cwd: string, taskDir: string, jsonlName: string): string {
   const manifestPath = join(taskDir, jsonlName);
-  const source = readBoundedProjectText(cwd, manifestPath, MAX_TRELLIS_MANIFEST_SOURCE_BYTES);
-  if (!source.text.trim() && !source.truncated) return "";
-
-  const entries: string[] = [];
+  const sourceBytes = readLimitedBytes(manifestPath, MAX_TRELLIS_MANIFEST_SOURCE_BYTES);
+  if (!sourceBytes) return "";
+  const sourceTruncated = sourceBytes.length > MAX_TRELLIS_MANIFEST_SOURCE_BYTES;
+  let source = new StringDecoder("utf8").write(sourceBytes.subarray(0, MAX_TRELLIS_MANIFEST_SOURCE_BYTES));
+  if (sourceTruncated) {
+    const lastNewline = source.lastIndexOf("\n");
+    source = lastNewline >= 0 ? source.slice(0, lastNewline) : "";
+  }
+  const rows: string[] = [];
   const seen = new Set<string>();
-  let omitted = source.truncated;
-  for (const line of source.text.split(/\r?\n/)) {
+  let entryLimitReached = false;
+  for (const line of source.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (entries.length >= MAX_TRELLIS_MANIFEST_ENTRIES) {
-      omitted = true;
-      break;
-    }
     try {
       const row = JSON.parse(trimmed) as Record<string, unknown>;
-      if (row._example) continue;
-      const file = typeof row.file === "string" ? row.file.trim() : "";
-      if (!file) continue;
-      const abs = resolveSafeProjectPath(cwd, file);
-      if (!abs || seen.has(abs)) continue;
-      const stats = statSync(abs);
-      if (!stats.isFile()) continue;
-      seen.add(abs);
-      const relativePath = toRepoRelativePath(cwd, abs);
-      if (!relativePath) continue;
-      const reason = normalizeManifestReason(row.reason);
-      entries.push(
-        `- \`${relativePath}\` (${stats.size} bytes, rev ${fileMetadataRevision(stats)})${reason ? `: ${reason}` : ""}`,
-      );
+      const rawPath = manifestString(row.file) ?? manifestString(row.path);
+      if (!rawPath) continue;
+      const entryType = row.type === "directory" ? "directory" : "file";
+      const resolved = resolveManifestPath(cwd, rawPath);
+      if (!resolved) continue;
+      if (seen.has(resolved.path)) continue;
+      if (rows.length >= MAX_TRELLIS_MANIFEST_ENTRIES) {
+        entryLimitReached = true;
+        break;
+      }
+      seen.add(resolved.path);
+      const fields = [`path: ${resolved.path}`, `type: ${entryType}`];
+      try {
+        const metadata = statSync(resolved.target);
+        if (entryType === "file") fields.push(`bytes: ${metadata.size}`);
+        fields.push(`revision: ${metadata.mtimeMs}`);
+      } catch {
+        fields.push("status: missing-or-unreadable");
+      }
+      fields.push(`reason: ${normalizeManifestReason(row.reason)}`);
+      rows.push(`- ${fields.join(" | ")}`);
     } catch {
-      // Skip illegal JSON lines and unsafe/unreadable paths.
+      // Invalid manifest rows are intentionally ignored.
     }
   }
-  if (entries.length === 0 && !omitted) return "";
-  if (omitted) {
-    entries.push(`- ... additional entries omitted; inspect \`${jsonlName}\` directly.`);
+  if (rows.length === 0 && !sourceTruncated) return "";
+  const lines = [`### ${jsonlName} candidate context index (load sources on demand)`, ...rows];
+  const limitNotices: string[] = [];
+  if (entryLimitReached) {
+    limitNotices.push(
+      `[Omitted additional entries from ${jsonlName} after ${MAX_TRELLIS_MANIFEST_ENTRIES}; load the manifest on demand.]`,
+    );
   }
-
-  const index = [
-    `### Curated Spec / Research Manifest (${jsonlName})`,
-    "Referenced files are not inlined. Use each reason to choose relevant files, and prefer targeted searches or ranged reads for large files.",
-    ...entries,
-  ].join("\n");
-  return limitUtf8WithNotice(
-    index,
+  if (sourceTruncated) {
+    limitNotices.push(
+      `[Stopped reading ${jsonlName} after ${MAX_TRELLIS_MANIFEST_SOURCE_BYTES} bytes; load the remainder on demand.]`,
+    );
+  }
+  const combined = [lines.join("\n"), ...limitNotices].join("\n");
+  if (Buffer.byteLength(combined, "utf8") <= MAX_TRELLIS_MANIFEST_INDEX_BYTES) return combined;
+  return truncateUtf8(
+    combined,
     MAX_TRELLIS_MANIFEST_INDEX_BYTES,
-    `[Manifest index truncated at ${MAX_TRELLIS_MANIFEST_INDEX_BYTES} bytes. Inspect ${jsonlName} directly for remaining entries.]`,
+    [`[Truncated rendered index for ${jsonlName}; load the manifest on demand.]`, ...limitNotices].join(" "),
   );
 }
 
-function buildBoundedTaskArtifact(cwd: string, taskDir: string, fileName: string, required: boolean): string {
-  const source = readBoundedProjectText(cwd, join(taskDir, fileName), MAX_TRELLIS_TASK_ARTIFACT_BYTES);
-  if (!source.text) return required ? `### ${fileName}\n(missing)` : "";
-  const relativePath = toRepoRelativePath(cwd, join(taskDir, fileName)) ?? fileName;
-  const bounded = source.truncated
-    ? appendUtf8Notice(
-        source.text,
-        MAX_TRELLIS_TASK_ARTIFACT_BYTES,
-        `[${fileName} truncated at ${MAX_TRELLIS_TASK_ARTIFACT_BYTES} bytes. Read ${relativePath} directly for the remainder.]`,
-      )
-    : source.text;
-  return `### ${fileName}\n${bounded}`;
-}
-
-function readBoundedProjectText(cwd: string, path: string, maxBytes: number): { text: string; truncated: boolean } {
-  const canonical = canonicalProjectPath(cwd, path);
-  if (!canonical) return { text: "", truncated: false };
-  let fd: number | undefined;
+function readLimitedBytes(path: string, limit: number): Buffer | null {
+  let fd: number | null = null;
   try {
-    const stats = statSync(canonical);
-    if (!stats.isFile()) return { text: "", truncated: false };
-    fd = openSync(canonical, "r");
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
-    let bytesRead = 0;
-    while (bytesRead < buffer.length) {
-      const count = readSync(fd, buffer, bytesRead, buffer.length - bytesRead, bytesRead);
-      if (count === 0) break;
-      bytesRead += count;
-    }
-    const boundedBytes = buffer.subarray(0, Math.min(bytesRead, maxBytes));
-    const truncated = bytesRead > maxBytes || stats.size > maxBytes;
-    return {
-      text: truncated ? boundedBytes.toString("utf8").replace(/\uFFFD$/, "") : boundedBytes.toString("utf8"),
-      truncated,
-    };
+    fd = openSync(path, "r");
+    const buffer = Buffer.alloc(limit + 1);
+    const count = readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, count);
   } catch {
-    return { text: "", truncated: false };
+    return null;
   } finally {
-    if (fd !== undefined) {
+    if (fd !== null) {
       try {
         closeSync(fd);
       } catch {
-        // Ignore close errors after a best-effort read.
+        // Best effort close after a bounded read.
       }
     }
   }
 }
 
-function appendUtf8Notice(text: string, maxBytes: number, notice: string): string {
-  const suffix = `\n\n${notice}`;
-  const available = Math.max(0, maxBytes - Buffer.byteLength(suffix, "utf8"));
-  return `${truncateUtf8(text, available).text}${suffix}`;
+function readBoundedArtifactDetailed(path: string, displayPath: string): { content: string; truncated: boolean } {
+  const bytes = readLimitedBytes(path, MAX_TRELLIS_TASK_ARTIFACT_BYTES);
+  if (!bytes) return { content: "", truncated: false };
+  const decoder = new StringDecoder("utf8");
+  const text = decoder.write(bytes) + decoder.end();
+  const rawOver = bytes.length > MAX_TRELLIS_TASK_ARTIFACT_BYTES;
+  const renderedOver = Buffer.byteLength(text, "utf8") > MAX_TRELLIS_TASK_ARTIFACT_BYTES;
+  if (!rawOver && !renderedOver) return { content: text, truncated: false };
+  return {
+    content: truncateUtf8(
+      text,
+      MAX_TRELLIS_TASK_ARTIFACT_BYTES,
+      `[Truncated ${displayPath} at ${MAX_TRELLIS_TASK_ARTIFACT_BYTES} UTF-8 bytes; load the remainder on demand.]`,
+    ),
+    truncated: true,
+  };
 }
 
-function fileMetadataRevision(stats: { size: number; mtimeMs: number; ctimeMs: number }): string {
-  return createHash("sha256").update(`${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`).digest("hex").slice(0, 12);
+function manifestString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
 }
 
 function normalizeManifestReason(value: unknown): string {
-  if (typeof value !== "string") return "";
-  return value.replace(/\s+/g, " ").trim().slice(0, 240);
+  let reason = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+  if (!reason) return "(no reason provided)";
+  reason = Buffer.from(reason, "utf8").toString("utf8");
+  const codePoints = Array.from(reason);
+  if (codePoints.length <= 240) return reason;
+  return `${codePoints.slice(0, 237).join("")}...`;
 }
 
-function truncateUtf8(text: string, maxBytes: number): { text: string; truncated: boolean } {
+function resolveManifestPath(root: string, rawPath: string): { path: string; target: string } | null {
+  const normalized = rawPath.trim().replace(/\\/g, "/");
+  if (!normalized || isAbsolute(normalized) || /^[A-Za-z]:\//.test(normalized)) return null;
+  let rootPath = resolve(root);
+  try {
+    rootPath = resolve(realpathSync(root));
+  } catch {
+    // Use the logical root when it cannot be canonicalized.
+  }
+  const candidate = resolve(rootPath, normalized);
+  if (!isManifestPathInsideRoot(rootPath, candidate)) return null;
+  let target = candidate;
+  try {
+    target = resolve(realpathSync(candidate));
+  } catch {
+    // Missing paths remain valid manifest metadata rows.
+  }
+  if (!isManifestPathInsideRoot(rootPath, target)) return null;
+  return { path: relative(rootPath, target).replace(/\\/g, "/"), target };
+}
+
+function isManifestPathInsideRoot(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\") && !isAbsolute(rel));
+}
+
+function truncateUtf8(text: string, maxBytes: number, notice: string): string {
   const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= maxBytes) return { text, truncated: false };
-  const bounded = bytes
-    .subarray(0, Math.max(0, maxBytes))
-    .toString("utf8")
-    .replace(/\uFFFD$/, "");
-  return { text: bounded, truncated: true };
-}
-
-function limitUtf8WithNotice(text: string, maxBytes: number, notice: string): string {
-  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
-  return appendUtf8Notice(text, maxBytes, notice);
+  if (bytes.length <= maxBytes) return text;
+  const suffix = Buffer.from(`\n\n${notice}`, "utf8");
+  if (suffix.length >= maxBytes) return new StringDecoder("utf8").write(suffix.subarray(0, maxBytes));
+  return new StringDecoder("utf8").write(bytes.subarray(0, maxBytes - suffix.length)) + suffix.toString("utf8");
 }
 
 /** True when `.pi/agents/<agent>.md` exists (native isTrellisAgent parity). */
@@ -533,16 +571,6 @@ function resolveTaskDirectory(cwd: string, ref: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-/**
- * Resolve a repo-relative path for jsonl expansion. Absolute paths and
- * `..` escapes outside cwd are rejected (fail closed).
- */
-function resolveSafeProjectPath(cwd: string, ref: string): string | undefined {
-  const cleaned = ref.replace(/\\/g, "/").trim();
-  if (!cleaned || isAbsolute(cleaned)) return undefined;
-  return canonicalProjectPath(cwd, resolve(cwd, cleaned));
 }
 
 function canonicalProjectPath(root: string, target: string): string | undefined {
