@@ -412,14 +412,12 @@ trellis_subagent({
 4. Leave `trellisAdapter.registerSubagentTool` at `"auto"`.
 5. Confirm the host tool list shows a single `trellis_subagent` (and `workflow`).
 
-### Supported release pair
+### Supported local pair
 
 The supported clean-slate pair is Trellis `1.0.1` plus workflow `2.14.0`.
-For a project-local Pi installation, use the immutable Git tag:
-
-```bash
-pi install -l git:github.com/mizuikki/pi-dynamic-workflows@v2.14.0
-```
+This fork is maintained for local use: install it from a local checkout as
+shown in [Install](#install). `2.14.0` is a compatibility identifier, not a
+published Git tag or remote package reference.
 
 Run `npm run smoke:trellis-context` after `npm run build` to emit the V01-V12
 bounded-context renderer evidence.
