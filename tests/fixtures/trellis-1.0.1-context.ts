@@ -19,6 +19,10 @@ export const TRELLIS_1_0_1_NOTICES = {
   manifestRendered: "[Truncated rendered index for implement.jsonl; load the manifest on demand.]",
 } as const;
 
+export function trellisArtifactNotice(path: string): string {
+  return TRELLIS_1_0_1_NOTICES.artifact.replace("{path}", path);
+}
+
 /**
  * Literal golden payload captured from the frozen Trellis 1.0.1 renderer.
  * Keep this independent from the adapter implementation so V01 detects format

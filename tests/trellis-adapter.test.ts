@@ -22,6 +22,7 @@ import {
   TRELLIS_1_0_1_LIMITS,
   TRELLIS_1_0_1_NOTICES,
   TRELLIS_1_0_1_TEMPLATE_SHA256,
+  trellisArtifactNotice,
   V01_TRELLIS_1_0_1_PAYLOAD,
   writeCanonicalTaskFixture,
 } from "./fixtures/trellis-1.0.1-context.js";
@@ -70,7 +71,7 @@ test("V03: invalid UTF-8 stays within the rendered artifact ceiling", () => {
     const taskDir = writeTask(cwd, "invalid-utf8");
     writeFileSync(join(taskDir, "prd.md"), Buffer.alloc(30_000, 0xff));
     const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
-    assert.match(payload, /Truncated .+prd\.md at 65536 UTF-8 bytes/);
+    assert.ok(payload.includes(trellisArtifactNotice(".trellis/tasks/invalid-utf8/prd.md")));
     assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_1_LIMITS.taskContext);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -83,7 +84,7 @@ test("V04: a partial multi-byte boundary is bounded with the canonical notice", 
     const taskDir = writeTask(cwd, "multibyte");
     writeFileSync(join(taskDir, "prd.md"), `${"a".repeat(65_535)}é`, "utf-8");
     const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
-    assert.match(payload, /Truncated .+prd\.md at 65536 UTF-8 bytes/);
+    assert.ok(payload.includes(trellisArtifactNotice(".trellis/tasks/multibyte/prd.md")));
     assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_1_LIMITS.taskContext);
   } finally {
     rmSync(cwd, { recursive: true, force: true });

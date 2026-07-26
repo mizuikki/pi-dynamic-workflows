@@ -344,7 +344,12 @@ function readLimitedBytes(path: string, limit: number): Buffer | null {
   try {
     fd = openSync(path, "r");
     const buffer = Buffer.alloc(limit + 1);
-    const count = readSync(fd, buffer, 0, buffer.length, 0);
+    let count = 0;
+    while (count < buffer.length) {
+      const bytesRead = readSync(fd, buffer, count, buffer.length - count, count);
+      if (bytesRead === 0) break;
+      count += bytesRead;
+    }
     return buffer.subarray(0, count);
   } catch {
     return null;
