@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { WorkflowErrorCode } from "./errors.js";
+import { normalizeExecutionPolicy, type WorkflowExecutionPolicy } from "./retry-policy.js";
 import {
   type OpenWorkflowDatabaseOptions,
   openWorkflowDatabase,
@@ -61,6 +63,8 @@ export interface PersistedRunState {
     cacheWrite?: number;
   };
   journal?: Array<{ index: number; hash: string; result: unknown }>;
+  /** Explicit canonical run policy only; host snapshots are never persisted. */
+  executionPolicy?: WorkflowExecutionPolicy;
 }
 
 export interface WorkflowRunSummary {
@@ -262,6 +266,12 @@ function validateState(state: PersistedRunState): void {
       if (!entry || typeof entry !== "object") fail("INVALID_RUN_STATE", "Run journal is invalid.");
       validInteger(entry.index, "journal index");
       validString(entry.hash, "journal hash");
+    }
+  }
+  if (state.executionPolicy !== undefined) {
+    const normalized = normalizeExecutionPolicy(state.executionPolicy);
+    if (!isDeepStrictEqual(normalized, state.executionPolicy)) {
+      fail("INVALID_RUN_STATE", "Run execution policy is invalid.");
     }
   }
   assertJsonSafe(state);

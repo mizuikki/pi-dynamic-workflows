@@ -17,6 +17,7 @@ import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { parseKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
+import type { ImmutableHostRetryPolicySnapshot } from "./retry-policy.js";
 import type { PersistedRunState, WorkflowRunSummary } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
@@ -999,6 +1000,8 @@ export interface NavigatorOptions {
   cwd?: string;
   /** Overlay anchor position: "center" (default) or "right-center" for sidebar. */
   anchor?: OverlayAnchor;
+  /** Sample the current host retry policy at a restart boundary. */
+  readHostRetryPolicy?: () => ImmutableHostRetryPolicySnapshot;
 }
 
 /**
@@ -1089,7 +1092,14 @@ export function openWorkflowNavigator(
               ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
               break;
             }
-            const { runId: newId } = manager.startInBackground(run.script, run.args);
+            if (!opts.readHostRetryPolicy) {
+              ui.notify("Cannot restart without the current host retry policy", "warning");
+              break;
+            }
+            const { runId: newId } = manager.startInBackground(run.script, run.args, {
+              ...run.executionPolicy,
+              hostRetryPolicy: opts.readHostRetryPolicy(),
+            });
             model.refreshRuns();
             ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
             break;

@@ -166,6 +166,10 @@ function makeManagerBackedCommandHarness() {
     },
   };
   const ctx = {
+    getRetryPolicy: () => ({
+      agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
+      providerRequest: { maxRetries: 2, maxRetryDelayMs: 30_000 },
+    }),
     modelRegistry: {
       getAvailable: () => [],
       getRegisteredProviderIds: () => [],
@@ -256,7 +260,15 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
   const deepResearchHandler = commands.find((command) => command.name === "deep-research")?.handler;
   assert.ok(deepResearchHandler, "deep-research handler should exist");
 
+  let retryGetterCalls = 0;
   const ctx = {
+    getRetryPolicy: () => {
+      retryGetterCalls++;
+      return {
+        agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
+        providerRequest: { maxRetries: 2, maxRetryDelayMs: 30_000 },
+      };
+    },
     modelRegistry: {
       getAvailable: () => [],
       getRegisteredProviderIds: () => [],
@@ -281,6 +293,8 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
     ["sessionId", "session-123"],
   ]);
   assert.ok((runOptions?.tools?.length ?? 0) > 0, "deep-research should pass workflow tools to manager.runSync");
+  assert.equal(retryGetterCalls, 1);
+  assert.equal(Object.isFrozen((runOptions as { hostRetryPolicy?: unknown })?.hostRetryPolicy), true);
   assert.equal(sent[0]?.customType, "deep-research");
   assert.equal(sent[0]?.content, "manager result");
 });

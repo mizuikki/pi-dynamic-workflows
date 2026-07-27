@@ -116,9 +116,11 @@ describe("registerSavedWorkflow", () => {
   it("runs through WorkflowManager when provided", async () => {
     const { registerSavedWorkflow } = await load();
     let startedBackground = false;
+    let receivedPolicy: unknown;
     const manager = {
-      startInBackground: (_script: string, _args: unknown) => {
+      startInBackground: (_script: string, _args: unknown, options: { hostRetryPolicy?: unknown }) => {
         startedBackground = true;
+        receivedPolicy = options.hostRetryPolicy;
         return { runId: "test-run", promise: Promise.resolve({ result: { report: "done" } }) };
       },
     };
@@ -128,9 +130,17 @@ describe("registerSavedWorkflow", () => {
     registerSavedWorkflow(pi, "/cwd", wf, manager as never);
 
     const { ctx } = makeNotifyCtx();
+    let getterCalls = 0;
+    const originalGetter = ctx.getRetryPolicy;
+    ctx.getRetryPolicy = () => {
+      getterCalls++;
+      return originalGetter();
+    };
     await commands[0].handler("", ctx);
 
     assert.equal(startedBackground, true, "should use startInBackground when manager provided");
+    assert.equal(getterCalls, 1);
+    assert.equal(Object.isFrozen(receivedPolicy), true);
   });
 
   it("falls back to runWorkflow (inline) when no manager is provided", async () => {

@@ -124,6 +124,35 @@ describe("resolveStructuredOutput", () => {
       },
     );
   });
+
+  it("does not extract stale JSON after a repair turn ends in an error", async () => {
+    const { session, capture } = makeSession();
+    session.prompt = async () => {
+      session.messages.push({
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "HTTP 503 service unavailable",
+      });
+    };
+    await assert.rejects(
+      () => resolveStructuredOutput(session, capture, Schema, opts, () => '{"word":"stale"}'),
+      (err: unknown) => {
+        assert.equal((err as { code?: string }).code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+        assert.equal((err as { recoverable?: boolean }).recoverable, true);
+        return true;
+      },
+    );
+  });
+
+  it("rejects invalid maxSchemaRetries without prompting", async () => {
+    const { session, capture, prompts } = makeSession();
+    await assert.rejects(
+      () => resolveStructuredOutput(session, capture, Schema, { maxSchemaRetries: 1.5 }, noText),
+      /non-negative safe integer/,
+    );
+    assert.equal(prompts(), 0);
+  });
 });
 
 describe("lastAssistantError / throwIfProviderLimit", () => {
@@ -221,15 +250,42 @@ describe("lastAssistantError / throwIfProviderLimit", () => {
     );
   });
 
-  it("keeps transient provider errors recoverable", () => {
+  it("keeps Pi-classified transient provider errors recoverable", () => {
     assert.throws(
       () =>
         throwIfAssistantError([
-          { role: "assistant", content: [], stopReason: "error", errorMessage: "temporary provider error" },
+          { role: "assistant", content: [], stopReason: "error", errorMessage: "HTTP 503 service unavailable" },
         ]),
       (err: unknown) => {
         assert.equal((err as { code?: string }).code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
         assert.equal((err as { recoverable?: boolean }).recoverable, true);
+        return true;
+      },
+    );
+  });
+
+  it("keeps unknown provider errors non-recoverable", () => {
+    assert.throws(
+      () =>
+        throwIfAssistantError([
+          { role: "assistant", content: [], stopReason: "error", errorMessage: "unexpected provider configuration" },
+        ]),
+      (err: unknown) => {
+        assert.equal((err as { code?: string }).code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+        assert.equal((err as { recoverable?: boolean }).recoverable, false);
+        return true;
+      },
+    );
+  });
+
+  it("maps an aborted assistant terminal message to WORKFLOW_ABORTED", () => {
+    assert.throws(
+      () =>
+        throwIfAssistantError([
+          { role: "assistant", content: [], stopReason: "aborted", errorMessage: "request was aborted" },
+        ]),
+      (err: unknown) => {
+        assert.equal((err as { code?: string }).code, WorkflowErrorCode.WORKFLOW_ABORTED);
         return true;
       },
     );

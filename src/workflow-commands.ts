@@ -6,6 +6,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { recomputeWorkflowSnapshot, renderWorkflowText, type WorkflowSnapshot } from "./display.js";
 import { type EffortState, effortDirective } from "./effort-command.js";
+import { readRequiredHostRetryPolicy } from "./retry-policy.js";
 import type { PersistedRunState, WorkflowRunSummary } from "./run-persistence.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
 import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME } from "./workflow-editor.js";
@@ -172,11 +173,19 @@ export function registerWorkflowCommands(
           // Interactive navigator when a UI is available; plain text otherwise
           // (print/RPC mode) or when the user explicitly asks for `list`.
           if (sub !== "list" && ctx.hasUI) {
-            await openWorkflowNavigator(pi, manager, ctx.ui, { storage: opts.storage, cwd: opts.cwd });
+            await openWorkflowNavigator(pi, manager, ctx.ui, {
+              storage: opts.storage,
+              cwd: opts.cwd,
+              readHostRetryPolicy: () => readRequiredHostRetryPolicy(ctx),
+            });
             return;
           }
           if (parts.length === 0 && ctx.hasUI) {
-            await openWorkflowNavigator(pi, manager, ctx.ui, { storage: opts.storage, cwd: opts.cwd });
+            await openWorkflowNavigator(pi, manager, ctx.ui, {
+              storage: opts.storage,
+              cwd: opts.cwd,
+              readHostRetryPolicy: () => readRequiredHostRetryPolicy(ctx),
+            });
             return;
           }
           const runs = manager.listRuns();
@@ -227,7 +236,7 @@ export function registerWorkflowCommands(
         }
         case "resume": {
           if (!id) return ctx.ui.notify(USAGE, "warning");
-          const ok = await manager.resume(id);
+          const ok = await manager.resume(id, { hostRetryPolicy: readRequiredHostRetryPolicy(ctx) });
           ctx.ui.notify(ok ? `Resumed ${id}` : `Resume not available for ${id} yet`, ok ? "info" : "warning");
           return;
         }

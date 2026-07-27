@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,6 +22,7 @@ import {
   WorkflowAgent,
   wrapResourceLoaderForWorkflowSubagents,
 } from "../src/agent.js";
+import { normalizeHostRetryPolicySnapshot } from "../src/retry-policy.js";
 import { createSharedStoreTools, SharedStore } from "../src/shared-store.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
@@ -267,6 +268,84 @@ test("T6: faux model calling disallowed bash does not execute a real shell comma
     const { existsSync } = await import("node:fs");
     assert.equal(existsSync(marker), false, "disallowed bash must not execute");
   });
+});
+
+test("retry policy uses private non-persistent SettingsManagers and replaces stale provider fields", async () => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
+    const settingsPath = join(agentDir, "settings.json");
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        retry: {
+          enabled: true,
+          maxRetries: 9,
+          baseDelayMs: 9,
+          provider: { timeoutMs: 999, maxRetries: 8, maxRetryDelayMs: 777 },
+        },
+      }),
+    );
+    const diskBefore = readFileSync(settingsPath);
+    const shared = SettingsManager.create(cwd, agentDir);
+    const created: SettingsManager[] = [];
+    const factory = () => {
+      const manager = SettingsManager.create(cwd, agentDir);
+      created.push(manager);
+      return manager;
+    };
+    const host = normalizeHostRetryPolicySnapshot({
+      agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
+      providerRequest: { maxRetryDelayMs: 30_000 },
+    });
+    faux.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+    const first = new WorkflowAgent({
+      cwd,
+      modelRuntime,
+      session: { model: faux.model, sessionManager: SessionManager.inMemory() },
+      hostRetryPolicy: host,
+      agentTurnRetry: { enabled: false },
+      settingsManagerFactory: factory,
+    });
+    const second = new WorkflowAgent({
+      cwd,
+      modelRuntime,
+      session: { model: faux.model, sessionManager: SessionManager.inMemory() },
+      hostRetryPolicy: host,
+      agentTurnRetry: { maxRetries: 2 },
+      settingsManagerFactory: factory,
+    });
+
+    assert.deepEqual(await Promise.all([first.run("one", { agentTurnRetry: { maxRetries: 1 } }), second.run("two")]), [
+      "first",
+      "second",
+    ]);
+    assert.equal(created.length, 2);
+    assert.deepEqual(created[0]?.getRetrySettings(), { enabled: false, maxRetries: 1, baseDelayMs: 1000 });
+    assert.deepEqual(created[1]?.getRetrySettings(), { enabled: true, maxRetries: 2, baseDelayMs: 1000 });
+    assert.deepEqual(created[0]?.getProviderRetrySettings(), {
+      timeoutMs: undefined,
+      maxRetries: undefined,
+      maxRetryDelayMs: 30_000,
+    });
+    assert.deepEqual(shared.getRetrySettings(), { enabled: true, maxRetries: 9, baseDelayMs: 9 });
+    assert.deepEqual(shared.getProviderRetrySettings(), { timeoutMs: 999, maxRetries: 8, maxRetryDelayMs: 777 });
+    assert.deepEqual(readFileSync(settingsPath), diskBefore);
+  });
+});
+
+test("retry policy refuses shared SettingsManager injection", () => {
+  const settingsManager = SettingsManager.inMemory();
+  const host = normalizeHostRetryPolicySnapshot({
+    agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
+    providerRequest: { maxRetryDelayMs: 30_000 },
+  });
+  assert.throws(
+    () => new WorkflowAgent({ hostRetryPolicy: host, session: { settingsManager } }),
+    /shared session\.settingsManager/,
+  );
+  assert.throws(
+    () => new WorkflowAgent({ settingsManagerFactory: () => SettingsManager.inMemory(), session: { settingsManager } }),
+    /conflicts/,
+  );
 });
 
 test("T7/T8: projectTrusted false hides project extension tools; true loads them", async () => {

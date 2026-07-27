@@ -13,6 +13,12 @@ import type { WorkflowAgent, WorkflowAgentOptions } from "./agent.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import {
+  type AgentTurnRetryOverride,
+  type ImmutableHostRetryPolicySnapshot,
+  normalizeExecutionPolicy,
+  type WorkflowExecutionPolicy,
+} from "./retry-policy.js";
+import {
   createRunPersistence,
   type DeleteRunResult,
   generateRunId,
@@ -43,6 +49,7 @@ export interface ManagedRun {
   args?: unknown;
   /** Accumulated agent results for resume (deterministic call index -> result). */
   journal: JournalEntry[];
+  executionPolicy?: WorkflowExecutionPolicy;
   /** Cross-process execution lease for this run, when it is actively executing. */
   lease?: RunLease;
   /**
@@ -77,8 +84,14 @@ export interface ExecOptions {
   tokenBudget?: number | null;
   /** Max concurrent agents for this execution. */
   concurrency?: number;
-  /** Retry attempts after recoverable agent failures for this execution. */
+  /** Additional whole-agent attempts after recoverable failures. */
+  agentRunRetries?: number;
+  /** @deprecated Use agentRunRetries. */
   agentRetries?: number;
+  /** Partial child agent-turn override. */
+  agentTurnRetry?: AgentTurnRetryOverride;
+  /** Immutable host retry snapshot sampled for this execution. */
+  hostRetryPolicy?: ImmutableHostRetryPolicySnapshot;
   /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
   confirm?: (promptText: string, options: unknown) => Promise<unknown>;
   /** Additional tools for built-in workflows and other manager-backed runs. */
@@ -109,8 +122,6 @@ export interface WorkflowManagerOptions {
   sessionId?: string;
   /** Default per-agent timeout when a run does not pass agentTimeoutMs. null means no hard timeout. */
   defaultAgentTimeoutMs?: number | null;
-  /** Default retry attempts after recoverable agent failures. */
-  defaultAgentRetries?: number;
   /**
    * Persist each subagent transcript as a real pi session file under the
    * standard sessions directory. Default false (in-memory, discarded).
@@ -153,7 +164,6 @@ export class WorkflowManager extends EventEmitter {
   /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
   private sessionId?: string;
   private defaultAgentTimeoutMs: number | null;
-  private defaultAgentRetries: number;
   private persistAgentSessions: boolean;
   private projectTrusted?: boolean;
   private contextLoader?: WorkflowAgentOptions["contextLoader"];
@@ -174,7 +184,6 @@ export class WorkflowManager extends EventEmitter {
     this.currentThinkingLevel = options.thinkingLevel;
     this.sessionId = options.sessionId;
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
-    this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
     this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.projectTrusted = options.projectTrusted;
     this.contextLoader = options.contextLoader;
@@ -324,6 +333,7 @@ export class WorkflowManager extends EventEmitter {
     exec: ExecOptions = {},
   ): { runId: string; promise: Promise<WorkflowRunResult> } {
     const persistence = this.repository();
+    const executionPolicy = normalizeExecutionPolicy(exec);
     const parsed = parseWorkflowScript(script);
     const slug = parsed.meta.name
       ? parsed.meta.name
@@ -358,6 +368,7 @@ export class WorkflowManager extends EventEmitter {
       script,
       args,
       journal: [],
+      ...(Object.keys(executionPolicy).length ? { executionPolicy } : {}),
       background: true,
       lease,
     };
@@ -378,6 +389,7 @@ export class WorkflowManager extends EventEmitter {
         logs: [],
         startedAt: managed.startedAt.toISOString(),
         updatedAt: managed.startedAt.toISOString(),
+        ...(managed.executionPolicy ? { executionPolicy: managed.executionPolicy } : {}),
       };
       persistence.save(initialState, lease);
       this.persistedSummaries.set(runId, summarizePersistedRun(lease.projectId, initialState));
@@ -407,6 +419,8 @@ export class WorkflowManager extends EventEmitter {
   async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
     const persistence = this.repository();
     const managed = this.createManaged(script, args);
+    const executionPolicy = normalizeExecutionPolicy(exec);
+    if (Object.keys(executionPolicy).length) managed.executionPolicy = executionPolicy;
     const lease = persistence.acquireRunLease(managed.runId, "new");
     if (!lease) throw new Error(`Could not acquire workflow run lease for ${managed.runId}`);
     managed.lease = lease;
@@ -486,7 +500,7 @@ export class WorkflowManager extends EventEmitter {
       onProgress,
       tokenBudget,
       concurrency,
-      agentRetries,
+      hostRetryPolicy,
       confirm,
       tools,
       onPhase,
@@ -494,7 +508,6 @@ export class WorkflowManager extends EventEmitter {
     const runTools = tools ?? managed.tools;
     const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
     const resolvedConcurrency = concurrency ?? this.concurrency;
-    const resolvedAgentRetries = agentRetries ?? this.defaultAgentRetries;
     const progress = () => onProgress?.(managed.snapshot);
     // Let a host abort (e.g. Esc during a blocking tool call) cancel this run.
     if (externalSignal) {
@@ -523,10 +536,12 @@ export class WorkflowManager extends EventEmitter {
         projectTrusted: this.projectTrusted,
         contextLoader: this.contextLoader,
         extensionPathFilters: this.extensionPathFilters,
+        hostRetryPolicy,
+        agentTurnRetry: managed.executionPolicy?.agentTurnRetry,
         sessionId: managed.sessionId,
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
-        agentRetries: resolvedAgentRetries,
+        agentRunRetries: managed.executionPolicy?.agentRunRetries,
         maxAgents,
         agentTimeoutMs: resolvedAgentTimeoutMs,
         tokenBudget,
@@ -708,6 +723,7 @@ export class WorkflowManager extends EventEmitter {
       args: managed.args,
       sessionId: managed.sessionId,
       journal: managed.journal,
+      ...(managed.executionPolicy ? { executionPolicy: managed.executionPolicy } : {}),
       status: managed.status,
       pauseReason:
         managed.status === "paused" && managed.error?.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT
@@ -779,7 +795,7 @@ export class WorkflowManager extends EventEmitter {
    * Resume an interrupted run: replay journaled results for the unchanged prefix
    * and run the rest live. Returns false if there is nothing resumable.
    */
-  async resume(runId: string): Promise<boolean> {
+  async resume(runId: string, exec: Pick<ExecOptions, "hostRetryPolicy"> = {}): Promise<boolean> {
     // Guard: refuse to resume a run that is already running, or one that was
     // intentionally aborted (pause/stop/Esc). Paused and failed runs can restart.
     const active = this.getRun(runId);
@@ -833,6 +849,7 @@ export class WorkflowManager extends EventEmitter {
       script: persisted.script,
       args: persisted.args,
       journal: persisted.journal ?? [],
+      executionPolicy: persisted.executionPolicy,
       background: true,
       lease,
     };
@@ -850,7 +867,7 @@ export class WorkflowManager extends EventEmitter {
     const resumeJournal = new Map((persisted.journal ?? []).map((e) => [e.index, e] as const));
     this.emit("resumed", { runId });
     // Run in the background; executeRun records status/errors on the managed run.
-    void this.beginExecution(managed, persisted.script, persisted.args, { resumeJournal }).catch(() => {});
+    void this.beginExecution(managed, persisted.script, persisted.args, { ...exec, resumeJournal }).catch(() => {});
     return true;
   }
 

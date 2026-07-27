@@ -37,6 +37,7 @@ test("workflow extension refreshes live model guidance on model_select without r
   const pi = {
     extensionSdkApiVersion: 1,
     modelRuntimeApiVersion: 1,
+    retryPolicySnapshotApiVersion: 1,
     registerTool: (tool: ToolDefinition) => {
       registeredTools.push(tool);
     },
@@ -206,6 +207,7 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
   const pi = {
     extensionSdkApiVersion: 1,
     modelRuntimeApiVersion: 1,
+    retryPolicySnapshotApiVersion: 1,
     registerTool: (tool: ToolDefinition) => {
       registeredTools.push(tool);
     },
@@ -270,6 +272,7 @@ test("workflow extension rejects an incompatible host before registering tools",
   const pi = {
     extensionSdkApiVersion: 1,
     modelRuntimeApiVersion: undefined,
+    retryPolicySnapshotApiVersion: 1,
     registerTool: () => {
       registrations += 1;
     },
@@ -284,6 +287,7 @@ test("workflow extension rejects an incompatible extension SDK before registerin
   const pi = {
     extensionSdkApiVersion: undefined,
     modelRuntimeApiVersion: 1,
+    retryPolicySnapshotApiVersion: 1,
     registerTool: () => {
       registrations += 1;
     },
@@ -291,6 +295,68 @@ test("workflow extension rejects an incompatible extension SDK before registerin
 
   assert.throws(() => extension(pi), /requires extension SDK API version 1/);
   assert.equal(registrations, 0);
+});
+
+test("workflow extension rejects a missing retry snapshot capability before registering tools", () => {
+  let registrations = 0;
+  const pi = {
+    extensionSdkApiVersion: 1,
+    modelRuntimeApiVersion: 1,
+    retryPolicySnapshotApiVersion: undefined,
+    registerTool: () => {
+      registrations += 1;
+    },
+  } as unknown as ExtensionAPI;
+
+  assert.throws(() => extension(pi), /requires retry policy snapshot API version 1/);
+  assert.equal(registrations, 0);
+});
+
+test("workflow extension rejects the wrong retry snapshot capability before registering tools", () => {
+  let registrations = 0;
+  const pi = {
+    extensionSdkApiVersion: 1,
+    modelRuntimeApiVersion: 1,
+    retryPolicySnapshotApiVersion: 2,
+    registerTool: () => {
+      registrations += 1;
+    },
+  } as unknown as ExtensionAPI;
+
+  assert.throws(() => extension(pi), /requires retry policy snapshot API version 1/);
+  assert.equal(registrations, 0);
+});
+
+test("workflow extension warns once and ignores stale defaultAgentRetries", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-stale-retry-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-stale-retry-cwd-"));
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const { mkdirSync } = await import("node:fs");
+      const settingsDir = join(home, ".pi", "workflows");
+      mkdirSync(settingsDir, { recursive: true });
+      writeFileSync(join(settingsDir, "settings.json"), JSON.stringify({ defaultAgentRetries: 3 }));
+      console.warn = (message?: unknown) => warnings.push(String(message));
+      const harness = makeExtensionHarness({ cwd });
+      const originalCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+    assert.deepEqual(
+      warnings.filter((message) => message.includes("defaultAgentRetries")),
+      ["[workflow] defaultAgentRetries is deprecated and ignored; use explicit agentRunRetries per run"],
+    );
+  } finally {
+    console.warn = originalWarn;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("session_start initializes SQLite after binding and session_shutdown is idempotent", async () => {

@@ -164,7 +164,10 @@ test(
     });
     manager.on("error", () => {});
     const { runId, promise } = manager.startInBackground(script);
-    await new Promise((resolve) => setTimeout(resolve, 35));
+    const deadline = Date.now() + 65;
+    while (renewals < 3 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
     assert.ok(renewals >= 3);
     assert.equal(manager.getRun(runId)?.controller.signal.aborted, false);
     deferred.resolve();

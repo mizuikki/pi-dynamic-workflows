@@ -39,12 +39,18 @@ export default function extension(pi: ExtensionAPI) {
   if (capabilityVersion(pi, "modelRuntimeApiVersion") !== 1) {
     throw new Error("Pi host is incompatible: requires model runtime API version 1");
   }
+  if (capabilityVersion(pi, "retryPolicySnapshotApiVersion") !== 1) {
+    throw new Error("Pi host is incompatible: requires retry policy snapshot API version 1");
+  }
 
   // Single manager/storage shared by the workflow tool and the /workflows command,
   // so background runs started by the tool are reachable from the command.
   const cwd = process.cwd();
   const storage = createWorkflowStorage(cwd);
   const settings = loadWorkflowSettings({ cwd });
+  if (settings.defaultAgentRetries !== undefined) {
+    console.warn("[workflow] defaultAgentRetries is deprecated and ignored; use explicit agentRunRetries per run");
+  }
   // Optional Trellis adapter: read-only context injection + optional host tool
   // when the native Trellis extension is absent. Never owns create/start/archive
   // or phase management.
@@ -65,7 +71,6 @@ export default function extension(pi: ExtensionAPI) {
     loadSavedWorkflow: (name) => storage.load(name)?.script,
     defaultAgentTimeoutMs: settings.defaultAgentTimeoutMs ?? null,
     concurrency: settings.defaultConcurrency,
-    defaultAgentRetries: settings.defaultAgentRetries,
     persistAgentSessions: settings.persistAgentSessions,
     ...(trellisEnabled
       ? {

@@ -55,6 +55,10 @@ export interface NotifyCtx {
 export function makeNotifyCtx(): NotifyCtx {
   const notified: Array<{ message: string; type?: string }> = [];
   const ctx = {
+    getRetryPolicy: () => ({
+      agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 2000 },
+      providerRequest: { maxRetryDelayMs: 60000 },
+    }),
     ui: {
       notify: (message: string, type?: string) => notified.push({ message, type }),
       setStatus: () => {},

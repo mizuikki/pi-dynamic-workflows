@@ -1,3 +1,5 @@
+import { type AssistantMessage, isRetryableAssistantError } from "@earendil-works/pi-ai";
+
 /**
  * Workflow-specific error types.
  */
@@ -12,7 +14,7 @@ export enum WorkflowErrorCode {
   /** Token budget exhausted. */
   TOKEN_BUDGET_EXHAUSTED = "TOKEN_BUDGET_EXHAUSTED",
   /**
-   * The provider's subscription/usage/quota/rate limit was hit. Distinct from the
+   * The provider's subscription/usage/quota limit was hit. Distinct from the
    * user's self-imposed TOKEN_BUDGET_EXHAUSTED: a provider limit refills on its own,
    * so the run is checkpointed (paused) and replayed by resume() rather than failed.
    */
@@ -63,21 +65,21 @@ export function isProviderUsageLimit(error: unknown): error is WorkflowError {
 }
 
 /**
- * Detect a provider subscription/usage/quota/rate-limit exhaustion from free-form
+ * Detect provider account/subscription exhaustion from free-form error text.
  * error text, and extract the provider's human reset hint when present.
  *
  * The pi SDK does NOT throw these — it records them as an assistant message with
  * stopReason "error" and an errorMessage like "Codex usage limit reached (plus
  * plan). Resets in ~3h.". Callers reading message metadata MUST gate on
  * stopReason === "error" before trusting this, so a task whose own output merely
- * mentions "rate limit" is never misclassified. Patterns mirror the SDK's own
- * non-retryable-limit table. Deliberately excludes transient overloaded/5xx
- * errors, which stay recoverable and keep retrying.
+ * mentions "rate limit" is never misclassified. Transient throttling (429/rate
+ * limit), overloaded, and 5xx failures are deliberately excluded and delegated
+ * to Pi's public transient-error classifier.
  */
 export function classifyProviderLimit(text: string | undefined): { matched: boolean; resetHint?: string } {
   if (!text) return { matched: false };
   const matched =
-    /usage limit|limit reached|insufficient[_\s]?quota|quota exceeded|exceeded your current quota|out of budget|available balance|\bquota\b|rate.?limit|too many requests|\b429\b|GoUsageLimitError|FreeUsageLimitError|\bbilling\b/i.test(
+    /usage limit|insufficient[_\s]?quota|quota exceeded|exceeded your current quota|out of budget|available balance|GoUsageLimitError|FreeUsageLimitError|\bbilling\b/i.test(
       text,
     );
   if (!matched) return { matched: false };
@@ -93,6 +95,27 @@ export function isAbortError(error: unknown): boolean {
 export function isTimeoutError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return /\btimeout\b/i.test(error.message) || error.name === "TimeoutError";
+}
+
+function thrownAssistantError(message: string): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [],
+    api: "workflow-error-adapter",
+    provider: "workflow-error-adapter",
+    model: "unknown",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "error",
+    errorMessage: message,
+    timestamp: Date.now(),
+  };
 }
 
 /**
@@ -130,11 +153,18 @@ export function wrapError(error: unknown, context?: { agentLabel?: string }): Wo
         resetHint: limit.resetHint,
       });
     }
+    if (isRetryableAssistantError(thrownAssistantError(error.message))) {
+      return new WorkflowError(error.message, WorkflowErrorCode.AGENT_EXECUTION_ERROR, {
+        recoverable: true,
+        agentLabel: context?.agentLabel,
+        details: error,
+      });
+    }
   }
 
   return new WorkflowError(
     error instanceof Error ? error.message : String(error),
     WorkflowErrorCode.AGENT_EXECUTION_ERROR,
-    { recoverable: true, agentLabel: context?.agentLabel, details: error },
+    { recoverable: false, agentLabel: context?.agentLabel, details: error },
   );
 }

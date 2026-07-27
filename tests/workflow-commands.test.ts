@@ -72,7 +72,13 @@ function harness(
   };
 
   registerWorkflowCommands(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager, commandOptions);
-  const ctx = { ui: { notify: (message: string, type?: string) => notified.push({ message, type }) } };
+  const ctx = {
+    getRetryPolicy: () => ({
+      agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
+      providerRequest: { maxRetries: 2, maxRetryDelayMs: 30_000 },
+    }),
+    ui: { notify: (message: string, type?: string) => notified.push({ message, type }) },
+  };
   const run = (args: string) => {
     if (!handler) throw new Error("command not registered");
     return handler(args, ctx);
