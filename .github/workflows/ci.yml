@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  PI_EXTENSION_SDK_REF: pi-extension-sdk-v1.0.0
+  PI_EXTENSION_SDK_REF: pi-extension-sdk-v1.0.3
   PI_EXTENSION_SDK_API_VERSION: "1"
 
 jobs:
