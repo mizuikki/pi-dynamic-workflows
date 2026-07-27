@@ -1,6 +1,5 @@
 node_modules/
 dist/
-.pi/
 .env
 .DS_Store
 *.log
@@ -11,3 +10,9 @@ dist/
 scripts/verify-npm-install.sh
 __pycache__/
 .context/
+
+# Test
+.agents/
+.codex/
+.pi/
+.trellis/

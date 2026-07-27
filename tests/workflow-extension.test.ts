@@ -327,6 +327,7 @@ test("registers trellis_subagent on model_select when native extension is absent
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
     const harness = makeExtensionHarness({ cwd });
     await withFakeHomeAsync(home, async () => {
       const originalCwd = process.cwd();
@@ -350,12 +351,46 @@ test("registers trellis_subagent on model_select when native extension is absent
   }
 });
 
+test("disables the Trellis adapter for an unsupported project version", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-trellis-version-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-trellis-version-cwd-"));
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  try {
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(join(cwd, ".trellis"), { recursive: true });
+    writeFileSync(join(cwd, ".trellis", ".version"), "0.6.7\n", "utf-8");
+    const harness = makeExtensionHarness({ cwd });
+    console.warn = (message: unknown) => warnings.push(String(message));
+    await withFakeHomeAsync(home, async () => {
+      const originalCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      await harness.handlers.get("model_select")?.({ type: "model_select" }, harness.ctx);
+    });
+    assert.ok(warnings.includes("[trellis-adapter] disabled: requires Trellis project version 1.0.1"));
+    assert.equal(
+      harness.registeredTools.some((tool) => tool.name === "trellis_subagent"),
+      false,
+    );
+  } finally {
+    console.warn = originalWarn;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("trellis_subagent remains inactive after explicit deactivation", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-trellis-inactive-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-trellis-inactive-cwd-"));
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
     const harness = makeExtensionHarness({ cwd });
     await withFakeHomeAsync(home, async () => {
       const originalCwd = process.cwd();
@@ -387,6 +422,7 @@ test("skips trellis_subagent registration when tool already registered", async (
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
     const harness = makeExtensionHarness({
       cwd,
       registeredTools: [{ name: "trellis_subagent" } as ToolDefinition],

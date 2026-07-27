@@ -8,6 +8,7 @@ export {
   buildTrellisTaskContext,
   createTrellisContextLoader,
   hasNativeTrellisExtension,
+  hasSupportedTrellisProject,
   hasTrellisProject,
   isTrellisAgent,
   MAX_TRELLIS_MANIFEST_INDEX_BYTES,
@@ -21,6 +22,7 @@ export {
   shouldRegisterTrellisSubagentTool,
   toRepoRelativePath,
   trellisExtensionPathFilter,
+  trellisProjectVersion,
 } from "./adapters/trellis.js";
 export type {
   TrellisSubagentMode,

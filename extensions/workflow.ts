@@ -6,6 +6,8 @@ import {
   createWorkflowStorage,
   createWorkflowTool,
   hasRegisteredTrellisSubagentTool,
+  hasSupportedTrellisProject,
+  hasTrellisProject,
   installResultDelivery,
   installTaskPanel,
   installWorkflowEditor,
@@ -46,7 +48,11 @@ export default function extension(pi: ExtensionAPI) {
   // Optional Trellis adapter: read-only context injection + optional host tool
   // when the native Trellis extension is absent. Never owns create/start/archive
   // or phase management.
-  const trellisEnabled = shouldEnableTrellisAdapter(cwd, settings.trellisAdapter);
+  const trellisCompatible = hasSupportedTrellisProject(cwd);
+  if (hasTrellisProject(cwd) && !trellisCompatible) {
+    console.warn("[trellis-adapter] disabled: requires Trellis project version 1.0.1");
+  }
+  const trellisEnabled = trellisCompatible && shouldEnableTrellisAdapter(cwd, settings.trellisAdapter);
   const trellisContextLoader = trellisEnabled
     ? createTrellisContextLoader({
         enabled: settings.trellisAdapter?.enabled ?? "auto",
@@ -134,7 +140,7 @@ export default function extension(pi: ExtensionAPI) {
   const tryRegisterTrellisSubagent = (ctx?: ExtensionContext) => {
     if (ctx) latestHostCtx = ctx;
     if (trellisSubagentRegistered) return;
-    if (!shouldRegisterTrellisSubagentTool(cwd, settings.trellisAdapter)) return;
+    if (!trellisCompatible || !shouldRegisterTrellisSubagentTool(cwd, settings.trellisAdapter)) return;
     if (hasRegisteredTrellisSubagentTool(pi)) {
       console.warn("[trellis-subagent-tool] skipped: tool already registered (native Trellis or another extension)");
       return;
