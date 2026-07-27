@@ -67,9 +67,15 @@ Status, save, restart, and resume authorize a keyed summary before selecting one
 payload, then verify the immutable session identity again after decoding.
 
 Payloads can contain scripts, arguments, prompts, results, journals, errors,
-and compact tool history. Diagnostics therefore avoid payload values and full
-user-specific database paths. A background completion message points to
-`/workflows status <runId>` instead of exposing a filesystem path.
+compact tool history, and an optional canonical `executionPolicy`. The policy
+contains only explicit `agentTurnRetry` and `agentRunRetries` overrides. Host
+retry-policy snapshots and deprecated alias names are never persisted. A warm
+or cold resume keeps the explicit policy but samples a fresh host snapshot, so
+changing Pi settings does not leave a stale default embedded in a run.
+
+Diagnostics avoid payload values and full user-specific database paths. A
+background completion message points to `/workflows status <runId>` instead of
+exposing a filesystem path.
 
 ## Renewable fenced leases
 

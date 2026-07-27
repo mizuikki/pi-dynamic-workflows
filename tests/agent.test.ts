@@ -623,7 +623,7 @@ test("agent() in workflow returns runner result", async () => {
 test("agent() in workflow returns null for recoverable errors", async () => {
   const failer = {
     async run() {
-      throw new Error("recoverable agent error");
+      throw new Error("HTTP 503 service unavailable");
     },
   };
   let end:
@@ -642,7 +642,7 @@ test("agent() in workflow returns null for recoverable errors", async () => {
   );
   assert.equal(result.result, null);
   assert.equal(end?.result, null);
-  assert.equal(end?.error, "recoverable agent error");
+  assert.equal(end?.error, "HTTP 503 service unavailable");
   assert.equal(end?.errorCode, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
   assert.equal(end?.recoverable, true);
 });

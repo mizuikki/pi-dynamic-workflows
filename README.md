@@ -2,7 +2,7 @@
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 [![for Pi](https://img.shields.io/badge/for-Pi-7c3aed)](https://pi.dev)
-[![tests](https://img.shields.io/badge/tests-679%20passing-success)](#development)
+[![tests](https://img.shields.io/badge/tests-1013%20passing-success)](#development)
 
 > **Claude Code–style dynamic workflows for [Pi](https://pi.dev).**
 > Turn one prompt into a fleet of subagents that fan out in parallel, cross-check each other, and hand back a single synthesized answer.
@@ -25,8 +25,9 @@ pi install -l /absolute/path/to/pi-dynamic-workflows
 ```
 
 Then `/reload` in Pi. This extension requires the sibling private Pi fork with
-extension SDK API version `1` and model runtime API version `1`; upstream Pi is
-not a compatible host. Remove the project-local source with:
+extension SDK API version `1`, model runtime API version `1`, and retry-policy
+snapshot API version `1`; upstream Pi is not a compatible host. Remove the
+project-local source with:
 
 ```bash
 pi remove /absolute/path/to/pi-dynamic-workflows -l
@@ -265,11 +266,14 @@ The full guide — every global, agent option, `agentType` definitions, structur
 | `isolation: "worktree"` | Run in a throwaway git worktree for conflict-free parallel edits. |
 | `schema` | JSON Schema → the subagent returns a validated object. |
 | `label` / `phase` / `timeoutMs` | Display label / phase override / optional per-agent hard timeout. Omit `timeoutMs` for no hard timeout. |
-| `retries` | Retry attempts after a recoverable failure (timeout, connection failure, empty output) for this agent. Overrides the run-level `agentRetries`. Default `0`. |
+| `agentTurnRetry` | Partial override for Pi's retry of a failed provider turn inside the same child session (`enabled`, `maxRetries`, `baseDelayMs`). Unspecified fields inherit the current host policy. |
+| `agentRunRetries` | Additional whole-agent attempts after a recoverable failure. Overrides the run-level value. Accepts safe integers `0..3`; default `0`. The old `retries` name remains a deprecated alias. |
 
 By default, workflows do not set a run-wide token budget or per-agent hard timeout. Use the `workflow` tool's `tokenBudget` / `agentTimeoutMs`, per-phase budgets, or per-agent `timeoutMs` only when you want an explicit cap. A global fallback timeout can also be set in `~/.pi/workflows/settings.json` as `{ "defaultAgentTimeoutMs": 600000 }`; set it to `null` or omit it for no default hard timeout.
 
-For larger or flakier fan-outs, the `workflow` tool also accepts `concurrency` (max agents running at once, clamped to the runtime maximum of `16`) and `agentRetries` (retry attempts after a recoverable agent failure such as a timeout, connection failure, or empty output). Both can be defaulted in `~/.pi/workflows/settings.json` as `{ "defaultConcurrency": 4, "defaultAgentRetries": 2 }`; a per-run tool value overrides the default, and a per-agent `retries` overrides `agentRetries`. Retries default to `0` (off) unless configured or passed, and only recoverable failures retry — nonrecoverable errors still abort the run.
+For larger fan-outs, the `workflow` tool accepts `concurrency` (max agents running at once, clamped to the runtime maximum of `16`). Retry behavior has three distinct layers: Pi retries transient provider requests, Pi may retry a failed agent turn inside the same child session, and `agentRunRetries` recreates the entire child session after a recoverable workflow-agent failure. Provider instability belongs to the first two Pi-owned layers. Whole-agent retry defaults to `0`, must be explicitly set per run or per agent, and is **at-least-once**: failed attempts can leave worktree, command, or SharedStore side effects, and no rollback is promised. `agentRunRetries`, run-level `agentRetries`, and per-agent `retries` all require safe integers in `0..3`; fractions, negative values, unsafe integers, and values above `3` are rejected instead of clamped. The aliases remain deprecated, and supplying an alias together with its canonical name is an error. The retired `defaultAgentRetries` settings key is ignored with a warning rather than enabling implicit re-execution.
+
+`agentTurnRetry` is also explicit and partial. Its fields override the current Pi host agent-turn policy while provider-request retry settings remain host-owned. Every start, restart, and resume samples a fresh host retry-policy snapshot. Only the explicit canonical execution policy is saved with a run, so warm and cold resume preserve the user's overrides without freezing stale host defaults.
 
 By default, each workflow subagent runs in an in-memory session: the full transcript is discarded when the run ends, and only a compacted excerpt survives in the workflow run payload. Set `{ "persistAgentSessions": true }` in `~/.pi/workflows/settings.json` (or a project-level override, which wins) to persist every subagent transcript as a real pi session file in the standard sessions directory for the project (`~/.pi/agent/sessions/<encoded-cwd>/`), named `workflow:<runId> <agent label>` so it's identifiable in `/resume` and other session tooling. Sessions are keyed by the project cwd even when an agent runs in a temporary git worktree. Default is `false` (current behavior). Caveat: large fan-out runs create one session file per agent, which can clutter session pickers. Caveat: unlike the compacted run payload, the persisted transcript is full and untruncated, so anything a subagent reads into context — including secrets — lands on disk when this is enabled. If a session can't be created or written (permissions, disk full), that agent silently falls back to an in-memory session rather than aborting the run.
 

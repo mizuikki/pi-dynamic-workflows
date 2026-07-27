@@ -243,6 +243,7 @@ test("summary mapping contains no payload fields", () => {
   assert.equal(summary.hasScript, true);
   assert.equal("agents" in summary, false);
   assert.equal("script" in summary, false);
+  assert.equal("executionPolicy" in summary, false);
 });
 
 test("repository round-trips payload and lists summary-only data", async () => {
@@ -257,6 +258,53 @@ test("repository round-trips payload and lists summary-only data", async () => {
     assert.deepEqual(repository.load("run-1")?.journal, saved.journal);
     assert.equal(repository.getSummary("run-1")?.workflowName, saved.workflowName);
     repository.releaseRunLease(lease);
+    repository.close();
+  });
+});
+
+test("payload v1 omits absent policy and round-trips explicit canonical policy", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    const withoutLease = repository.acquireRunLease("without-policy", "new");
+    assert.ok(withoutLease);
+    const without = state("without-policy");
+    repository.save(without, withoutLease);
+    assert.equal(repository.load("without-policy")?.executionPolicy, undefined);
+
+    const withLease = repository.acquireRunLease("with-policy", "new");
+    assert.ok(withLease);
+    const withPolicy = state("with-policy");
+    withPolicy.executionPolicy = {
+      agentRunRetries: 2,
+      agentTurnRetry: { enabled: false, maxRetries: 1, baseDelayMs: 250 },
+    };
+    repository.save(withPolicy, withLease);
+    assert.deepEqual(repository.load("with-policy")?.executionPolicy, withPolicy.executionPolicy);
+    assert.equal("executionPolicy" in (repository.getSummary("with-policy") ?? {}), false);
+
+    repository.releaseRunLease(withoutLease);
+    repository.releaseRunLease(withLease);
+    repository.close();
+  });
+});
+
+test("payload v1 rejects non-canonical or invalid execution policy", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    for (const [runId, policy] of [
+      ["legacy", { agentRetries: 1 }],
+      ["fraction", { agentRunRetries: 1.5 }],
+      ["over-cap", { agentRunRetries: 4 }],
+      ["unknown", { unknown: true }],
+    ] as const) {
+      const lease = repository.acquireRunLease(runId, "new");
+      assert.ok(lease);
+      const invalid = state(runId);
+      invalid.executionPolicy = policy as never;
+      assert.throws(() => repository.save(invalid, lease), /execution policy|safe integer|between|supported/);
+      assert.equal(repository.getSummary(runId), null);
+      repository.releaseRunLease(lease);
+    }
     repository.close();
   });
 });

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
+import { type AssistantMessage, isRetryableAssistantError, type Model, type TextContent } from "@earendil-works/pi-ai";
 import {
   type CreateAgentSessionOptions,
   createAgentSession,
@@ -41,6 +41,11 @@ import {
   listAvailableModelSpecs as listAvailableModelSpecsCompat,
   type ModelAvailabilitySource,
 } from "./pi-compat.js";
+import {
+  type AgentTurnRetryOverride,
+  childRetrySettings,
+  type ImmutableHostRetryPolicySnapshot,
+} from "./retry-policy.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 import {
   applySubagentContext,
@@ -280,38 +285,12 @@ export function extractValidated<T>(text: string, schema: TSchema): T | undefine
   return undefined;
 }
 
-/**
- * The last assistant message's terminal metadata (stopReason/errorMessage). The pi
- * SDK does NOT throw provider usage/quota limits — it records them as an assistant
- * message with stopReason "error" and an errorMessage. This is the only place that
- * metadata is observable to the workflow layer.
- */
-export function lastAssistantError(messages: unknown[]): { stopReason?: string; errorMessage?: string } | undefined {
+function lastAssistantMessage(messages: unknown[]): AssistantMessage | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i] as Partial<AssistantMessage> | undefined;
-    if (message?.role !== "assistant") continue;
-    return { stopReason: message.stopReason, errorMessage: message.errorMessage };
+    if (message?.role === "assistant") return message as AssistantMessage;
   }
   return undefined;
-}
-
-/**
- * If the subagent's turn ended in a provider usage/quota/rate-limit error, throw a
- * PROVIDER_USAGE_LIMIT WorkflowError carrying the real provider message + reset hint.
- * Gated on stopReason === "error" so a successful turn whose text merely mentions
- * "rate limit" is never misclassified. recoverable:false so the run checkpoints
- * (paused) rather than being retried into the same wall or collapsed to a silent null.
- */
-export function throwIfProviderLimit(messages: unknown[], label?: string): void {
-  const err = lastAssistantError(messages);
-  if (err?.stopReason !== "error") return;
-  const { matched, resetHint } = classifyProviderLimit(err.errorMessage);
-  if (!matched) return;
-  throw new WorkflowError(
-    err.errorMessage ?? "Provider usage/quota limit reached",
-    WorkflowErrorCode.PROVIDER_USAGE_LIMIT,
-    { recoverable: false, agentLabel: label, resetHint },
-  );
 }
 
 /**
@@ -320,16 +299,27 @@ export function throwIfProviderLimit(messages: unknown[], label?: string): void 
  * cannot be repaired by retrying the same child session.
  */
 export function throwIfAssistantError(messages: unknown[], label?: string): void {
-  const err = lastAssistantError(messages);
-  if (err?.stopReason !== "error") return;
+  const assistant = lastAssistantMessage(messages);
+  if (!assistant || (assistant.stopReason !== "error" && assistant.stopReason !== "aborted")) return;
 
-  const message = err.errorMessage ?? "Subagent provider request failed";
-  const localProviderSetupError =
-    /tool profile is unavailable for the selected capability|provider route is unavailable for the current Pi session/i.test(
-      message,
-    );
+  const message = assistant.errorMessage ?? "Subagent provider request failed";
+  if (assistant.stopReason === "aborted") {
+    throw new WorkflowError(message, WorkflowErrorCode.WORKFLOW_ABORTED, {
+      recoverable: true,
+      agentLabel: label,
+    });
+  }
+
+  const { matched, resetHint } = classifyProviderLimit(message);
+  if (matched) {
+    throw new WorkflowError(message, WorkflowErrorCode.PROVIDER_USAGE_LIMIT, {
+      recoverable: false,
+      agentLabel: label,
+      resetHint,
+    });
+  }
   throw new WorkflowError(message, WorkflowErrorCode.AGENT_EXECUTION_ERROR, {
-    recoverable: !localProviderSetupError,
+    recoverable: isRetryableAssistantError(assistant),
     agentLabel: label,
   });
 }
@@ -355,9 +345,20 @@ export async function resolveStructuredOutput<T>(
   options: { maxSchemaRetries?: number; signal?: AbortSignal; label?: string },
   lastText: (messages: unknown[]) => string,
 ): Promise<T> {
+  throwIfAssistantError(session.messages, options.label);
   if (capture.called) return capture.value as T;
 
-  const maxRetries = Math.max(0, options.maxSchemaRetries ?? 2);
+  const maxRetries = options.maxSchemaRetries ?? 2;
+  if (!Number.isSafeInteger(maxRetries) || maxRetries < 0) {
+    throw new WorkflowError(
+      "maxSchemaRetries must be a non-negative safe integer",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      {
+        recoverable: false,
+        agentLabel: options.label,
+      },
+    );
+  }
   // Restrict to the schema tool so the only useful next action is calling it
   // (takes effect on the next prompt turn). Best-effort.
   try {
@@ -370,6 +371,7 @@ export async function resolveStructuredOutput<T>(
     await session.prompt(
       "You did not call the structured_output tool. Call structured_output now as your only action, with the required fields filled in. Do not write a prose answer.",
     );
+    throwIfAssistantError(session.messages, options.label);
   }
   if (capture.called) return capture.value as T;
 
@@ -380,10 +382,6 @@ export async function resolveStructuredOutput<T>(
     );
     return extracted;
   }
-
-  // A repair re-prompt can itself hit the provider limit. Surface that as the real
-  // (recoverable) cause instead of the misleading non-recoverable SCHEMA_NONCOMPLIANCE.
-  throwIfProviderLimit(session.messages, options.label);
 
   throw new WorkflowError(
     "Subagent did not produce valid structured_output after repair attempts",
@@ -482,6 +480,12 @@ export interface WorkflowAgentOptions {
   sessionId?: string;
   /** Additional extension path filters for child sessions (default: workflow only). */
   extensionPathFilters?: ExtensionPathFilter[];
+  /** Immutable host policy sampled once for the owning workflow execution. */
+  hostRetryPolicy?: ImmutableHostRetryPolicySnapshot;
+  /** Run-level child agent-turn override. */
+  agentTurnRetry?: AgentTurnRetryOverride;
+  /** Create a private child settings manager for each agent execution attempt. */
+  settingsManagerFactory?: (options: { cwd: string; agentDir: string; projectTrusted?: boolean }) => SettingsManager;
 }
 
 /**
@@ -651,6 +655,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * process.env — applied via a per-session tool_call rewrite.
    */
   env?: Record<string, string>;
+  /** Per-agent child agent-turn retry override. */
+  agentTurnRetry?: AgentTurnRetryOverride;
 }
 
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
@@ -669,6 +675,9 @@ export class WorkflowAgent {
   private readonly contextLoader?: SubagentContextLoader;
   private readonly sessionId?: string;
   private readonly extensionPathFilters: ExtensionPathFilter[];
+  private readonly hostRetryPolicy?: ImmutableHostRetryPolicySnapshot;
+  private readonly agentTurnRetry?: AgentTurnRetryOverride;
+  private readonly settingsManagerFactory?: WorkflowAgentOptions["settingsManagerFactory"];
   /** Host extension registry facade from the host session, when provided. */
   private readonly sharedRegistry?: ModelRegistry;
   /** Explicit execution runtime from constructor options, when provided. */
@@ -690,6 +699,16 @@ export class WorkflowAgent {
     this.contextLoader = options.contextLoader;
     this.sessionId = options.sessionId;
     this.extensionPathFilters = options.extensionPathFilters ?? [];
+    this.hostRetryPolicy = options.hostRetryPolicy;
+    this.agentTurnRetry = options.agentTurnRetry;
+    this.settingsManagerFactory = options.settingsManagerFactory;
+
+    if (this.settingsManagerFactory && this.sessionOptions.settingsManager) {
+      throw new Error("settingsManagerFactory conflicts with session.settingsManager");
+    }
+    if (this.hostRetryPolicy && this.sessionOptions.settingsManager) {
+      throw new Error("host retry policy cannot be applied to a shared session.settingsManager");
+    }
   }
 
   /** Host registry for resolution / provider copy: per-run > constructor. */
@@ -838,6 +857,7 @@ export class WorkflowAgent {
     const projectTrusted = this.projectTrusted;
     const settingsManager =
       providedSettingsManager ??
+      this.settingsManagerFactory?.({ cwd: runCwd, agentDir, projectTrusted }) ??
       SettingsManager.create(runCwd, agentDir, projectTrusted === undefined ? undefined : { projectTrusted });
     if (projectTrusted !== undefined && providedSettingsManager) {
       try {
@@ -932,6 +952,15 @@ export class WorkflowAgent {
       },
     });
 
+    // Session creation/binding may reload file-backed settings. Apply the
+    // execution-only policy after that boundary so it remains effective for
+    // the prompt while never being persisted.
+    if (this.hostRetryPolicy) {
+      settingsManager.applyOverrides({
+        retry: childRetrySettings(this.hostRetryPolicy, this.agentTurnRetry, options.agentTurnRetry),
+      });
+    }
+
     // Name the persisted session so it's identifiable in session pickers.
     // Skip when an injected session.sessionManager override won (tests/embedders).
     if (this.persistAgentSessions && !this.sessionOptions.sessionManager && options.sessionName) {
@@ -974,7 +1003,6 @@ export class WorkflowAgent {
       // than throwing; detect it here (before the schema/empty-text branches) so it
       // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
       // (schema path) or a silent empty-output null (non-schema path).
-      throwIfProviderLimit(session.messages, options.label);
       throwIfAssistantError(session.messages, options.label);
 
       if (options.schema) {

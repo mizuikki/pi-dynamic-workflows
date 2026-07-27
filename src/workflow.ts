@@ -13,10 +13,16 @@ import {
   loadAgentRegistry,
   resolveAgentType,
 } from "./agent-registry.js";
-import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_RETRIES, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
+import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+import {
+  type AgentTurnRetryOverride,
+  normalizeAgentTurnRetryOverride,
+  normalizeExecutionPolicy,
+  resolveAgentRunRetries,
+} from "./retry-policy.js";
 import { createAgentStoreTools, SharedStore } from "./shared-store.js";
 import { applySubagentContext } from "./subagent-context.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
@@ -78,8 +84,12 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    */
   agentRegistry?: AgentRegistry;
   concurrency?: number;
-  /** Retry attempts after a recoverable agent failure. Default 0. */
+  /** Additional whole-agent attempts after a recoverable failure. Default 0. */
+  agentRunRetries?: number;
+  /** @deprecated Use agentRunRetries. */
   agentRetries?: number;
+  /** Run-level partial override for Pi child agent-turn retry. */
+  agentTurnRetry?: AgentTurnRetryOverride;
   tokenBudget?: number | null;
   signal?: AbortSignal;
   /** Maximum number of agents allowed in this run. Default: 1000 */
@@ -184,8 +194,12 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   agentType?: string;
   /** Override timeout for this specific agent. null means no hard timeout. */
   timeoutMs?: number | null;
-  /** Retry attempts after a recoverable failure for this specific agent. */
+  /** Additional whole-agent attempts after a recoverable failure for this agent. */
+  agentRunRetries?: number;
+  /** @deprecated Use agentRunRetries. */
   retries?: number;
+  /** Per-agent partial override for Pi child agent-turn retry. */
+  agentTurnRetry?: AgentTurnRetryOverride;
 }
 
 /** Options for a human checkpoint() — a deterministic, journaled, replayable gate. */
@@ -273,6 +287,10 @@ export async function runWorkflow<T = unknown>(
   const agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
   const runId = options.runId ?? `run-${started.toString(36)}`;
   const baseCwd = options.cwd ?? process.cwd();
+  const executionPolicy = normalizeExecutionPolicy(options);
+  if (executionPolicy.agentTurnRetry && !options.hostRetryPolicy) {
+    throw new Error("agentTurnRetry requires a host retry policy snapshot");
+  }
   // Snapshot the agentType registry ONCE per run so two agent() calls can't
   // observe a mid-run edit (determinism); a later resume re-reads it.
   const agentRegistry = options.agentRegistry ?? loadAgentRegistry(baseCwd);
@@ -298,7 +316,8 @@ export async function runWorkflow<T = unknown>(
     firstMiss: Number.POSITIVE_INFINITY,
   };
 
-  const agentRunner = options.agent ?? new WorkflowAgent(options);
+  const agentRunner =
+    options.agent ?? new WorkflowAgent({ ...options, agentTurnRetry: executionPolicy.agentTurnRetry });
   const concurrency = normalizeConcurrency(
     options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
   );
@@ -348,6 +367,14 @@ export async function runWorkflow<T = unknown>(
 
   const agent = async (prompt: string, agentOptions: AgentOptions = {}) => {
     throwIfAborted();
+    const perAgentTurnRetry = normalizeAgentTurnRetryOverride(agentOptions.agentTurnRetry, "agent.agentTurnRetry");
+    if (perAgentTurnRetry && !options.hostRetryPolicy) {
+      throw new Error("agent.agentTurnRetry requires a host retry policy snapshot");
+    }
+    const retryAttempts = resolveAgentRunRetries(agentOptions.agentRunRetries, agentOptions.retries, {
+      aliasName: "retries",
+      fallback: executionPolicy.agentRunRetries ?? 0,
+    });
 
     // Check agent limit
     if (shared.agentCount >= maxAgents) {
@@ -482,7 +509,6 @@ export async function runWorkflow<T = unknown>(
 
     return limiter(async () => {
       const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : agentTimeoutMs;
-      const retryAttempts = normalizeAgentRetries(agentOptions.retries ?? options.agentRetries ?? 0);
       const maxAttempts = retryAttempts + 1;
 
       options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
@@ -556,6 +582,7 @@ export async function runWorkflow<T = unknown>(
                 tier: agentOptions.tier,
                 thinkingLevel: tierThinkingLevel,
                 modelRegistry: options.modelRegistry,
+                agentTurnRetry: perAgentTurnRetry,
                 toolNames: agentDef?.tools,
                 disallowedToolNames: agentDef?.disallowedTools,
                 // Per-agent store tools track this agent's writes by the
@@ -1248,11 +1275,6 @@ function estimateTokens(value: unknown): number {
 function normalizeConcurrency(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return 1;
   return Math.min(MAX_CONCURRENCY, Math.floor(value));
-}
-
-function normalizeAgentRetries(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return 0;
-  return Math.min(MAX_AGENT_RETRIES, Math.floor(value));
 }
 
 /**

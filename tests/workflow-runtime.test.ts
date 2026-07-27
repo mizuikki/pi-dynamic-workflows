@@ -6,6 +6,7 @@ import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { saveModelTierConfig } from "../src/model-tier-config.js";
+import { SharedStore } from "../src/shared-store.js";
 import { type JournalEntry, runWorkflow } from "../src/workflow.js";
 
 /** Agent runner that counts real invocations and echoes a per-call result. */
@@ -97,7 +98,7 @@ return a`,
           return calls === 1 ? "" : "ok";
         },
       },
-      agentRetries: 1,
+      agentRunRetries: 1,
       persistLogs: false,
       onAgentJournal: (entry) => journal.push(entry),
     },
@@ -109,9 +110,33 @@ return a`,
   assert.equal(journal.length, 1, "only the final success is journaled");
 });
 
-test("runWorkflow discards shared-store writes from failed retry attempts", async () => {
+test("runWorkflow rejects per-agent agentTurnRetry without a host retry policy snapshot", async () => {
+  let calls = 0;
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = { name: 'missing_retry_snapshot', description: 'missing retry snapshot' }
+const a = await agent('work', { label: 'a', agentTurnRetry: { enabled: false } })
+return a`,
+        {
+          agent: {
+            async run() {
+              calls++;
+              return "ok";
+            },
+          },
+          persistLogs: false,
+        },
+      ),
+    /agent\.agentTurnRetry requires a host retry policy snapshot/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("runWorkflow keeps failed-attempt store effects while journaling only success", async () => {
   let calls = 0;
   const journal: JournalEntry[] = [];
+  const sharedStore = new SharedStore();
   const result = await runWorkflow(
     `export const meta = { name: 'retry_store_cleanup', description: 'retry store cleanup' }
 const a = await agent('work', { label: 'a' })
@@ -135,7 +160,8 @@ return a`,
           return "ok";
         },
       },
-      agentRetries: 1,
+      agentRunRetries: 1,
+      sharedStore,
       persistLogs: false,
       onAgentJournal: (entry) => journal.push(entry),
     },
@@ -143,6 +169,8 @@ return a`,
 
   assert.equal(result.result, "ok");
   assert.equal(calls, 2);
+  assert.equal(sharedStore.get("failed-attempt"), 1, "whole-agent retries do not roll back side effects");
+  assert.equal(journal.length, 1, "only the successful attempt is journaled");
   assert.deepEqual(journal[0]?.storeDelta, {}, "only successful attempt writes should be journaled");
 });
 
@@ -161,7 +189,7 @@ return a`,
           return "";
         },
       },
-      agentRetries: 1,
+      agentRunRetries: 1,
       persistLogs: false,
       onLog: (message) => logs.push(message),
       onAgentJournal: (entry) => journal.push(entry),
@@ -196,7 +224,7 @@ return a`,
             throw new WorkflowError("hard stop", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
           },
         },
-        agentRetries: 2,
+        agentRunRetries: 2,
         persistLogs: false,
       },
     ),
@@ -205,11 +233,11 @@ return a`,
   assert.equal(calls, 1);
 });
 
-test("per-agent retries override run-level retries", async () => {
+test("per-agent agentRunRetries override run-level agentRunRetries", async () => {
   let calls = 0;
   const result = await runWorkflow(
     `export const meta = { name: 'agent_retry_override', description: 'override' }
-const a = await agent('work', { label: 'a', retries: 1 })
+const a = await agent('work', { label: 'a', agentRunRetries: 1 })
 return a`,
     {
       agent: {
@@ -218,13 +246,77 @@ return a`,
           return calls === 1 ? "" : "ok";
         },
       },
-      agentRetries: 0,
+      agentRunRetries: 0,
       persistLogs: false,
     },
   );
 
   assert.equal(result.result, "ok");
   assert.equal(calls, 2);
+});
+
+test("whole-agent retry defaults to zero and accounts for every attempted usage", async () => {
+  let calls = 0;
+  const result = await runWorkflow(
+    `export const meta = { name: 'zero_default', description: 'zero default' }
+return await agent('work', { label: 'a' })`,
+    {
+      agent: {
+        async run(_prompt: string, options: { onUsage?: (usage: AgentUsage) => void }) {
+          calls++;
+          options.onUsage?.({ input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12, cost: 0.01 });
+          return "";
+        },
+      },
+      persistLogs: false,
+    },
+  );
+  assert.equal(calls, 1);
+  assert.equal(result.result, null);
+  assert.equal(result.tokenUsage?.total, 12);
+  assert.equal(result.tokenUsage?.cost, 0.01);
+});
+
+test("whole-agent retries account for failed and successful attempts", async () => {
+  let calls = 0;
+  const result = await runWorkflow(
+    `export const meta = { name: 'attempt_usage', description: 'attempt usage' }
+return await agent('work', { label: 'a' })`,
+    {
+      agent: {
+        async run(_prompt: string, options: { onUsage?: (usage: AgentUsage) => void }) {
+          calls++;
+          options.onUsage?.({ input: 10, output: 2, cacheRead: 1, cacheWrite: 1, total: 12, cost: 0.01 });
+          return calls === 1 ? "" : "ok";
+        },
+      },
+      agentRunRetries: 1,
+      persistLogs: false,
+    },
+  );
+  assert.equal(calls, 2);
+  assert.equal(result.tokenUsage?.total, 24);
+  assert.equal(result.tokenUsage?.cost, 0.02);
+});
+
+test("invalid or conflicting retry inputs fail before the agent loop", async () => {
+  let calls = 0;
+  const agent = {
+    run: async () => {
+      calls++;
+      return "unexpected";
+    },
+  };
+  const script = `export const meta = { name: 'invalid_retry', description: 'invalid retry' }
+return await agent('work', { label: 'a' })`;
+  for (const value of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 4]) {
+    await assert.rejects(runWorkflow(script, { agent, agentRunRetries: value, persistLogs: false }), /must/);
+  }
+  await assert.rejects(
+    runWorkflow(script, { agent, agentRunRetries: 1, agentRetries: 1, persistLogs: false }),
+    /conflicts/,
+  );
+  assert.equal(calls, 0);
 });
 
 test("runWorkflow accumulates real per-agent usage (incl. cost + cache tokens)", async () => {
@@ -595,6 +687,30 @@ return { a, nested }`;
 
   assert.equal(result.agentCount, 2);
   assert.equal(result.result.nested.child, "ran:child task");
+});
+
+test("workflow() propagates explicit whole-agent retry policy to nested runs", async () => {
+  const calls = new Map<string, number>();
+  const child = `export const meta = { name: 'child_retry', description: 'c' }
+return await agent('child task', { label: 'c' })`;
+  const parent = `export const meta = { name: 'parent_retry', description: 'p' }
+await agent('parent task', { label: 'p' })
+return await workflow('child')`;
+  const result = await runWorkflow(parent, {
+    agent: {
+      async run(prompt: string) {
+        const count = (calls.get(prompt) ?? 0) + 1;
+        calls.set(prompt, count);
+        return prompt.includes("child task") && count === 1 ? "" : "ok";
+      },
+    },
+    agentRunRetries: 1,
+    persistLogs: false,
+    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
+  });
+  assert.equal(result.result, "ok");
+  assert.equal(calls.get("parent task"), 1);
+  assert.equal(calls.get("child task"), 2);
 });
 
 test("workflow() nesting is one level deep (second level throws)", async () => {

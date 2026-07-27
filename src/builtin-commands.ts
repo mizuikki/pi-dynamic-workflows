@@ -11,6 +11,7 @@ import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } f
 import { generateCodeReviewWorkflow, MAX_DIFF_CHARS } from "./code-review.js";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
 import { createPluginModelRuntime } from "./model-runtime.js";
+import { readRequiredHostRetryPolicy } from "./retry-policy.js";
 import { createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
@@ -89,10 +90,12 @@ async function runBuiltinWorkflow(
     onPhase: (title: string) => void;
   },
 ): Promise<WorkflowRunResult> {
+  const hostRetryPolicy = readRequiredHostRetryPolicy(ctx);
   if (options.manager) {
     await syncManagerFromContext(pi, options.manager, ctx);
     return options.manager.runSync(script, args, {
       ...(options.tools ? { tools: options.tools } : {}),
+      hostRetryPolicy,
       onPhase: options.onPhase,
     });
   }
@@ -106,6 +109,7 @@ async function runBuiltinWorkflow(
     modelRuntime,
     mainModel: currentModelSpec(ctx),
     currentThinkingLevel: pi.getThinkingLevel(),
+    hostRetryPolicy,
     onPhase: options.onPhase,
   });
 }

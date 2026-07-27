@@ -9,14 +9,12 @@ import {
 } from "../src/errors.js";
 
 describe("classifyProviderLimit", () => {
-  it("matches the documented provider usage/quota/rate-limit wordings", () => {
+  it("matches only documented account/subscription exhaustion wordings", () => {
     const cases = [
       "You have hit your ChatGPT usage limit (plus plan).",
       "Codex usage limit reached (plus plan). Resets in ~3h. Current premium: 5h 100%, weekly 42%.",
       "insufficient_quota",
       "You exceeded your current quota, please check your plan and billing details.",
-      "Error 429: too many requests",
-      "rate limit exceeded",
       "GoUsageLimitError",
     ];
     for (const text of cases) {
@@ -30,6 +28,8 @@ describe("classifyProviderLimit", () => {
       "TypeError: x is not a function",
       "agent exploded",
       "overloaded_error",
+      "Error 429: too many requests",
+      "rate limit exceeded",
       undefined,
     ]) {
       assert.equal(classifyProviderLimit(text).matched, false, `should not match: ${text}`);
@@ -59,6 +59,26 @@ describe("wrapError provider-limit classification", () => {
     const e = wrapError(new Error("overloaded_error: server is busy"));
     assert.equal(e.code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
     assert.equal(e.recoverable, true);
+  });
+
+  it("uses Pi's public classifier for transient throttling and transport failures", () => {
+    for (const message of [
+      "Error 429: too many requests",
+      "HTTP 503 service unavailable",
+      "getaddrinfo ENOTFOUND api.example",
+    ]) {
+      const e = wrapError(new Error(message));
+      assert.equal(e.code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+      assert.equal(e.recoverable, true, message);
+    }
+  });
+
+  it("does not retry unknown or configuration failures", () => {
+    for (const message of ["invalid API key", "model does not exist", "unexpected local failure"]) {
+      const e = wrapError(new Error(message));
+      assert.equal(e.code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+      assert.equal(e.recoverable, false, message);
+    }
   });
 
   it("passes an existing WorkflowError through unchanged", () => {

@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { readRequiredHostRetryPolicy } from "./retry-policy.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
@@ -70,12 +71,15 @@ export function registerSavedWorkflow(
       }
       try {
         ctx.ui.notify(`Starting /${wf.name}…`, "info");
+        const hostRetryPolicy = readRequiredHostRetryPolicy(ctx);
 
         let result: WorkflowRunResult;
         if (manager) {
           // Run through the WorkflowManager: background execution, visible in
           // /workflows TUI, task panel, pause/resume/stop support.
-          const { runId, promise } = manager.startInBackground(wf.script, parseCommandArgs(args, wf.parameters));
+          const { runId, promise } = manager.startInBackground(wf.script, parseCommandArgs(args, wf.parameters), {
+            hostRetryPolicy,
+          });
           ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: running (${runId})`);
           result = await promise;
         } else {
@@ -83,6 +87,7 @@ export function registerSavedWorkflow(
           result = await runWorkflow(wf.script, {
             cwd,
             args: parseCommandArgs(args, wf.parameters),
+            hostRetryPolicy,
             onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
           });
         }

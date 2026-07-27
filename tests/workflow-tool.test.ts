@@ -90,21 +90,33 @@ test("createWorkflowTool schema describes unbounded default timeout", () => {
   assert.match(description, /only when the user asks/i);
 });
 
-test("createWorkflowTool schema exposes concurrency and agentRetries", () => {
+test("createWorkflowTool schema exposes concurrency and canonical retry policy", () => {
   const tool = createWorkflowTool();
-  const parameters = tool.parameters as { properties?: Record<string, { description?: string }> };
+  const parameters = tool.parameters as {
+    properties?: Record<string, { description?: string; properties?: Record<string, { description?: string }> }>;
+  };
 
   assert.match(parameters.properties?.concurrency?.description ?? "", /Maximum concurrent agents/i);
-  assert.match(parameters.properties?.agentRetries?.description ?? "", /Retry attempts/i);
+  assert.match(parameters.properties?.agentTurnRetry?.description ?? "", /inherited in-session agent-turn retry/i);
+  assert.match(parameters.properties?.agentTurnRetry?.properties?.enabled?.description ?? "", /Enable or disable/i);
+  assert.match(parameters.properties?.agentTurnRetry?.properties?.maxRetries?.description ?? "", /Maximum in-session/i);
+  assert.match(
+    parameters.properties?.agentTurnRetry?.properties?.baseDelayMs?.description ?? "",
+    /Base backoff delay/i,
+  );
+  assert.match(parameters.properties?.agentRunRetries?.description ?? "", /whole-agent attempts/i);
+  assert.match(parameters.properties?.agentRetries?.description ?? "", /Deprecated alias/i);
 });
 
 test("createWorkflowTool promptGuidelines mention retry and concurrency controls", () => {
   const tool = createWorkflowTool();
   const all = tool.promptGuidelines.join(" ");
 
-  assert.match(all, /low concurrency/i);
-  assert.match(all, /agentRetries/i);
-  assert.match(all, /null handling/i);
+  assert.match(all, /provider instability/i);
+  assert.match(all, /agentTurnRetry/i);
+  assert.match(all, /inherited in-session agent-turn retry/i);
+  assert.match(all, /agentRunRetries/i);
+  assert.match(all, /at-least-once/i);
 });
 
 // ─── modelRoutingGuideline ──────────────────────────────────────────────────────
@@ -279,7 +291,7 @@ test("createWorkflowTool prepareArguments passes through args", () => {
       args?: unknown;
       maxAgents?: number;
       concurrency?: number;
-      agentRetries?: number;
+      agentRunRetries?: number;
     };
     const result = prepare({
       script: "export const meta = { name: 't', description: 't' }",
@@ -292,6 +304,95 @@ test("createWorkflowTool prepareArguments passes through args", () => {
     assert.deepEqual(result.args, { question: "test" });
     assert.equal(result.maxAgents, 5);
     assert.equal(result.concurrency, 2);
-    assert.equal(result.agentRetries, 1);
+    assert.equal(result.agentRunRetries, 1);
   }
+});
+
+test("workflow tool samples one host retry snapshot before starting a run", async () => {
+  let getterCalls = 0;
+  let starts = 0;
+  let receivedPolicy: unknown;
+  const manager = {
+    startInBackground: (_script: string, _args: unknown, options: { hostRetryPolicy?: unknown }) => {
+      starts++;
+      receivedPolicy = options.hostRetryPolicy;
+      return { runId: "run-1", promise: Promise.resolve() };
+    },
+    getModelRegistry: () => undefined,
+  } as unknown as import("../src/workflow-manager.js").WorkflowManager;
+  const tool = createWorkflowTool({ manager });
+  await tool.execute?.(
+    "call-1",
+    { script: "export const meta = { name: 't', description: 't' }; return agent('x')" },
+    undefined,
+    () => {},
+    {
+      getRetryPolicy: () => {
+        getterCalls++;
+        return {
+          agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 2000 },
+          providerRequest: { maxRetryDelayMs: 60000 },
+        };
+      },
+    } as never,
+  );
+  assert.equal(getterCalls, 1);
+  assert.equal(starts, 1);
+  assert.equal(Object.isFrozen(receivedPolicy), true);
+});
+
+test("workflow tool starts no child when the advertised host getter is missing", async () => {
+  let starts = 0;
+  const manager = {
+    startInBackground: () => {
+      starts++;
+      return { runId: "run-1", promise: Promise.resolve() };
+    },
+    getModelRegistry: () => undefined,
+  } as unknown as import("../src/workflow-manager.js").WorkflowManager;
+  const tool = createWorkflowTool({ manager });
+  await assert.rejects(
+    () =>
+      tool.execute?.(
+        "call-1",
+        { script: "export const meta = { name: 't', description: 't' }; return agent('x')" },
+        undefined,
+        () => {},
+        {} as never,
+      ) as Promise<unknown>,
+    /getter is unavailable/,
+  );
+  assert.equal(starts, 0);
+});
+
+test("concurrent workflow tool executions receive independent host snapshots", async () => {
+  const received: Array<{ agentTurn?: { maxRetries?: number } }> = [];
+  let getterCalls = 0;
+  const manager = {
+    startInBackground: (_script: string, _args: unknown, options: { hostRetryPolicy: { agentTurn: object } }) => {
+      received.push(options.hostRetryPolicy);
+      return { runId: `run-${received.length}`, promise: Promise.resolve() };
+    },
+    getModelRegistry: () => undefined,
+  } as unknown as import("../src/workflow-manager.js").WorkflowManager;
+  const tool = createWorkflowTool({ manager });
+  const ctx = {
+    getRetryPolicy: () => ({
+      agentTurn: { enabled: true, maxRetries: ++getterCalls, baseDelayMs: 2000 },
+      providerRequest: { maxRetryDelayMs: 60_000 },
+    }),
+  } as never;
+  const input = { script: "export const meta = { name: 't', description: 't' }; return agent('x')" };
+
+  await Promise.all([
+    tool.execute?.("call-1", input, undefined, () => {}, ctx),
+    tool.execute?.("call-2", input, undefined, () => {}, ctx),
+  ]);
+  assert.equal(getterCalls, 2);
+  assert.equal(received.length, 2);
+  assert.notEqual(received[0], received[1]);
+  assert.deepEqual(
+    received.map((policy) => policy.agentTurn?.maxRetries),
+    [1, 2],
+  );
 });

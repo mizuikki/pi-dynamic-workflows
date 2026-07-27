@@ -3,11 +3,9 @@ import { describe, it } from "node:test";
 import { Type } from "typebox";
 import {
   extractValidated,
-  lastAssistantError,
   resolveStructuredOutput,
   type StructuredSession,
   throwIfAssistantError,
-  throwIfProviderLimit,
 } from "../src/agent.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import type { StructuredOutputCapture } from "../src/structured-output.js";
@@ -124,58 +122,38 @@ describe("resolveStructuredOutput", () => {
       },
     );
   });
-});
 
-describe("lastAssistantError / throwIfProviderLimit", () => {
-  it("reads stopReason/errorMessage off the most recent assistant message", () => {
-    const messages = [
-      { role: "user", content: [] },
-      { role: "assistant", content: [], stopReason: "error", errorMessage: "boom" },
-    ];
-    assert.deepEqual(lastAssistantError(messages), { stopReason: "error", errorMessage: "boom" });
-  });
-
-  it("throws PROVIDER_USAGE_LIMIT only when stopReason is error AND the message matches a limit", () => {
-    assert.throws(
-      () =>
-        throwIfProviderLimit(
-          [
-            {
-              role: "assistant",
-              content: [],
-              stopReason: "error",
-              errorMessage: "usage limit reached. Resets in ~3h.",
-            },
-          ],
-          "lbl",
-        ),
+  it("does not extract stale JSON after a repair turn ends in an error", async () => {
+    const { session, capture } = makeSession();
+    session.prompt = async () => {
+      session.messages.push({
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "HTTP 503 service unavailable",
+      });
+    };
+    await assert.rejects(
+      () => resolveStructuredOutput(session, capture, Schema, opts, () => '{"word":"stale"}'),
       (err: unknown) => {
-        assert.equal((err as { code?: string }).code, WorkflowErrorCode.PROVIDER_USAGE_LIMIT);
-        assert.equal((err as { resetHint?: string }).resetHint, "Resets in ~3h");
-        assert.equal((err as { agentLabel?: string }).agentLabel, "lbl");
+        assert.equal((err as { code?: string }).code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+        assert.equal((err as { recoverable?: boolean }).recoverable, true);
         return true;
       },
     );
   });
 
-  it("does not throw for a successful turn whose text merely mentions 'rate limit'", () => {
-    assert.doesNotThrow(() =>
-      throwIfProviderLimit([
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "I handled the rate limit gracefully" }],
-          stopReason: "stop",
-        },
-      ]),
+  it("rejects invalid maxSchemaRetries without prompting", async () => {
+    const { session, capture, prompts } = makeSession();
+    await assert.rejects(
+      () => resolveStructuredOutput(session, capture, Schema, { maxSchemaRetries: 1.5 }, noText),
+      /non-negative safe integer/,
     );
+    assert.equal(prompts(), 0);
   });
+});
 
-  it("does not throw for a non-limit error turn", () => {
-    assert.doesNotThrow(() =>
-      throwIfProviderLimit([{ role: "assistant", content: [], stopReason: "error", errorMessage: "network blip" }]),
-    );
-  });
-
+describe("throwIfAssistantError", () => {
   it("preserves terminal local-provider setup errors instead of treating them as empty output", () => {
     assert.throws(
       () =>
@@ -221,15 +199,42 @@ describe("lastAssistantError / throwIfProviderLimit", () => {
     );
   });
 
-  it("keeps transient provider errors recoverable", () => {
+  it("keeps Pi-classified transient provider errors recoverable", () => {
     assert.throws(
       () =>
         throwIfAssistantError([
-          { role: "assistant", content: [], stopReason: "error", errorMessage: "temporary provider error" },
+          { role: "assistant", content: [], stopReason: "error", errorMessage: "HTTP 503 service unavailable" },
         ]),
       (err: unknown) => {
         assert.equal((err as { code?: string }).code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
         assert.equal((err as { recoverable?: boolean }).recoverable, true);
+        return true;
+      },
+    );
+  });
+
+  it("keeps unknown provider errors non-recoverable", () => {
+    assert.throws(
+      () =>
+        throwIfAssistantError([
+          { role: "assistant", content: [], stopReason: "error", errorMessage: "unexpected provider configuration" },
+        ]),
+      (err: unknown) => {
+        assert.equal((err as { code?: string }).code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+        assert.equal((err as { recoverable?: boolean }).recoverable, false);
+        return true;
+      },
+    );
+  });
+
+  it("maps an aborted assistant terminal message to WORKFLOW_ABORTED", () => {
+    assert.throws(
+      () =>
+        throwIfAssistantError([
+          { role: "assistant", content: [], stopReason: "aborted", errorMessage: "request was aborted" },
+        ]),
+      (err: unknown) => {
+        assert.equal((err as { code?: string }).code, WorkflowErrorCode.WORKFLOW_ABORTED);
         return true;
       },
     );

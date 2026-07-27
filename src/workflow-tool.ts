@@ -11,6 +11,7 @@ import {
   type WorkflowSnapshot,
 } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
+import { type AgentTurnRetryOverride, normalizeExecutionPolicy, readRequiredHostRetryPolicy } from "./retry-policy.js";
 import { parseWorkflowScript, type WorkflowRunResult } from "./workflow.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
@@ -101,12 +102,27 @@ const workflowToolSchema = Type.Object({
         "Maximum concurrent agents for this run. Clamped to the runtime maximum. Use when provider/transport stability matters.",
     }),
   ),
-  agentRetries: Type.Optional(
+  agentTurnRetry: Type.Optional(
+    Type.Object(
+      {
+        enabled: Type.Optional(
+          Type.Boolean({ description: "Enable or disable Pi's in-session agent-turn retry for this run." }),
+        ),
+        maxRetries: Type.Optional(Type.Number({ description: "Maximum in-session retries per agent turn." })),
+        baseDelayMs: Type.Optional(
+          Type.Number({ description: "Base backoff delay in milliseconds between agent-turn retries." }),
+        ),
+      },
+      { description: "Partial override for Pi's inherited in-session agent-turn retry policy for this run." },
+    ),
+  ),
+  agentRunRetries: Type.Optional(
     Type.Number({
       description:
-        "Retry attempts for recoverable agent failures such as timeout, connection failure, or empty assistant output. Default 0 unless configured.",
+        "Additional whole-agent attempts after recoverable failures. Default 0. At-least-once side effects are not rolled back.",
     }),
   ),
+  agentRetries: Type.Optional(Type.Number({ description: "Deprecated alias for agentRunRetries." })),
   agentTimeoutMs: Type.Optional(
     Type.Number({
       description:
@@ -127,6 +143,9 @@ export type WorkflowToolInput = {
   background?: boolean;
   maxAgents?: number;
   concurrency?: number;
+  agentTurnRetry?: AgentTurnRetryOverride;
+  agentRunRetries?: number;
+  /** @deprecated Use agentRunRetries. */
   agentRetries?: number;
   agentTimeoutMs?: number;
   tokenBudget?: number;
@@ -143,8 +162,6 @@ export interface WorkflowToolOptions {
   defaultAgentTimeoutMs?: number | null;
   /** Default max concurrent agents when no tool-level concurrency is passed. */
   defaultConcurrency?: number;
-  /** Default retry attempts after recoverable agent failures. */
-  defaultAgentRetries?: number;
   /** Current session model registry, used to list explicit Models in prompt guidance. */
   modelRegistry?: AvailableModelsSource;
   /** Auth-verified available model specs for prompt guidance. */
@@ -162,7 +179,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       concurrency: defaults.concurrency,
       loadSavedWorkflow: (name: string) => storage.load(name)?.script,
       defaultAgentTimeoutMs: defaults.agentTimeoutMs,
-      defaultAgentRetries: defaults.agentRetries,
     });
 
   const agentTypeGuidelineText = agentTypeGuideline(cwd);
@@ -191,7 +207,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
         "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
         "For workflow, every agent() call should include a unique short label option, 2-5 words, such as { label: 'repo inventory' } or { label: 'source modules' }; unique labels make live status and error reporting readable.",
-        "For workflow, use low concurrency and agentRetries for unstable provider/transport fan-out runs; retries apply only to recoverable agent failures and still require explicit null handling after exhaustion.",
+        "For workflow, agentTurnRetry partially overrides Pi's inherited in-session agent-turn retry policy for this run. Use it only when the user explicitly asks to change turn retry behavior; it does not retry an entire agent() call.",
+        "For workflow, provider instability is handled by Pi's in-session retry policy. agentRunRetries recreates the whole child session, defaults to 0, and has at-least-once side effects with no rollback; use it only when explicitly appropriate and check null after exhaustion.",
         "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted. Check for nulls before synthesizing conclusions.",
         "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",
         "For workflow, the default quality shape for fan-out work is finder -> verify -> merge: run one agent per angle or work-unit (in parallel), pass each candidate finding through verify() and drop the unconfirmed, then a single synthesis agent that de-duplicates, ranks by confidence/severity, and caps the output. If nothing survives verification, return an empty result and say so rather than padding.",
@@ -213,6 +230,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const script = normalizeWorkflowScript(params.script);
       const parsed = parseWorkflowScript(script);
+      const hostRetryPolicy = readRequiredHostRetryPolicy(ctx);
 
       // checkpoint() reaches the human only on a UI-bearing foreground run; a
       // background run is detached, so checkpoint() falls back to its headless
@@ -233,7 +251,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         const { runId } = manager.startInBackground(script, params.args, {
           maxAgents: params.maxAgents,
           concurrency: params.concurrency,
-          agentRetries: params.agentRetries,
+          agentTurnRetry: params.agentTurnRetry,
+          agentRunRetries: params.agentRunRetries,
+          hostRetryPolicy,
           agentTimeoutMs: params.agentTimeoutMs,
           tokenBudget: params.tokenBudget,
         });
@@ -260,7 +280,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         result = await manager.runSync(script, params.args, {
           maxAgents: params.maxAgents,
           concurrency: params.concurrency,
-          agentRetries: params.agentRetries,
+          agentTurnRetry: params.agentTurnRetry,
+          agentRunRetries: params.agentRunRetries,
+          hostRetryPolicy,
           agentTimeoutMs: params.agentTimeoutMs,
           tokenBudget: params.tokenBudget,
           confirm,
@@ -352,7 +374,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
 function resolveWorkflowToolDefaults(
   options: WorkflowToolOptions,
   cwd: string,
-): { agentTimeoutMs: number | null; concurrency?: number; agentRetries: number } {
+): { agentTimeoutMs: number | null; concurrency?: number } {
   const settings = loadWorkflowSettings({ cwd });
   return {
     agentTimeoutMs:
@@ -360,7 +382,6 @@ function resolveWorkflowToolDefaults(
         ? options.defaultAgentTimeoutMs
         : (settings.defaultAgentTimeoutMs ?? null),
     concurrency: options.defaultConcurrency ?? options.concurrency ?? settings.defaultConcurrency,
-    agentRetries: options.defaultAgentRetries ?? settings.defaultAgentRetries ?? 0,
   };
 }
 
@@ -387,7 +408,13 @@ function normalizeWorkflowToolArgs(args: unknown): WorkflowToolInput {
   if (!args || typeof args !== "object") throw new Error("workflow requires an object argument with a script string");
   const value = args as Record<string, unknown>;
   if (typeof value.script !== "string") throw new Error("workflow requires `script` to be a string");
-  return { ...value, script: normalizeWorkflowScript(value.script) } as WorkflowToolInput;
+  const policy = normalizeExecutionPolicy(value);
+  return {
+    ...value,
+    script: normalizeWorkflowScript(value.script),
+    ...policy,
+    agentRetries: undefined,
+  } as WorkflowToolInput;
 }
 
 function normalizeWorkflowScript(script: string): string {

@@ -149,7 +149,7 @@ test(
 );
 
 test(
-  "manager forwards exec concurrency and agentRetries to runtime",
+  "manager forwards exec concurrency and agentRunRetries to runtime",
   withTempCwd(async (cwd) => {
     let active = 0;
     let maxActive = 0;
@@ -157,7 +157,6 @@ test(
     const manager = new WorkflowManager({
       cwd,
       concurrency: 8,
-      defaultAgentRetries: 0,
       agent: {
         async run(prompt: string) {
           active++;
@@ -174,16 +173,16 @@ test(
 const xs = await parallel(['a','b'].map((p) => () => agent(p, { label: p })))
 return xs`;
 
-    const result = await manager.runSync(script, undefined, { concurrency: 1, agentRetries: 1 });
+    const result = await manager.runSync(script, undefined, { concurrency: 1, agentRunRetries: 1 });
 
     assert.deepEqual(result.result, ["ok:a", "ok:b"]);
     assert.equal(maxActive, 1, "exec concurrency should override the manager default");
-    assert.deepEqual([...callsByPrompt.values()], [2, 2], "exec agentRetries should be forwarded");
+    assert.deepEqual([...callsByPrompt.values()], [2, 2], "exec agentRunRetries should be forwarded");
   }),
 );
 
 test(
-  "manager defaultAgentRetries applies when run options omit agentRetries",
+  "manager ignores legacy defaultAgentRetries when run options omit agentRunRetries",
   withTempCwd(async (cwd) => {
     let calls = 0;
     const manager = new WorkflowManager({
@@ -195,12 +194,43 @@ test(
           return calls === 1 ? "" : "ok";
         },
       },
-    });
+    } as ConstructorParameters<typeof WorkflowManager>[0] & { defaultAgentRetries: number });
 
     const result = await manager.runSync(oneAgentScript);
 
-    assert.equal((result.result as { a: unknown }).a, "ok");
-    assert.equal(calls, 2);
+    assert.equal((result.result as { a: unknown }).a, null);
+    assert.equal(calls, 1);
+  }),
+);
+
+test(
+  "manager persists only explicit canonical execution policy",
+  withTempCwd(async (cwd) => {
+    let calls = 0;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run() {
+          calls++;
+          return calls === 1 ? "" : "ok";
+        },
+      },
+    });
+    await manager.runSync(oneAgentScript, undefined, {
+      agentRetries: 1,
+      agentTurnRetry: { enabled: false, maxRetries: 1 },
+      hostRetryPolicy: {
+        agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
+        providerRequest: { maxRetryDelayMs: 30_000 },
+      },
+    });
+    const summary = manager.listRuns()[0];
+    assert.ok(summary);
+    assert.equal("executionPolicy" in summary, false);
+    assert.deepEqual(manager.loadRun(summary.runId)?.executionPolicy, {
+      agentTurnRetry: { enabled: false, maxRetries: 1 },
+      agentRunRetries: 1,
+    });
   }),
 );
 
@@ -242,7 +272,7 @@ test(
       cwd,
       agent: {
         async run() {
-          throw new Error("agent exploded");
+          throw new Error("HTTP 503 service unavailable");
         },
       },
     });
@@ -253,7 +283,7 @@ test(
     const run = summary ? manager.loadRun(summary.runId) : null;
     const agent = run?.agents[0];
     assert.equal(agent?.status, "error");
-    assert.equal(agent?.error, "agent exploded");
+    assert.equal(agent?.error, "HTTP 503 service unavailable");
     assert.equal(agent?.errorCode, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
     assert.equal(agent?.recoverable, true);
   }),
@@ -995,6 +1025,48 @@ test(
     // Verify persistence was updated to completed
     const persisted = manager.listRuns().find((r) => r.runId === runId);
     assert.equal(persisted?.status, "completed", "persistence should reflect completed status");
+  }),
+);
+
+test(
+  "cold-start resume reuses explicit policy while accepting a fresh host snapshot",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run() {
+          return "ok";
+        },
+      },
+    });
+    const runId = "cold-start-policy-1";
+    seedRun(cwd, {
+      runId,
+      workflowName: "cold_policy",
+      script: oneAgentScript,
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      executionPolicy: { agentTurnRetry: { enabled: false, baseDelayMs: 250 }, agentRunRetries: 1 },
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    assert.equal(
+      await manager.resume(runId, {
+        hostRetryPolicy: {
+          agentTurn: { enabled: true, maxRetries: 7, baseDelayMs: 900 },
+          providerRequest: { timeoutMs: 5000, maxRetries: 4, maxRetryDelayMs: 30_000 },
+        },
+      }),
+      true,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(manager.loadRun(runId)?.executionPolicy, {
+      agentTurnRetry: { enabled: false, baseDelayMs: 250 },
+      agentRunRetries: 1,
+    });
   }),
 );
 

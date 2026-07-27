@@ -145,6 +145,21 @@ export {
   listAvailableModelSpecs as listAvailableModelSpecsCompat,
   listAvailableModelSpecsAsync as listAvailableModelSpecsAsyncCompat,
 } from "./pi-compat.js";
+export type {
+  AgentTurnRetryOverride,
+  ImmutableHostRetryPolicySnapshot,
+  WorkflowExecutionPolicy,
+} from "./retry-policy.js";
+export {
+  childRetrySettings,
+  normalizeAgentRunRetries,
+  normalizeAgentTurnRetryOverride,
+  normalizeExecutionPolicy,
+  normalizeHostRetryPolicySnapshot,
+  readRequiredHostRetryPolicy,
+  resolveAgentRunRetries,
+  resolveAgentTurnRetry,
+} from "./retry-policy.js";
 export type { DeleteRunResult, PersistedRunState, RunStatus, WorkflowRunSummary } from "./run-persistence.js";
 export { generateRunId, RUN_LEASE_HEARTBEAT_INTERVAL_MS, RUN_LEASE_STALE_AFTER_MS } from "./run-persistence.js";
 export {
