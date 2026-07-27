@@ -66,10 +66,10 @@ printf '%s\n' 'Package smoke passed.'
 UPSTREAM_DIR="$TEMP_ROOT/upstream-host"
 mkdir -p "$UPSTREAM_DIR"
 npm install --ignore-scripts --legacy-peer-deps --prefix "$UPSTREAM_DIR" \
-  "@earendil-works/pi-agent-core@0.81.1" \
-  "@earendil-works/pi-ai@0.81.1" \
-  "@earendil-works/pi-coding-agent@0.81.1" \
-  "@earendil-works/pi-tui@0.81.1" \
+  "@earendil-works/pi-agent-core@0.82.1" \
+  "@earendil-works/pi-ai@0.82.1" \
+  "@earendil-works/pi-coding-agent@0.82.1" \
+  "@earendil-works/pi-tui@0.82.1" \
   "typebox" \
   "$TARBALL" >/dev/null
 cat > "$UPSTREAM_DIR/verify-upstream-host.mjs" <<'EOF'
