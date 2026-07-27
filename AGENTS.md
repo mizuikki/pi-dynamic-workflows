@@ -4,9 +4,11 @@
   are wildcard peers and `file:../pi/packages/...` development dependencies
   only. Pi product versions do not define extension compatibility. Do not add
   Pi SDK packages to `dependencies` or import Pi source paths.
-- The extension factory must preflight `ExtensionAPI.extensionSdkApiVersion`
-  and `ExtensionAPI.modelRuntimeApiVersion` before registering tools or
-  commands. Do not silently fall back to upstream Pi.
+- The extension factory must preflight `ExtensionAPI.extensionSdkApiVersion`,
+  `ExtensionAPI.modelRuntimeApiVersion`, and
+  `ExtensionAPI.retryPolicySnapshotApiVersion` before registering tools or
+  commands. All three currently require version `1`. Do not silently fall back
+  to upstream Pi.
 - Local extension installation uses `pi install -l <absolute-source-path>` and
   `pi remove <absolute-source-path> -l`. Do not document registry installation
   or add publishing automation.
