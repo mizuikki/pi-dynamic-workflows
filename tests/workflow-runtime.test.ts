@@ -110,6 +110,29 @@ return a`,
   assert.equal(journal.length, 1, "only the final success is journaled");
 });
 
+test("runWorkflow rejects per-agent agentTurnRetry without a host retry policy snapshot", async () => {
+  let calls = 0;
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = { name: 'missing_retry_snapshot', description: 'missing retry snapshot' }
+const a = await agent('work', { label: 'a', agentTurnRetry: { enabled: false } })
+return a`,
+        {
+          agent: {
+            async run() {
+              calls++;
+              return "ok";
+            },
+          },
+          persistLogs: false,
+        },
+      ),
+    /agent\.agentTurnRetry requires a host retry policy snapshot/,
+  );
+  assert.equal(calls, 0);
+});
+
 test("runWorkflow keeps failed-attempt store effects while journaling only success", async () => {
   let calls = 0;
   const journal: JournalEntry[] = [];
@@ -147,6 +170,7 @@ return a`,
   assert.equal(result.result, "ok");
   assert.equal(calls, 2);
   assert.equal(sharedStore.get("failed-attempt"), 1, "whole-agent retries do not roll back side effects");
+  assert.equal(journal.length, 1, "only the successful attempt is journaled");
   assert.deepEqual(journal[0]?.storeDelta, {}, "only successful attempt writes should be journaled");
 });
 

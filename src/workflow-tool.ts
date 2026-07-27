@@ -103,11 +103,18 @@ const workflowToolSchema = Type.Object({
     }),
   ),
   agentTurnRetry: Type.Optional(
-    Type.Object({
-      enabled: Type.Optional(Type.Boolean()),
-      maxRetries: Type.Optional(Type.Number()),
-      baseDelayMs: Type.Optional(Type.Number()),
-    }),
+    Type.Object(
+      {
+        enabled: Type.Optional(
+          Type.Boolean({ description: "Enable or disable Pi's in-session agent-turn retry for this run." }),
+        ),
+        maxRetries: Type.Optional(Type.Number({ description: "Maximum in-session retries per agent turn." })),
+        baseDelayMs: Type.Optional(
+          Type.Number({ description: "Base backoff delay in milliseconds between agent-turn retries." }),
+        ),
+      },
+      { description: "Partial override for Pi's inherited in-session agent-turn retry policy for this run." },
+    ),
   ),
   agentRunRetries: Type.Optional(
     Type.Number({
@@ -200,6 +207,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
         "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
         "For workflow, every agent() call should include a unique short label option, 2-5 words, such as { label: 'repo inventory' } or { label: 'source modules' }; unique labels make live status and error reporting readable.",
+        "For workflow, agentTurnRetry partially overrides Pi's inherited in-session agent-turn retry policy for this run. Use it only when the user explicitly asks to change turn retry behavior; it does not retry an entire agent() call.",
         "For workflow, provider instability is handled by Pi's in-session retry policy. agentRunRetries recreates the whole child session, defaults to 0, and has at-least-once side effects with no rollback; use it only when explicitly appropriate and check null after exhaustion.",
         "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted. Check for nulls before synthesizing conclusions.",
         "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",

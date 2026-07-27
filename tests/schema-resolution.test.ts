@@ -3,11 +3,9 @@ import { describe, it } from "node:test";
 import { Type } from "typebox";
 import {
   extractValidated,
-  lastAssistantError,
   resolveStructuredOutput,
   type StructuredSession,
   throwIfAssistantError,
-  throwIfProviderLimit,
 } from "../src/agent.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import type { StructuredOutputCapture } from "../src/structured-output.js";
@@ -155,56 +153,7 @@ describe("resolveStructuredOutput", () => {
   });
 });
 
-describe("lastAssistantError / throwIfProviderLimit", () => {
-  it("reads stopReason/errorMessage off the most recent assistant message", () => {
-    const messages = [
-      { role: "user", content: [] },
-      { role: "assistant", content: [], stopReason: "error", errorMessage: "boom" },
-    ];
-    assert.deepEqual(lastAssistantError(messages), { stopReason: "error", errorMessage: "boom" });
-  });
-
-  it("throws PROVIDER_USAGE_LIMIT only when stopReason is error AND the message matches a limit", () => {
-    assert.throws(
-      () =>
-        throwIfProviderLimit(
-          [
-            {
-              role: "assistant",
-              content: [],
-              stopReason: "error",
-              errorMessage: "usage limit reached. Resets in ~3h.",
-            },
-          ],
-          "lbl",
-        ),
-      (err: unknown) => {
-        assert.equal((err as { code?: string }).code, WorkflowErrorCode.PROVIDER_USAGE_LIMIT);
-        assert.equal((err as { resetHint?: string }).resetHint, "Resets in ~3h");
-        assert.equal((err as { agentLabel?: string }).agentLabel, "lbl");
-        return true;
-      },
-    );
-  });
-
-  it("does not throw for a successful turn whose text merely mentions 'rate limit'", () => {
-    assert.doesNotThrow(() =>
-      throwIfProviderLimit([
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "I handled the rate limit gracefully" }],
-          stopReason: "stop",
-        },
-      ]),
-    );
-  });
-
-  it("does not throw for a non-limit error turn", () => {
-    assert.doesNotThrow(() =>
-      throwIfProviderLimit([{ role: "assistant", content: [], stopReason: "error", errorMessage: "network blip" }]),
-    );
-  });
-
+describe("throwIfAssistantError", () => {
   it("preserves terminal local-provider setup errors instead of treating them as empty output", () => {
     assert.throws(
       () =>

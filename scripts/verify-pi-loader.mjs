@@ -16,5 +16,5 @@ if (result.errors.length > 0 || matching.length !== 1) {
     const error = entry.error;
     return error instanceof Error ? (error.stack ?? error.message) : String(error);
   });
-  throw new Error(details.join("; ") || `expected the requested extension once, loaded ${matching.length} matches`);
+  throw new Error([...details, `requested extension match count: ${matching.length} (expected 1)`].join("; "));
 }

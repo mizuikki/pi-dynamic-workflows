@@ -285,46 +285,12 @@ export function extractValidated<T>(text: string, schema: TSchema): T | undefine
   return undefined;
 }
 
-/**
- * The last assistant message's terminal metadata (stopReason/errorMessage). The pi
- * SDK does NOT throw provider usage/quota limits — it records them as an assistant
- * message with stopReason "error" and an errorMessage. This is the only place that
- * metadata is observable to the workflow layer.
- */
-export function lastAssistantError(messages: unknown[]): { stopReason?: string; errorMessage?: string } | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i] as Partial<AssistantMessage> | undefined;
-    if (message?.role !== "assistant") continue;
-    return { stopReason: message.stopReason, errorMessage: message.errorMessage };
-  }
-  return undefined;
-}
-
 function lastAssistantMessage(messages: unknown[]): AssistantMessage | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i] as Partial<AssistantMessage> | undefined;
     if (message?.role === "assistant") return message as AssistantMessage;
   }
   return undefined;
-}
-
-/**
- * If the subagent's turn ended in a provider usage/quota/rate-limit error, throw a
- * PROVIDER_USAGE_LIMIT WorkflowError carrying the real provider message + reset hint.
- * Gated on stopReason === "error" so a successful turn whose text merely mentions
- * "rate limit" is never misclassified. recoverable:false so the run checkpoints
- * (paused) rather than being retried into the same wall or collapsed to a silent null.
- */
-export function throwIfProviderLimit(messages: unknown[], label?: string): void {
-  const err = lastAssistantError(messages);
-  if (err?.stopReason !== "error") return;
-  const { matched, resetHint } = classifyProviderLimit(err.errorMessage);
-  if (!matched) return;
-  throw new WorkflowError(
-    err.errorMessage ?? "Provider usage/quota limit reached",
-    WorkflowErrorCode.PROVIDER_USAGE_LIMIT,
-    { recoverable: false, agentLabel: label, resetHint },
-  );
 }
 
 /**

@@ -92,9 +92,18 @@ test("createWorkflowTool schema describes unbounded default timeout", () => {
 
 test("createWorkflowTool schema exposes concurrency and canonical retry policy", () => {
   const tool = createWorkflowTool();
-  const parameters = tool.parameters as { properties?: Record<string, { description?: string }> };
+  const parameters = tool.parameters as {
+    properties?: Record<string, { description?: string; properties?: Record<string, { description?: string }> }>;
+  };
 
   assert.match(parameters.properties?.concurrency?.description ?? "", /Maximum concurrent agents/i);
+  assert.match(parameters.properties?.agentTurnRetry?.description ?? "", /inherited in-session agent-turn retry/i);
+  assert.match(parameters.properties?.agentTurnRetry?.properties?.enabled?.description ?? "", /Enable or disable/i);
+  assert.match(parameters.properties?.agentTurnRetry?.properties?.maxRetries?.description ?? "", /Maximum in-session/i);
+  assert.match(
+    parameters.properties?.agentTurnRetry?.properties?.baseDelayMs?.description ?? "",
+    /Base backoff delay/i,
+  );
   assert.match(parameters.properties?.agentRunRetries?.description ?? "", /whole-agent attempts/i);
   assert.match(parameters.properties?.agentRetries?.description ?? "", /Deprecated alias/i);
 });
@@ -104,6 +113,8 @@ test("createWorkflowTool promptGuidelines mention retry and concurrency controls
   const all = tool.promptGuidelines.join(" ");
 
   assert.match(all, /provider instability/i);
+  assert.match(all, /agentTurnRetry/i);
+  assert.match(all, /inherited in-session agent-turn retry/i);
   assert.match(all, /agentRunRetries/i);
   assert.match(all, /at-least-once/i);
 });

@@ -368,6 +368,9 @@ export async function runWorkflow<T = unknown>(
   const agent = async (prompt: string, agentOptions: AgentOptions = {}) => {
     throwIfAborted();
     const perAgentTurnRetry = normalizeAgentTurnRetryOverride(agentOptions.agentTurnRetry, "agent.agentTurnRetry");
+    if (perAgentTurnRetry && !options.hostRetryPolicy) {
+      throw new Error("agent.agentTurnRetry requires a host retry policy snapshot");
+    }
     const retryAttempts = resolveAgentRunRetries(agentOptions.agentRunRetries, agentOptions.retries, {
       aliasName: "retries",
       fallback: executionPolicy.agentRunRetries ?? 0,
