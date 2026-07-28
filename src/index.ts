@@ -97,6 +97,32 @@ export {
   WorkflowErrorCode,
   wrapError,
 } from "./errors.js";
+export type {
+  KeelAgentRole,
+  KeelContextToolBinding,
+  KeelContextToolCapability,
+  KeelHostBridgeV1,
+  KeelInvocationLoadInput,
+  KeelLifecycleDelivery,
+  KeelLoadedInvocationV1,
+  KeelPiHostCapability,
+  KeelPiHostDescriptor,
+  KeelPiInvocationV1,
+  KeelPiLifecycleObservation,
+  KeelPiSourceReference,
+  KeelPiTerminalOutcome,
+} from "./keel-host-contract.js";
+export {
+  createKeelPiHostDescriptor,
+  KEEL_CONTEXT_TOOL_CAPABILITIES,
+  KEEL_PI_HOST_ABI,
+  KEEL_PI_HOST_BRIDGE_SCHEMA_VERSION,
+  KEEL_PI_HOST_DESCRIPTOR_SCHEMA_VERSION,
+  KEEL_PI_INVOCATION_SCHEMA_VERSION,
+  KEEL_PI_LIFECYCLE_OBSERVATION_SCHEMA_VERSION,
+  KEEL_REQUIRED_HOST_CAPABILITIES,
+  validateKeelHostBridge,
+} from "./keel-host-contract.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export {
@@ -174,6 +200,7 @@ export type { SubagentContext, SubagentContextLoader } from "./subagent-context.
 export {
   applySubagentContext,
   commandAlreadySetsEnv,
+  mergeSubagentContexts,
   mergeSubagentEnv,
   noopSubagentContextLoader,
   prependEnvExports,
