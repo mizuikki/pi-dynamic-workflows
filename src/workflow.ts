@@ -614,7 +614,7 @@ export async function runWorkflow<T = unknown>(
                 // Only skip when this run pre-applied context for the resume hash.
                 // Keeps constructor-level loaders working for custom agent runners.
                 // Pass env separately so nested bash still gets TRELLIS_CONTEXT_ID.
-                ...(options.contextLoader
+                ...(loadedContext
                   ? { skipContextLoading: true as const, ...(loadedEnv ? { env: loadedEnv } : {}) }
                   : {}),
                 model: modelSpec,

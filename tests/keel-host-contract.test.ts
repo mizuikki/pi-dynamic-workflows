@@ -89,6 +89,42 @@ test("descriptor factory advertises the versioned Keel capabilities with caller 
   );
 });
 
+test("runtime enum validation rejects coercible non-string values", async () => {
+  const stringLikeDistribution = { toString: () => "vendored" };
+  assert.throws(
+    () =>
+      createKeelPiHostDescriptor({
+        revision: "6b29c9e1a2f09fee6e041fb5e239ae664f06c005",
+        distribution: stringLikeDistribution as never,
+      }),
+    (error) => error instanceof WorkflowError && error.code === WorkflowErrorCode.KEEL_HOST_CONTRACT_ERROR,
+  );
+
+  let calls = 0;
+  const stringLikeRole = { toString: () => "keel-implement" };
+  const { bridge } = recordingBridge({
+    loaded: () => ({
+      ...loadedInvocation(),
+      invocation: { ...loadedInvocation().invocation, role: stringLikeRole },
+    }),
+  });
+  await assert.rejects(
+    () =>
+      runWorkflow(SCRIPT, {
+        keelHost: bridge,
+        agent: {
+          async run() {
+            calls++;
+            return "unexpected";
+          },
+        },
+        persistLogs: false,
+      }),
+    (error) => error instanceof WorkflowError && error.code === WorkflowErrorCode.KEEL_HOST_CONTRACT_ERROR,
+  );
+  assert.equal(calls, 0);
+});
+
 test("configured malformed bridge fails before child execution", async () => {
   let calls = 0;
   const { bridge } = recordingBridge();
@@ -185,6 +221,25 @@ test("live invocation merges context, injects only bound tools, and emits one lo
   assert.equal(terminal?.kind === "terminal" ? terminal.outcome.status : undefined, "succeeded");
 });
 
+test("Keel-only context reaches the runner without being loaded twice", async () => {
+  const { bridge } = recordingBridge();
+  await runWorkflow(SCRIPT, {
+    keelHost: bridge,
+    agent: {
+      async run(prompt: string, options: any) {
+        assert.equal(prompt, "keel context\n\ndo work");
+        assert.deepEqual(options.env, {
+          KEEL_CONTEXT_SNAPSHOT_ID: "snapshot-1",
+          SHARED: "keel",
+        });
+        assert.equal(options.skipContextLoading, true);
+        return "done";
+      },
+    },
+    persistLogs: false,
+  });
+});
+
 test("disallowed and colliding Keel context tools fail before child execution", async () => {
   for (const loaded of [
     () => ({
@@ -214,6 +269,32 @@ test("disallowed and colliding Keel context tools fail before child execution", 
     );
     assert.equal(calls, 0);
   }
+});
+
+test("invalid Keel context tools report the full definition failure", async () => {
+  const { bridge } = recordingBridge({
+    loaded: () => ({
+      ...loadedInvocation(),
+      contextTools: [
+        {
+          capability: "context.read",
+          tool: { ...contextTool(), execute: undefined },
+        },
+      ],
+    }),
+  });
+  await assert.rejects(
+    () =>
+      runWorkflow(SCRIPT, {
+        keelHost: bridge,
+        agent: { async run() {} },
+        persistLogs: false,
+      }),
+    (error) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.KEEL_HOST_CONTRACT_ERROR &&
+      error.message === "Keel context-tool binding context.read is not a valid tool definition",
+  );
 });
 
 test("cached replay redelivers stable identities and a changed snapshot invalidates the cache", async () => {

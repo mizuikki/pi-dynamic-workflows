@@ -182,7 +182,10 @@ function normalizeDescriptor(value: unknown): KeelPiHostDescriptor {
   ) {
     throw contractError("Keel host package version is malformed");
   }
-  if (!["maintained-fork-checkout", "upstream-checkout", "vendored"].includes(String(distribution))) {
+  if (
+    typeof distribution !== "string" ||
+    !["maintained-fork-checkout", "upstream-checkout", "vendored"].includes(distribution)
+  ) {
     throw contractError("Keel host source distribution is malformed");
   }
   if (!Array.isArray(value.capabilities) || value.capabilities.length > 64) {
@@ -248,7 +251,7 @@ function normalizeInvocation(value: unknown): KeelPiInvocationV1 {
   ] as const) {
     if (!isStableId(value[key])) throw contractError(`Keel invocation ${key} is malformed`);
   }
-  if (!["keel-research", "keel-implement", "keel-check"].includes(String(value.role))) {
+  if (typeof value.role !== "string" || !["keel-research", "keel-implement", "keel-check"].includes(value.role)) {
     throw contractError("Keel invocation role is malformed");
   }
   if (
@@ -340,7 +343,7 @@ function normalizeContextTools(value: unknown, invocation: KeelPiInvocationV1): 
       typeof binding.tool.description !== "string" ||
       !("parameters" in binding.tool)
     ) {
-      throw contractError(`Keel context-tool binding ${capability} has no valid tool name`);
+      throw contractError(`Keel context-tool binding ${capability} is not a valid tool definition`);
     }
     const name = binding.tool.name.trim();
     if (name !== binding.tool.name) {
