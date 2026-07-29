@@ -22,6 +22,7 @@ import { Check, Convert } from "typebox/value";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
 import { applyToolPolicy } from "./agent-registry.js";
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
+import type { KeelPiInvocationV1 } from "./keel-host-contract.js";
 import {
   copyRegisteredProviders,
   createPluginModelRuntime,
@@ -644,6 +645,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   sessionId?: string;
   /** agentType name for context loaders (e.g. Trellis jsonl mapping). */
   agentType?: string;
+  /** Validated Keel invocation identity for opt-in host integrations. */
+  keelInvocation?: KeelPiInvocationV1;
   /**
    * When true, skip constructor/per-run context loaders. Used when the caller
    * (workflow.ts) already applied context before computing the resume hash.

@@ -28,6 +28,27 @@ export type SubagentContextLoader = (args: {
 /** Default loader: leave prompts and instructions unchanged. */
 export const noopSubagentContextLoader: SubagentContextLoader = async () => undefined;
 
+/** Compose context contributions in order. Later environment entries take precedence. */
+export function mergeSubagentContexts(...contexts: Array<SubagentContext | undefined>): SubagentContext | undefined {
+  const present = contexts.filter((context): context is SubagentContext => context !== undefined);
+  if (!present.length) return undefined;
+  const promptPrefix = present
+    .map((context) => context.promptPrefix?.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const instructions = present
+    .map((context) => context.instructions?.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const env: Record<string, string> = {};
+  for (const context of present) Object.assign(env, context.env);
+  return {
+    ...(promptPrefix ? { promptPrefix } : {}),
+    ...(instructions ? { instructions } : {}),
+    ...(Object.keys(env).length ? { env } : {}),
+  };
+}
+
 /** Merge loader output into a concrete prompt + instructions pair. */
 export function applySubagentContext(
   prompt: string,

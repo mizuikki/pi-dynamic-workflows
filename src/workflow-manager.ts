@@ -12,6 +12,7 @@ import type {
 import type { WorkflowAgent, WorkflowAgentOptions } from "./agent.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
+import type { KeelHostBridgeV1 } from "./keel-host-contract.js";
 import {
   type AgentTurnRetryOverride,
   type ImmutableHostRetryPolicySnapshot,
@@ -131,6 +132,8 @@ export interface WorkflowManagerOptions {
   projectTrusted?: boolean;
   /** Optional subagent context loader (e.g. Trellis read-only task context). */
   contextLoader?: WorkflowAgentOptions["contextLoader"];
+  /** Optional versioned Keel host integration, reattached by the host on resume. */
+  keelHost?: KeelHostBridgeV1;
   /** Extra extension path filters for child sessions. */
   extensionPathFilters?: WorkflowAgentOptions["extensionPathFilters"];
   /** Internal test seam. Production always uses the project-bound SQLite repository. */
@@ -167,6 +170,7 @@ export class WorkflowManager extends EventEmitter {
   private persistAgentSessions: boolean;
   private projectTrusted?: boolean;
   private contextLoader?: WorkflowAgentOptions["contextLoader"];
+  private keelHost?: KeelHostBridgeV1;
   private extensionPathFilters?: WorkflowAgentOptions["extensionPathFilters"];
   private leaseHeartbeatIntervalMs: number;
   private leaseStaleAfterMs: number;
@@ -187,6 +191,7 @@ export class WorkflowManager extends EventEmitter {
     this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.projectTrusted = options.projectTrusted;
     this.contextLoader = options.contextLoader;
+    this.keelHost = options.keelHost;
     this.extensionPathFilters = options.extensionPathFilters;
     this.persistenceFactory = options.persistenceFactory ?? createRunPersistence;
     this.leaseHeartbeatIntervalMs = options.leaseHeartbeatIntervalMs ?? RUN_LEASE_HEARTBEAT_INTERVAL_MS;
@@ -303,6 +308,10 @@ export class WorkflowManager extends EventEmitter {
 
   setContextLoader(loader: WorkflowAgentOptions["contextLoader"] | undefined): void {
     this.contextLoader = loader;
+  }
+
+  setKeelHost(bridge: KeelHostBridgeV1 | undefined): void {
+    this.keelHost = bridge;
   }
 
   setExtensionPathFilters(filters: WorkflowAgentOptions["extensionPathFilters"] | undefined): void {
@@ -535,6 +544,7 @@ export class WorkflowManager extends EventEmitter {
         persistAgentSessions: this.persistAgentSessions,
         projectTrusted: this.projectTrusted,
         contextLoader: this.contextLoader,
+        keelHost: this.keelHost,
         extensionPathFilters: this.extensionPathFilters,
         hostRetryPolicy,
         agentTurnRetry: managed.executionPolicy?.agentTurnRetry,

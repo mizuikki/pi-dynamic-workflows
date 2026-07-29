@@ -29,6 +29,8 @@ export enum WorkflowErrorCode {
   AGENT_EXECUTION_ERROR = "AGENT_EXECUTION_ERROR",
   /** Run state persistence failed. */
   PERSISTENCE_ERROR = "PERSISTENCE_ERROR",
+  /** The optional Keel host bridge or one of its values is incompatible. */
+  KEEL_HOST_CONTRACT_ERROR = "KEEL_HOST_CONTRACT_ERROR",
   /** Unknown error. */
   UNKNOWN = "UNKNOWN",
 }

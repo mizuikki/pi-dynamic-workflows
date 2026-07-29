@@ -15,6 +15,15 @@ import {
 } from "./agent-registry.js";
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
+import {
+  type KeelHostBridgeV1,
+  type KeelLoadedInvocationV1,
+  type KeelPiInvocationV1,
+  loadKeelAgentInvocation,
+  observeKeelAgentStarted,
+  observeKeelAgentTerminal,
+  validateKeelHostBridge,
+} from "./keel-host-contract.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 import {
@@ -24,7 +33,7 @@ import {
   resolveAgentRunRetries,
 } from "./retry-policy.js";
 import { createAgentStoreTools, SharedStore } from "./shared-store.js";
-import { applySubagentContext } from "./subagent-context.js";
+import { applySubagentContext, mergeSubagentContexts, type SubagentContext } from "./subagent-context.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
@@ -76,6 +85,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   mainModel?: string;
   /** The session's current thinking level; tier configs inherit from this when unspecified. */
   currentThinkingLevel?: string;
+  /** Optional versioned Keel host integration. Omit for the legacy workflow path. */
+  keelHost?: KeelHostBridgeV1;
   /**
    * Named subagent definitions for `agent({ agentType })`. Snapshotted once per
    * run for determinism. Defaults to scanning `.pi/agents` (project) +
@@ -288,6 +299,7 @@ export async function runWorkflow<T = unknown>(
   const runId = options.runId ?? `run-${started.toString(36)}`;
   const baseCwd = options.cwd ?? process.cwd();
   const executionPolicy = normalizeExecutionPolicy(options);
+  if (options.keelHost) validateKeelHostBridge(options.keelHost);
   if (executionPolicy.agentTurnRetry && !options.hostRetryPolicy) {
     throw new Error("agentTurnRetry requires a host retry policy snapshot");
   }
@@ -449,22 +461,40 @@ export async function runWorkflow<T = unknown>(
     shared.agentCount++;
     const label = requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount);
 
+    const keelSource = { workflowRunId: runId, callIndex } as const;
+    let loadedKeel: KeelLoadedInvocationV1 | undefined;
+    if (options.keelHost) {
+      loadedKeel = await loadKeelAgentInvocation(options.keelHost, {
+        source: keelSource,
+        label,
+        ...(assignedPhase ? { phase: assignedPhase } : {}),
+        ...(agentOptions.agentType ? { agentType: agentOptions.agentType } : {}),
+        cwd: baseCwd,
+        prompt,
+        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+      });
+    }
+
     // Apply optional context loaders (e.g. Trellis) before hashing so promptPrefix
     // participates in resume identity. The agent runner skips re-loading.
     let agentPrompt = prompt;
     let contextInstructions: string | undefined;
     let loadedEnv: Record<string, string> | undefined;
+    let genericContext: SubagentContext | undefined;
     if (options.contextLoader) {
-      const loadedContext = await options.contextLoader({
+      genericContext = await options.contextLoader({
         cwd: baseCwd,
         agentType: agentOptions.agentType,
         prompt,
         sessionId: options.sessionId,
       });
+    }
+    const loadedContext = mergeSubagentContexts(genericContext, loadedKeel?.context);
+    if (loadedContext) {
       const applied = applySubagentContext(prompt, undefined, loadedContext);
       agentPrompt = applied.prompt;
       contextInstructions = applied.instructions;
-      loadedEnv = loadedContext?.env;
+      loadedEnv = loadedContext.env;
     }
 
     const callHash = hashAgentCall(
@@ -474,7 +504,7 @@ export async function runWorkflow<T = unknown>(
       agentOptions,
       agentDefinitionKey(agentDef),
       requestedIsolation,
-      canonicalAgentCallContext(contextInstructions, loadedEnv),
+      canonicalAgentCallContext(contextInstructions, loadedEnv, loadedKeel?.invocation),
     );
     // Store delta key: callIndex alone is NOT run-unique. A nested workflow()
     // call (see workflowFn below) shares this run's SharedStore instance but
@@ -495,6 +525,12 @@ export async function runWorkflow<T = unknown>(
     const hashMatches = cached != null && cached.hash === callHash;
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
+      if (options.keelHost && loadedKeel) {
+        await observeKeelAgentStarted(options.keelHost, loadedKeel, keelSource, "cached_replay");
+        await observeKeelAgentTerminal(options.keelHost, loadedKeel, keelSource, "cached_replay", {
+          status: "succeeded",
+        });
+      }
       options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
       options.onAgentEnd?.({ label, phase: assignedPhase, result: cached.result, tokens: 0, model: displayModel });
       // Apply this agent's write delta so live agents later in the run see a
@@ -511,6 +547,9 @@ export async function runWorkflow<T = unknown>(
       const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : agentTimeoutMs;
       const maxAttempts = retryAttempts + 1;
 
+      if (options.keelHost && loadedKeel) {
+        await observeKeelAgentStarted(options.keelHost, loadedKeel, keelSource, "live");
+      }
       options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
 
       // Optional per-agent worktree isolation (deterministic name -> stable resume keys).
@@ -575,7 +614,7 @@ export async function runWorkflow<T = unknown>(
                 // Only skip when this run pre-applied context for the resume hash.
                 // Keeps constructor-level loaders working for custom agent runners.
                 // Pass env separately so nested bash still gets TRELLIS_CONTEXT_ID.
-                ...(options.contextLoader
+                ...(loadedContext
                   ? { skipContextLoading: true as const, ...(loadedEnv ? { env: loadedEnv } : {}) }
                   : {}),
                 model: modelSpec,
@@ -589,7 +628,11 @@ export async function runWorkflow<T = unknown>(
                 // run-unique deltaKey so the delta can be journaled and replayed
                 // correctly on resume, even when a nested workflow() run shares
                 // this store concurrently with the parent run.
-                systemTools: createAgentStoreTools(store, deltaKey),
+                systemTools: [
+                  ...createAgentStoreTools(store, deltaKey),
+                  ...(loadedKeel?.contextTools?.map((binding) => binding.tool) ?? []),
+                ],
+                ...(loadedKeel ? { keelInvocation: loadedKeel.invocation } : {}),
                 cwd: runCwd,
                 onModelResolved: (id: string) => {
                   displayModel = id;
@@ -624,6 +667,11 @@ export async function runWorkflow<T = unknown>(
               result,
               storeDelta: store.commitDelta(deltaKey),
             });
+            if (options.keelHost && loadedKeel) {
+              await observeKeelAgentTerminal(options.keelHost, loadedKeel, keelSource, "live", {
+                status: "succeeded",
+              });
+            }
             options.onAgentEnd?.({
               label,
               phase: assignedPhase,
@@ -635,9 +683,18 @@ export async function runWorkflow<T = unknown>(
             return result;
           } catch (error) {
             store.commitDelta(deltaKey);
-            if (options.signal?.aborted) throw error;
+            if (options.signal?.aborted) {
+              if (options.keelHost && loadedKeel) {
+                await observeKeelAgentTerminal(options.keelHost, loadedKeel, keelSource, "live", {
+                  status: "cancelled",
+                  reason: "workflow aborted",
+                });
+              }
+              throw error;
+            }
 
             const workflowError = wrapError(error, { agentLabel: label });
+            if (workflowError.code === WorkflowErrorCode.KEEL_HOST_CONTRACT_ERROR) throw workflowError;
             logger.error(`agent ${label} attempt ${attempt}/${maxAttempts} failed: ${workflowError.message}`);
             const tokens = recordTokens(null);
 
@@ -646,6 +703,15 @@ export async function runWorkflow<T = unknown>(
                 `agent "${label}" attempt ${attempt}/${maxAttempts} failed: ${workflowError.code} ${workflowError.message}; retrying`,
               );
               continue;
+            }
+
+            if (options.keelHost && loadedKeel) {
+              await observeKeelAgentTerminal(options.keelHost, loadedKeel, keelSource, "live", {
+                status: "failed",
+                code: workflowError.code,
+                message: workflowError.message,
+                recoverable: workflowError.recoverable,
+              });
             }
 
             options.onAgentEnd?.({
@@ -1182,11 +1248,13 @@ function isTrellisSharedCwdAgent(agentType: string | undefined): boolean {
 type AgentCallContextIdentity = {
   instructions?: string;
   env?: Record<string, string>;
+  keelInvocation?: KeelPiInvocationV1;
 };
 
 function canonicalAgentCallContext(
   instructions: string | undefined,
   env: Record<string, string> | undefined,
+  keelInvocation: KeelPiInvocationV1 | undefined,
 ): AgentCallContextIdentity | undefined {
   const normalizedInstructions = instructions?.trim() || undefined;
   const normalizedEnv = env
@@ -1196,10 +1264,13 @@ function canonicalAgentCallContext(
           .sort(([left], [right]) => left.localeCompare(right)),
       )
     : undefined;
-  if (!normalizedInstructions && (!normalizedEnv || Object.keys(normalizedEnv).length === 0)) return undefined;
+  if (!normalizedInstructions && (!normalizedEnv || Object.keys(normalizedEnv).length === 0) && !keelInvocation) {
+    return undefined;
+  }
   return {
     ...(normalizedInstructions ? { instructions: normalizedInstructions } : {}),
     ...(normalizedEnv && Object.keys(normalizedEnv).length > 0 ? { env: normalizedEnv } : {}),
+    ...(keelInvocation ? { keelInvocation } : {}),
   };
 }
 
