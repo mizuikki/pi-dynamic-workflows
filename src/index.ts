@@ -225,7 +225,7 @@ export type {
   WorkflowRunOptions,
   WorkflowRunResult,
 } from "./workflow.js";
-export { parseWorkflowScript, runWorkflow } from "./workflow.js";
+export { assertStructuredOutputEnabled, parseWorkflowScript, runWorkflow } from "./workflow.js";
 export { registerWorkflowCommands } from "./workflow-commands.js";
 export {
   assertSupportedNodeRuntime,
@@ -274,9 +274,13 @@ export type {
 export {
   getWorkflowProjectSettingsPath,
   getWorkflowSettingsPath,
+  isWorkflowStructuredOutputEnabled,
   loadWorkflowSettings,
   saveWorkflowSettings,
   saveWorkflowSettingsForCwd,
+  structuredOutputDisabledGuidance,
+  WORKFLOW_STRUCTURED_OUTPUT_OPT_IN,
+  WORKFLOW_STRUCTURED_OUTPUT_SETTINGS_PATH,
 } from "./workflow-settings.js";
 export type { WorkflowToolInput, WorkflowToolOptions } from "./workflow-tool.js";
 export { backgroundStartedText, createWorkflowTool } from "./workflow-tool.js";

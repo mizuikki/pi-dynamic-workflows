@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { Model } from "@earendil-works/pi-ai";
 import { WorkflowManager } from "../src/workflow-manager.js";
+import { saveWorkflowSettings } from "../src/workflow-settings.js";
 import { backgroundStartedText, createWorkflowTool, modelRoutingGuideline } from "../src/workflow-tool.js";
+import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 /** Minimal fake ModelRegistry, matching the shape the PR's existing tests use. */
 function fakeRegistry(models: Array<{ provider: string; id: string }>) {
@@ -73,6 +78,34 @@ test("createWorkflowTool promptGuidelines mention model routing", () => {
   assert.ok(all.includes("opts.tier"), "should mention opts.tier");
   assert.ok(all.includes("opts.model"), "should mention opts.model");
   assert.ok(all.includes("small") || all.includes("medium") || all.includes("big"), "should mention tier names");
+});
+
+test("createWorkflowTool guidance follows the merged structured-output setting", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-guidance-cwd-"));
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-guidance-home-"));
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const disabled = createWorkflowTool({ cwd }).promptGuidelines.join(" ");
+      assert.match(disabled, /structured output is disabled by default/i);
+      assert.match(disabled, /opts\.schema is ignored/i);
+      assert.match(disabled, /do not dereference that result as a schema-shaped object/i);
+      assert.match(disabled, /loopUntilDry\(\).*retry\(\).*gate\(\)/i);
+      assert.match(disabled, /verify\(\).*refuse/i);
+
+      saveWorkflowSettings({ structuredOutputEnabled: true });
+      const enabled = createWorkflowTool({ cwd }).promptGuidelines.join(" ");
+      assert.match(enabled, /structured output is enabled/i);
+      assert.match(enabled, /opts\.schema.*validated object/i);
+      assert.match(enabled, /verify\([^)]*\).*judgePanel\([^)]*\).*completenessCheck\([^)]*\)/i);
+
+      saveWorkflowSettings({ structuredOutputEnabled: false }, { cwd, scope: "project" });
+      const projectDisabled = createWorkflowTool({ cwd }).promptGuidelines.join(" ");
+      assert.match(projectDisabled, /structured output is disabled by default/i);
+    });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("createWorkflowTool promptGuidelines keep budget and timeout unbounded by default", () => {
@@ -339,6 +372,41 @@ test("workflow tool samples one host retry snapshot before starting a run", asyn
   assert.equal(getterCalls, 1);
   assert.equal(starts, 1);
   assert.equal(Object.isFrozen(receivedPolicy), true);
+});
+
+test("workflow tool passes the merged structured-output snapshot to the manager", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-tool-cap-cwd-"));
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-tool-cap-home-"));
+  let received: boolean | undefined;
+  try {
+    await withFakeHomeAsync(home, async () => {
+      saveWorkflowSettings({ structuredOutputEnabled: true });
+      const manager = {
+        startInBackground: (_script: string, _args: unknown, options: { structuredOutputEnabled?: boolean }) => {
+          received = options.structuredOutputEnabled;
+          return { runId: "run-cap", promise: Promise.resolve() };
+        },
+        getModelRegistry: () => undefined,
+      } as unknown as WorkflowManager;
+      const tool = createWorkflowTool({ cwd, manager });
+      await tool.execute?.(
+        "cap-call",
+        { script: "export const meta = { name: 'cap', description: 'cap' }; return agent('x')" },
+        undefined,
+        () => {},
+        {
+          getRetryPolicy: () => ({
+            agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 2000 },
+            providerRequest: { maxRetryDelayMs: 60_000 },
+          }),
+        } as never,
+      );
+    });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+  assert.equal(received, true);
 });
 
 test("workflow tool starts no child when the advertised host getter is missing", async () => {

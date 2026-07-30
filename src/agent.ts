@@ -485,6 +485,8 @@ export interface WorkflowAgentOptions {
   hostRetryPolicy?: ImmutableHostRetryPolicySnapshot;
   /** Run-level child agent-turn override. */
   agentTurnRetry?: AgentTurnRetryOverride;
+  /** Explicit workflow capability snapshot; omitted means structured output is off. */
+  structuredOutputEnabled?: boolean;
   /** Create a private child settings manager for each agent execution attempt. */
   settingsManagerFactory?: (options: { cwd: string; agentDir: string; projectTrusted?: boolean }) => SettingsManager;
 }
@@ -579,6 +581,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    */
   sessionName?: string;
   schema?: TSchemaDef;
+  /** Explicit workflow capability snapshot; omitted means structured output is off. */
+  structuredOutputEnabled?: boolean;
   tools?: ToolDefinition[];
   instructions?: string;
   signal?: AbortSignal;
@@ -614,8 +618,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   /**
    * Restrict the subagent's coding tools to these names (an agentType
    * definition's `tools` allowlist). Undefined = all coding tools. The
-   * structured_output tool is always added after this filter, so a schema
-   * still works under a restrictive allowlist.
+   * enabled structured_output tool is added after this filter, so an enabled
+   * schema still works under a restrictive allowlist.
    */
   toolNames?: string[];
   /** Remove these coding-tool names after the allowlist (an agentType `disallowedTools` denylist). */
@@ -680,6 +684,7 @@ export class WorkflowAgent {
   private readonly extensionPathFilters: ExtensionPathFilter[];
   private readonly hostRetryPolicy?: ImmutableHostRetryPolicySnapshot;
   private readonly agentTurnRetry?: AgentTurnRetryOverride;
+  private readonly structuredOutputEnabled: boolean;
   private readonly settingsManagerFactory?: WorkflowAgentOptions["settingsManagerFactory"];
   /** Host extension registry facade from the host session, when provided. */
   private readonly sharedRegistry?: ModelRegistry;
@@ -704,6 +709,7 @@ export class WorkflowAgent {
     this.extensionPathFilters = options.extensionPathFilters ?? [];
     this.hostRetryPolicy = options.hostRetryPolicy;
     this.agentTurnRetry = options.agentTurnRetry;
+    this.structuredOutputEnabled = options.structuredOutputEnabled === true;
     this.settingsManagerFactory = options.settingsManagerFactory;
 
     if (this.settingsManagerFactory && this.sessionOptions.settingsManager) {
@@ -792,6 +798,11 @@ export class WorkflowAgent {
   ): Promise<AgentRunResult<TSchemaDef>> {
     const capture: StructuredOutputCapture<any> = { called: false, value: undefined };
     const runCwd = options.cwd ?? this.cwd;
+    const requestedSchema = options.schema;
+    const structuredOutputEnabled = options.structuredOutputEnabled ?? this.structuredOutputEnabled;
+    const effectiveSchema = structuredOutputEnabled === true ? requestedSchema : undefined;
+    const effectiveOptions =
+      effectiveSchema === requestedSchema ? options : ({ ...options, schema: undefined } as AgentRunOptions<undefined>);
 
     // User/custom extras only. Built-in coding tools come from the SDK session
     // (bound to runCwd). System + schema tools are appended AFTER policy so they
@@ -800,8 +811,8 @@ export class WorkflowAgent {
     const systemTools = options.systemTools ?? [];
     const systemToolNames = systemTools.map((tool) => tool.name).filter(Boolean);
     const filteredUserCustomTools = applyToolPolicy(userCustomTools, options.toolNames, options.disallowedToolNames);
-    const schemaTool = options.schema
-      ? (createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition)
+    const schemaTool = effectiveSchema
+      ? (createStructuredOutputTool({ schema: effectiveSchema, capture }) as unknown as ToolDefinition)
       : undefined;
     const customTools: ToolDefinition[] = [
       ...filteredUserCustomTools,
@@ -811,9 +822,9 @@ export class WorkflowAgent {
     const sessionToolAllowlist = resolveSessionToolAllowlist({
       toolNames: options.toolNames,
       systemToolNames,
-      includeStructuredOutput: Boolean(options.schema),
+      includeStructuredOutput: Boolean(effectiveSchema),
     });
-    // Denylist must not strip SharedStore / structured_output (system tools).
+    // Denylist must not strip SharedStore or the enabled structured_output tool.
     const systemNameSet = new Set([...systemToolNames, ...(schemaTool ? ["structured_output"] : [])]);
     const excludeTools = (options.disallowedToolNames ?? []).filter((name) => !systemNameSet.has(name));
 
@@ -991,11 +1002,11 @@ export class WorkflowAgent {
       }
 
       const promptOptions = {
-        ...(options as AgentRunOptions<any>),
+        ...(effectiveOptions as AgentRunOptions<any>),
         instructions: finalInstructions,
       };
       await awaitAbortableSubagentPrompt(
-        () => session.prompt(this.buildPrompt(finalPrompt, promptOptions, Boolean(options.schema))),
+        () => session.prompt(this.buildPrompt(finalPrompt, promptOptions, Boolean(effectiveSchema))),
         options.signal,
         () => session.abort(),
       );
@@ -1008,8 +1019,8 @@ export class WorkflowAgent {
       // (schema path) or a silent empty-output null (non-schema path).
       throwIfAssistantError(session.messages, options.label);
 
-      if (options.schema) {
-        return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
+      if (effectiveSchema) {
+        return (await resolveStructuredOutput(session, capture, effectiveSchema, effectiveOptions, (m) =>
           this.lastAssistantText(m),
         )) as AgentRunResult<TSchemaDef>;
       }

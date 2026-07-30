@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { registerBuiltinWorkflows, tokenizeArgs } from "../src/builtin-commands.js";
+import { saveWorkflowSettings } from "../src/workflow-settings.js";
+import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
 test("registerBuiltinWorkflows registers all five built-in workflow commands", () => {
@@ -79,6 +84,46 @@ test("registerBuiltinWorkflows adversarial-review handler validates empty args (
   assert.equal(notified.length, 1, "should notify with warning");
   assert.equal(notified[0].type, "warning", "should be a warning");
   assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+});
+
+test("schema-heavy built-in commands refuse before preparation while structured output is disabled", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-builtin-off-cwd-"));
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-builtin-off-home-"));
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const { pi, commands, sent } = makeCommandRegistryPi();
+      let managerCalls = 0;
+      const manager = {
+        runSync: async () => {
+          managerCalls++;
+          throw new Error("the gated command must not start a run");
+        },
+      };
+      registerBuiltinWorkflows(pi, { cwd, manager: manager as never });
+      const { ctx, notified } = makeNotifyCtx();
+      for (const [name, args] of [
+        ["deep-research", "research question"],
+        ["adversarial-review", "review task"],
+        ["code-review", ""],
+      ] as const) {
+        const handler = commands.find((command) => command.name === name)?.handler;
+        assert.ok(handler, `${name} handler should exist`);
+        await handler(args, ctx);
+      }
+
+      assert.equal(managerCalls, 0, "gated commands must not start workflow execution");
+      assert.equal(sent.length, 0, "gated commands must not deliver a result");
+      assert.equal(notified.length, 3);
+      for (const notice of notified) {
+        assert.equal(notice.type, "warning");
+        assert.match(notice.message, /~\/\.pi\/workflows\/settings\.json/);
+        assert.match(notice.message, /"structuredOutputEnabled": true/);
+      }
+    });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("registerBuiltinWorkflows multi-perspective handler validates empty args (returns early)", async () => {
@@ -282,7 +327,15 @@ test("registerBuiltinWorkflows syncs the live session model into manager-backed 
     },
   };
 
-  await deepResearchHandler("trace auth flows", ctx as never);
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-builtin-on-home-"));
+  try {
+    await withFakeHomeAsync(home, async () => {
+      saveWorkflowSettings({ structuredOutputEnabled: true });
+      await deepResearchHandler("trace auth flows", ctx as never);
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 
   assert.deepEqual(managerCalls, [
     ["runtime", fakeRuntime],

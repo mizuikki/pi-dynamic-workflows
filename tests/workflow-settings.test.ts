@@ -69,6 +69,24 @@ describe("workflow settings", () => {
     });
   });
 
+  it("saves and loads structured output as a strict boolean", () => {
+    withSettingsPath((settingsPath) => {
+      assert.deepEqual(loadWorkflowSettings(settingsPath), {}, "absent is disabled");
+
+      saveWorkflowSettings({ structuredOutputEnabled: true }, settingsPath);
+      assert.deepEqual(loadWorkflowSettings(settingsPath), { structuredOutputEnabled: true });
+
+      saveWorkflowSettings({ structuredOutputEnabled: false }, settingsPath);
+      assert.deepEqual(loadWorkflowSettings(settingsPath), { structuredOutputEnabled: false });
+
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      for (const value of ["true", 1, null, [], {}]) {
+        writeFileSync(settingsPath, JSON.stringify({ structuredOutputEnabled: value }), "utf-8");
+        assert.deepEqual(loadWorkflowSettings(settingsPath), {}, `invalid value ${JSON.stringify(value)}`);
+      }
+    });
+  });
+
   it("normalizes default concurrency and agent retries", () => {
     withSettingsPath((settingsPath) => {
       mkdirSync(dirname(settingsPath), { recursive: true });
@@ -258,6 +276,33 @@ describe("workflow settings", () => {
         assert.deepEqual(loadWorkflowSettings({ cwd, settingsPath: globalPath, projectSettingsPath: projectPath }), {
           persistAgentSessions: true,
         });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("supports both structured output project overrides and ignores an invalid project value", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-structured-settings-"));
+    const cwd = join(dir, "project");
+    const fakeHome = join(dir, "home");
+    try {
+      withFakeHome(fakeHome, () => {
+        const globalPath = getWorkflowSettingsPath();
+        const projectPath = getWorkflowProjectSettingsPath(cwd);
+        saveWorkflowSettings({ structuredOutputEnabled: false }, globalPath);
+        saveWorkflowSettings({ structuredOutputEnabled: true }, { cwd, settingsPath: globalPath, scope: "project" });
+        assert.equal(loadWorkflowSettings({ cwd }).structuredOutputEnabled, true);
+
+        saveWorkflowSettings({ structuredOutputEnabled: true }, globalPath);
+        saveWorkflowSettings({ structuredOutputEnabled: false }, { cwd, settingsPath: globalPath, scope: "project" });
+        assert.equal(loadWorkflowSettings({ cwd }).structuredOutputEnabled, false);
+
+        writeFileSync(projectPath, JSON.stringify({ structuredOutputEnabled: "true" }), "utf-8");
+        assert.equal(loadWorkflowSettings({ cwd }).structuredOutputEnabled, true);
+
+        writeFileSync(globalPath, "{not json", "utf-8");
+        assert.equal(loadWorkflowSettings({ cwd }).structuredOutputEnabled, undefined);
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -60,10 +60,18 @@ async function load() {
   return import("../src/workflow-editor.js");
 }
 
-function testSettingsOptions(keywordTriggerEnabled = true, keywordTriggerWord?: string) {
+function testSettingsOptions(
+  keywordTriggerEnabled = true,
+  keywordTriggerWord?: string,
+  structuredOutputEnabled?: boolean,
+) {
   return {
     settingsStore: {
-      load: () => ({ keywordTriggerEnabled, ...(keywordTriggerWord ? { keywordTriggerWord } : {}) }),
+      load: () => ({
+        keywordTriggerEnabled,
+        ...(keywordTriggerWord ? { keywordTriggerWord } : {}),
+        ...(structuredOutputEnabled === undefined ? {} : { structuredOutputEnabled }),
+      }),
       save: () => {},
     },
   };
@@ -1031,9 +1039,35 @@ describe("installWorkflowEditor", () => {
 
     assert.deepEqual(result, {
       action: "transform",
-      text: mod.buildForcedWorkflowPrompt(text, effortDirective("high")),
+      text: mod.buildForcedWorkflowPrompt(text, effortDirective("high", false)),
     });
     assert.ok(tools.includes(mod.WORKFLOW_TOOL_NAME), "effort mode should still add the workflow tool");
+  });
+
+  it("retains structured quality guidance when the setting is explicitly enabled", async () => {
+    const mod = await load();
+    const { createEffortState, effortDirective } = await import("../src/effort-command.js");
+    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
+    const effort = createEffortState();
+    effort.level = "high";
+    const pi = {
+      on: (event: string, handler: (...args: unknown[]) => unknown) => captured.push({ event, handler }),
+      registerCommand: () => {},
+      sendMessage: () => {},
+      getActiveTools: () => ["bash", "read"],
+      setActiveTools: () => {},
+    } as unknown as ExtensionAPI;
+    const ui = { setEditorComponent: () => {} } as unknown as ExtensionUIContext;
+
+    mod.installWorkflowEditor(pi, ui, effort, testSettingsOptions(true, undefined, true));
+    const inputHandler = captured.find((h) => h.event === "input")?.handler;
+    assert.ok(inputHandler, "input handler should be registered");
+    const text = "Please inspect this request carefully.";
+    const result = inputHandler({ source: "interactive", text });
+    assert.deepEqual(result, {
+      action: "transform",
+      text: mod.buildForcedWorkflowPrompt(text, effortDirective("high", true)),
+    });
   });
 
   it("restores original tools on turn_end after a triggered turn", async () => {

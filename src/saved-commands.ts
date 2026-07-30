@@ -8,6 +8,7 @@ import { readRequiredHostRetryPolicy } from "./retry-policy.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
+import { isWorkflowStructuredOutputEnabled } from "./workflow-settings.js";
 
 function isRegistered(pi: ExtensionAPI, name: string): boolean {
   try {
@@ -70,6 +71,7 @@ export function registerSavedWorkflow(
         return;
       }
       try {
+        const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(cwd);
         ctx.ui.notify(`Starting /${wf.name}…`, "info");
         const hostRetryPolicy = readRequiredHostRetryPolicy(ctx);
 
@@ -79,6 +81,7 @@ export function registerSavedWorkflow(
           // /workflows TUI, task panel, pause/resume/stop support.
           const { runId, promise } = manager.startInBackground(wf.script, parseCommandArgs(args, wf.parameters), {
             hostRetryPolicy,
+            structuredOutputEnabled,
           });
           ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: running (${runId})`);
           result = await promise;
@@ -88,6 +91,7 @@ export function registerSavedWorkflow(
             cwd,
             args: parseCommandArgs(args, wf.parameters),
             hostRetryPolicy,
+            structuredOutputEnabled,
             onPhase: (title) => ctx.ui.setStatus(`wf:${wf.name}`, `${wf.name}: ${title}`),
           });
         }

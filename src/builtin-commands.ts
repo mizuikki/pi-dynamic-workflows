@@ -15,6 +15,7 @@ import { readRequiredHostRetryPolicy } from "./retry-policy.js";
 import { createWebTools } from "./web-tools.js";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
+import { isWorkflowStructuredOutputEnabled, structuredOutputDisabledGuidance } from "./workflow-settings.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -88,6 +89,7 @@ async function runBuiltinWorkflow(
     tools?: ToolDefinition[];
     manager?: WorkflowManager;
     onPhase: (title: string) => void;
+    structuredOutputEnabled: boolean;
   },
 ): Promise<WorkflowRunResult> {
   const hostRetryPolicy = readRequiredHostRetryPolicy(ctx);
@@ -96,6 +98,7 @@ async function runBuiltinWorkflow(
     return options.manager.runSync(script, args, {
       ...(options.tools ? { tools: options.tools } : {}),
       hostRetryPolicy,
+      structuredOutputEnabled: options.structuredOutputEnabled,
       onPhase: options.onPhase,
     });
   }
@@ -110,6 +113,7 @@ async function runBuiltinWorkflow(
     mainModel: currentModelSpec(ctx),
     currentThinkingLevel: pi.getThinkingLevel(),
     hostRetryPolicy,
+    structuredOutputEnabled: options.structuredOutputEnabled,
     onPhase: options.onPhase,
   });
 }
@@ -129,6 +133,9 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
       async handler(args: string, ctx: ExtensionCommandContext) {
         const question = args.trim();
         if (!question) return ctx.ui.notify("Usage: /deep-research <question>", "warning");
+        const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(cwd);
+        if (!structuredOutputEnabled)
+          return ctx.ui.notify(structuredOutputDisabledGuidance("/deep-research"), "warning");
         ctx.ui.notify("Researching — running web searches across several angles…", "info");
         try {
           const result = await runBuiltinWorkflow(
@@ -140,6 +147,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
               cwd,
               tools: createWebTools(),
               manager: opts.manager,
+              structuredOutputEnabled,
               onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
             },
           );
@@ -159,6 +167,9 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
       async handler(args: string, ctx: ExtensionCommandContext) {
         const task = args.trim();
         if (!task) return ctx.ui.notify("Usage: /adversarial-review <task or question>", "warning");
+        const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(cwd);
+        if (!structuredOutputEnabled)
+          return ctx.ui.notify(structuredOutputDisabledGuidance("/adversarial-review"), "warning");
         ctx.ui.notify("Reviewing — investigating then refuting each finding…", "info");
         try {
           const result = await runBuiltinWorkflow(
@@ -169,6 +180,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             {
               cwd,
               manager: opts.manager,
+              structuredOutputEnabled,
               onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),
             },
           );
@@ -188,6 +200,8 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
         "Multi-angle parallel code review: 7 specialized finders (correctness, reuse, simplification, efficiency, altitude) + verify pass → ranked findings",
       async handler(args: string, ctx: ExtensionCommandContext) {
         const input = args.trim();
+        const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(cwd);
+        if (!structuredOutputEnabled) return ctx.ui.notify(structuredOutputDisabledGuidance("/code-review"), "warning");
         let diffSource = "git diff HEAD";
         let diff = "";
 
@@ -257,6 +271,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             {
               cwd,
               manager: opts.manager,
+              structuredOutputEnabled,
               onPhase: (title) => ctx.ui.setStatus("code-review", `review: ${title}`),
             },
           );
@@ -283,6 +298,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           rest.length >= 2
             ? capCommandItems(rest, "perspectives", ctx)
             : ["technical", "product", "security", "user experience", "maintainability"];
+        const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(cwd);
         ctx.ui.notify(`Analyzing from ${perspectives.length} perspectives…`, "info");
         try {
           const result = await runBuiltinWorkflow(
@@ -293,6 +309,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             {
               cwd,
               manager: opts.manager,
+              structuredOutputEnabled,
               onPhase: (title) => ctx.ui.setStatus("multi-perspective", `perspectives: ${title}`),
             },
           );
@@ -318,6 +335,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
           return ctx.ui.notify('Usage: /codebase-audit <scope> "<check1>" ["<check2>" …]', "warning");
         }
         const cappedChecks = capCommandItems(checks, "checks", ctx);
+        const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(cwd);
         ctx.ui.notify(`Auditing ${scope} across ${cappedChecks.length} checks…`, "info");
         try {
           const result = await runBuiltinWorkflow(
@@ -328,6 +346,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string; 
             {
               cwd,
               manager: opts.manager,
+              structuredOutputEnabled,
               onPhase: (title) => ctx.ui.setStatus("codebase-audit", `audit: ${title}`),
             },
           );

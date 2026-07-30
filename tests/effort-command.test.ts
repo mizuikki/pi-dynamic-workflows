@@ -9,6 +9,17 @@ test("effortDirective returns a tier nudge for high/ultra, nothing for off", () 
   assert.match(effortDirective("ultra") ?? "", /ULTRA/);
 });
 
+test("effortDirective adapts quality guidance to the structured-output capability", () => {
+  const disabled = effortDirective("ultra", false) ?? "";
+  assert.match(disabled, /text-safe reviewers/i);
+  assert.match(disabled, /structured output is disabled/i);
+  assert.doesNotMatch(disabled, /prefer verify\(\)/i);
+
+  const enabled = effortDirective("ultra", true) ?? "";
+  assert.match(enabled, /reviewers\/judges/i);
+  assert.match(enabled, /completenessCheck/i);
+});
+
 test("isSubstantive accepts real requests, rejects terse text and slash commands", () => {
   assert.equal(isSubstantive("audit the auth module for race conditions"), true);
   assert.equal(isSubstantive("ok"), false);

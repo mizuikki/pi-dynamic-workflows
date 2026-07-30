@@ -34,6 +34,7 @@ import {
 } from "./retry-policy.js";
 import { createAgentStoreTools, SharedStore } from "./shared-store.js";
 import { applySubagentContext, mergeSubagentContexts, type SubagentContext } from "./subagent-context.js";
+import { structuredOutputDisabledGuidance } from "./workflow-settings.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
@@ -79,6 +80,8 @@ export interface SharedRuntime {
 }
 
 export interface WorkflowRunOptions extends WorkflowAgentOptions {
+  /** Sampled workflow structured-output capability for this execution. */
+  structuredOutputEnabled?: boolean;
   args?: unknown;
   agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), shown in /workflows for default agents. */
@@ -174,6 +177,16 @@ export interface WorkflowRunResult<T = unknown> {
     cacheRead?: number;
     cacheWrite?: number;
   };
+}
+
+/** Refuse a helper whose implementation requires schema-shaped agent results. */
+export function assertStructuredOutputEnabled(enabled: boolean, surface: string): void {
+  if (enabled) return;
+  throw new WorkflowError(
+    `${surface} requires workflow structured output. ${structuredOutputDisabledGuidance()}`,
+    WorkflowErrorCode.STRUCTURED_OUTPUT_DISABLED,
+    { recoverable: false },
+  );
 }
 
 export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {
@@ -298,6 +311,7 @@ export async function runWorkflow<T = unknown>(
   const agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
   const runId = options.runId ?? `run-${started.toString(36)}`;
   const baseCwd = options.cwd ?? process.cwd();
+  const structuredOutputEnabled = options.structuredOutputEnabled === true;
   const executionPolicy = normalizeExecutionPolicy(options);
   if (options.keelHost) validateKeelHostBridge(options.keelHost);
   if (executionPolicy.agentTurnRetry && !options.hostRetryPolicy) {
@@ -460,6 +474,13 @@ export async function runWorkflow<T = unknown>(
     const callIndex = state.callSeq++;
     shared.agentCount++;
     const label = requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount);
+    const requestedSchema = agentOptions.schema;
+    const effectiveSchema = structuredOutputEnabled ? requestedSchema : undefined;
+    const effectiveAgentOptions =
+      effectiveSchema === requestedSchema ? agentOptions : { ...agentOptions, schema: undefined };
+    if (requestedSchema !== undefined && !structuredOutputEnabled) {
+      log(`${label}: opts.schema ignored because workflow structured output is disabled; using text output`);
+    }
 
     const keelSource = { workflowRunId: runId, callIndex } as const;
     let loadedKeel: KeelLoadedInvocationV1 | undefined;
@@ -501,7 +522,7 @@ export async function runWorkflow<T = unknown>(
       agentPrompt,
       modelSpec,
       assignedPhase,
-      agentOptions,
+      effectiveAgentOptions,
       agentDefinitionKey(agentDef),
       requestedIsolation,
       canonicalAgentCallContext(contextInstructions, loadedEnv, loadedKeel?.invocation),
@@ -523,7 +544,7 @@ export async function runWorkflow<T = unknown>(
     // downstream results served from the journal.
     const cached = options.resumeJournal?.get(callIndex);
     const hashMatches = cached != null && cached.hash === callHash;
-    const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
+    const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, effectiveAgentOptions.schema);
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
       if (options.keelHost && loadedKeel) {
         await observeKeelAgentStarted(options.keelHost, loadedKeel, keelSource, "cached_replay");
@@ -607,7 +628,8 @@ export async function runWorkflow<T = unknown>(
                 label,
                 // Identifiable name for persisted sessions (persistAgentSessions).
                 sessionName: `workflow:${runId} ${label}`,
-                schema: agentOptions.schema,
+                schema: effectiveAgentOptions.schema,
+                structuredOutputEnabled,
                 signal: options.signal,
                 instructions: mergedInstructions,
                 agentType: agentOptions.agentType,
@@ -653,7 +675,7 @@ export async function runWorkflow<T = unknown>(
             );
 
             throwIfAborted();
-            if (isEmptyTextAgentResult(result, agentOptions.schema)) {
+            if (isEmptyTextAgentResult(result, effectiveAgentOptions.schema)) {
               throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
                 recoverable: true,
                 agentLabel: label,
@@ -842,6 +864,7 @@ export async function runWorkflow<T = unknown>(
     item: unknown,
     opts: { reviewers?: number; threshold?: number; lens?: string | string[] } = {},
   ) => {
+    assertStructuredOutputEnabled(structuredOutputEnabled, "verify()");
     const reviewers = Math.max(1, opts.reviewers ?? 2);
     const threshold = opts.threshold ?? 0.5;
     const lenses = opts.lens ? (Array.isArray(opts.lens) ? opts.lens : [opts.lens]) : [];
@@ -868,6 +891,7 @@ export async function runWorkflow<T = unknown>(
     required: ["score"],
   };
   const judgePanel = async (attempts: unknown[], opts: { judges?: number; rubric?: string } = {}) => {
+    assertStructuredOutputEnabled(structuredOutputEnabled, "judgePanel()");
     const judges = Math.max(1, opts.judges ?? 3);
     const rubric = opts.rubric ?? "overall quality and correctness";
     const scored = (
@@ -943,11 +967,13 @@ export async function runWorkflow<T = unknown>(
     properties: { complete: { type: "boolean" }, missing: { type: "array", items: { type: "string" } } },
     required: ["complete"],
   };
-  const completenessCheck = (taskArgs: unknown, results: unknown) =>
-    agent(
+  const completenessCheck = async (taskArgs: unknown, results: unknown) => {
+    assertStructuredOutputEnabled(structuredOutputEnabled, "completenessCheck()");
+    return agent(
       `Given the task and the results gathered so far, list what is still MISSING (modalities not covered, claims unverified, gaps). Be specific and concise.\n\nTask:\n${JSON.stringify(taskArgs)}\n\nResults so far:\n${JSON.stringify(results).slice(0, 4000)}`,
       { label: "completeness critic", schema: COMPLETENESS_SCHEMA },
     );
+  };
 
   // Thin bounded-retry / validation-gate combinators. Sugar over the for-loop +
   // agent() pattern, but each attempt is a real agent() call so it auto-journals

@@ -35,6 +35,24 @@ pi remove /absolute/path/to/pi-dynamic-workflows -l
 
 You get the `workflow` tool plus the `/workflows`, `/deep-research`, and `/adversarial-review` commands.
 
+Workflow structured output is off by default. To opt in, add the literal boolean
+below to `~/.pi/workflows/settings.json`:
+
+```json
+{
+  "structuredOutputEnabled": true
+}
+```
+
+The optional project override lives at
+`~/.pi/workflows/projects/<project-key>/settings.json` and wins over the global
+file. Only a valid boolean is accepted: missing, malformed, unreadable, or
+non-boolean values cannot enable a scope, and an invalid project value does not
+override a valid global boolean. There is no settings slash command; edit the
+JSON files directly. Each top-level workflow execution, including resume,
+samples the merged setting once and keeps that capability through nested
+workflows and child agents.
+
 ## Try it
 
 Ask in plain language:
@@ -85,7 +103,7 @@ return await agent('Synthesize and double-check these findings:\n' + findings.jo
 - **Real token & cost accounting** — read from each subagent's session, not estimated. Runs have no default token cap; `tokenBudget`, phase budgets, and `budget` let you add explicit gates when you want them.
 - **Background by default** — the turn ends right away, a live "Workflows running" panel tracks runs, and each result is delivered back so the conversation auto-continues when it finishes. The panel is compact by default; `/workflows-progress detailed` expands it inline to per-phase/per-agent rows with tokens, cost, and a live tok/s rate (so a stalled agent shows as 0 tok/s) — no need to open `/workflows`.
 - **Interactive `/workflows` TUI** — drill runs → phases → agents → detail; inspect per-agent failures and compact subagent history; pause, stop, restart, and save runs from the keyboard.
-- **Quality patterns built in** — `verify()`, `judgePanel()`, `loopUntilDry()`, and `completenessCheck()` for adversarial review, best-of-N, and exhaustive discovery.
+- **Quality patterns built in** — `verify()`, `judgePanel()`, `loopUntilDry()`, and `completenessCheck()` for adversarial review, best-of-N, and exhaustive discovery. The schema-dependent helpers require the explicit structured-output opt-in; `loopUntilDry()`, `retry()`, and `gate()` remain available by default.
 - **Ultracode** — `/ultracode` is a standing opt-in that auto-arms an exhaustive multi-agent workflow for every substantive message, the way Claude Code's ultracode does. `/effort high` is the lighter tier.
 - **Bundled `/deep-research` + `/adversarial-review` + `/code-review`** — real web search, source cross-checking, cited reports, and a 7-angle parallel code review with a verify pass.
 - **Saved & nested workflows** — turn any run into a `/<name>` command, and compose saved workflows from inside other scripts.
@@ -98,7 +116,7 @@ The same model — on Pi, plus the production pieces a real run needs:
 | --- | --- |
 | Code-mode orchestration — the model writes a script that drives subagents | A JS `workflow` tool running `agent()` / `parallel()` / `pipeline()` / `phase()` in a vm sandbox |
 | Subagents with isolated context | Fresh in-memory Pi sessions; results held in script variables, not the chat |
-| Structured outputs | JSON-Schema `schema` → a validated object, with bounded repair if the model misses |
+| Structured outputs | Optional JSON-Schema `schema` → a validated object, with bounded repair if the model misses; off by default |
 | Background runs | Non-blocking by default, a live task panel, and auto-continue delivery |
 | Resume | **Journaled + replayable** — survives restarts and replays the unchanged prefix |
 | Model selection | **Per-agent / per-phase routing** across any provider Pi is authenticated for |
@@ -131,15 +149,20 @@ The same model — on Pi, plus the production pieces a real run needs:
 /ultracode [off]            ultracode: auto-arm an exhaustive workflow for every substantive message
 /effort off|high|ultra      finer control over the standing opt-in (high = thorough, ultra = ultracode)
 
-/deep-research <question>   web-researched, source-cross-checked report
-/adversarial-review <task>  findings vetted by skeptical reviewers
+/deep-research <question>   web-researched, source-cross-checked report (structured-output opt-in required)
+/adversarial-review <task>  findings vetted by skeptical reviewers (structured-output opt-in required)
 /multi-perspective "<topic>" [angle …]
                             analyze a topic from several independent angles, then synthesize
 /code-review [target]       7 parallel finder angles (correctness, reuse, simplification, efficiency,
-                            altitude) + a verify pass → ranked findings
+                            altitude) + a verify pass → ranked findings (structured-output opt-in required)
 /codebase-audit <scope> "<check>" …
                             run parallel checks over a scope, then cross-validate and report
 ```
+
+`/multi-perspective` and `/codebase-audit` remain available while structured
+output is off. `/deep-research`, `/adversarial-review`, and `/code-review`
+refuse at command admission until the opt-in is present, before web work,
+diff capture, workflow status changes, or child execution.
 
 `/multi-perspective` and `/codebase-audit` take quoted arguments so a topic or check can be multiple words:
 
@@ -169,6 +192,32 @@ In the navigator: `↑/↓` select · `enter`/`→` open · `esc`/`←` back · 
 Workflow run history and resume journals for every project are stored in one SQLite database at `~/.pi/workflows/workflows.sqlite3`. Runs remain isolated by a stable project key and Pi session ID. Listing and the live panel use summary records; private prompts, scripts, results, errors, and journals are loaded only for an authorized run detail or resume operation. The workflow home is user-only and the database file is created with user-only permissions on supported platforms.
 
 Global settings and model tiers remain text files at `~/.pi/workflows/settings.json` and `~/.pi/workflows/model-tiers.json`. Saved workflow definitions and project settings also remain file-backed under `~/.pi/workflows/projects/<project>/`. Existing run JSON, backup, temporary, and lock files are deliberately ignored: they are not imported, read as a fallback, or deleted. See [docs/storage.md](docs/storage.md) for the schema, durability, lease, backup, and recovery contract.
+
+### Structured-output gate
+
+With the setting absent or disabled, an ad-hoc `agent(prompt, { schema })`
+request is deliberately degraded to ordinary assistant text. The runtime logs
+that `opts.schema` was ignored, returns the text, treats blank text as the usual
+recoverable `AGENT_EMPTY_OUTPUT`, and never reports
+`SCHEMA_NONCOMPLIANCE` merely because the schema was ignored. Do not
+dereference the result as an object while the capability is off; use text-safe
+workflow code or parse the text deliberately yourself.
+
+`verify()`, `judgePanel()`, and `completenessCheck()` refuse before creating a
+schema-dependent child and return the non-recoverable
+`STRUCTURED_OUTPUT_DISABLED` diagnostic with the exact opt-in guidance.
+`loopUntilDry()`, `retry()`, and `gate()` are not gated. The same refusal applies
+to `/deep-research`, `/adversarial-review`, and `/code-review`; the other
+built-ins remain usable.
+
+After `"structuredOutputEnabled": true` is enabled in the merged settings,
+`opts.schema` again returns a schema-validated object, including bounded repair
+and validated prose extraction; genuine failures remain observable as
+`SCHEMA_NONCOMPLIANCE`. The gate concerns only this child return channel:
+ordinary Pi tools, `SharedStore`, JavaScript values, and workflow return values
+remain available in either state. A direct programmatic `WorkflowAgent` or
+`runWorkflow()` caller also defaults to structured output off unless it passes
+the explicit capability.
 
 `model-tiers.json` uses Pi CLI-style model parsing. A tier can be a plain model spec or include an optional thinking suffix:
 
@@ -249,11 +298,11 @@ The full guide — every global, agent option, `agentType` definitions, structur
 
 | Global | What it does |
 | --- | --- |
-| `agent(prompt, opts)` | Spawn an isolated subagent. Returns its final text, or a validated object with `opts.schema`; recoverable failures return `null` with diagnostics in `/workflows`. |
+| `agent(prompt, opts)` | Spawn an isolated subagent. By default it returns final text; with the explicit structured-output opt-in, `opts.schema` returns a validated object. Recoverable failures return `null` with diagnostics in `/workflows`. |
 | `parallel(thunks)` | Run `() => agent(...)` thunks concurrently; results in input order. |
 | `pipeline(items, ...stages)` | Fan items through sequential stages `(prev, original, index)`. |
 | `phase(title, { budget? })` | Group agents in the live view; optional per-phase token sub-budget. |
-| `verify` / `judgePanel` / `loopUntilDry` / `completenessCheck` | Built-in quality patterns. |
+| `verify` / `judgePanel` / `loopUntilDry` / `completenessCheck` | Built-in quality patterns; the schema-dependent helpers refuse with `STRUCTURED_OUTPUT_DISABLED` until opt-in, while `loopUntilDry` remains available. |
 | `workflow(name, args)` | Run a saved workflow inline (shares the global caps). |
 | `checkpoint(prompt, opts)` | A journaled, replayable human approval gate. |
 | `budget` | `{ total, spent(), remaining() }` real-token tracker. |
@@ -264,7 +313,7 @@ The full guide — every global, agent option, `agentType` definitions, structur
 | `model` | Exact `provider/modelId` or `provider/modelId:thinking` (always wins over `tier`). |
 | `agentType` | A named definition (`.pi/agents/<name>.md` project-level, or `~/.pi/agent/agents/<name>.md` user-level — `~/.pi/agents/<name>.md` still works as a deprecated fallback) binding tools + model + role prompt. |
 | `isolation: "worktree"` | Run in a throwaway git worktree for conflict-free parallel edits. |
-| `schema` | JSON Schema → the subagent returns a validated object. |
+| `schema` | With structured output enabled, JSON Schema → validated object with bounded repair/extraction; while disabled, the request is ignored and the final assistant text is returned. |
 | `label` / `phase` / `timeoutMs` | Display label / phase override / optional per-agent hard timeout. Omit `timeoutMs` for no hard timeout. |
 | `agentTurnRetry` | Partial override for Pi's retry of a failed provider turn inside the same child session (`enabled`, `maxRetries`, `baseDelayMs`). Unspecified fields inherit the current host policy. |
 | `agentRunRetries` | Additional whole-agent attempts after a recoverable failure. Overrides the run-level value. Accepts safe integers `0..3`; default `0`. The old `retries` name remains a deprecated alias. |

@@ -240,6 +240,63 @@ test("T5: systemTools store_put/store_get are callable under restrictive allowli
   });
 });
 
+test("T5b: structured_output is omitted off and retained on beside SharedStore tools", async () => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
+    const activeToolSets: string[][] = [];
+    const settingsManager = SettingsManager.create(cwd, agentDir);
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager,
+      extensionFactories: [
+        (pi: ExtensionAPI) => {
+          pi.on("session_start", () => activeToolSets.push([...pi.getActiveTools()]));
+        },
+      ],
+    });
+    await resourceLoader.reload();
+
+    const store = new SharedStore();
+    const systemTools = createSharedStoreTools(store);
+    faux.setResponses([
+      fauxAssistantMessage("ordinary text"),
+      fauxAssistantMessage([fauxToolCall("structured_output", { ok: true })], { stopReason: "toolUse" }),
+    ]);
+    const agent = new WorkflowAgent({
+      cwd,
+      modelRuntime,
+      session: {
+        model: faux.model,
+        resourceLoader,
+        sessionManager: SessionManager.inMemory(),
+        settingsManager,
+      },
+    });
+    const schema = Type.Object({ ok: Type.Boolean() });
+
+    const off = await agent.run("text result", {
+      schema,
+      toolNames: ["read"],
+      systemTools: systemTools as never,
+    });
+    const on = await agent.run("structured result", {
+      schema,
+      structuredOutputEnabled: true,
+      toolNames: ["read"],
+      systemTools: systemTools as never,
+    });
+
+    assert.equal(off, "ordinary text");
+    assert.deepEqual(on, { ok: true });
+    assert.equal(activeToolSets.length, 2);
+    assert.ok(activeToolSets[0]?.includes("read"));
+    assert.ok(activeToolSets[0]?.includes("store_put"));
+    assert.ok(!activeToolSets[0]?.includes("structured_output"), "off must not register the schema tool");
+    assert.ok(activeToolSets[1]?.includes("structured_output"), "on must retain the schema tool");
+    assert.ok(activeToolSets[1]?.includes("store_get"), "structured output must not displace SharedStore tools");
+  });
+});
+
 test("T6: faux model calling disallowed bash does not execute a real shell command", async () => {
   await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime }) => {
     const marker = join(cwd, "should-not-exist.txt");

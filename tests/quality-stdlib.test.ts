@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { WorkflowErrorCode } from "../src/errors.js";
 import { runWorkflow } from "../src/workflow.js";
 
 // Fake agents return a schema-shaped object when a schema is requested.
@@ -13,7 +14,11 @@ test("verify(): parallel reviewers + threshold → real", async () => {
   const script = `export const meta = { name: 'v', description: 'verify' }
 const r = await verify('the sky is blue', { reviewers: 3 })
 return r`;
-  const res = await runWorkflow<{ real: boolean; total: number }>(script, { agent: yesAgent, persistLogs: false });
+  const res = await runWorkflow<{ real: boolean; total: number }>(script, {
+    agent: yesAgent,
+    structuredOutputEnabled: true,
+    persistLogs: false,
+  });
   assert.equal(res.result.real, true);
   assert.equal(res.result.total, 3, "all three reviewers voted");
 });
@@ -30,7 +35,11 @@ test("verify(): below threshold → not real", async () => {
   };
   const script = `export const meta = { name: 'v', description: 'verify' }
 return await verify('claim', { reviewers: 3, threshold: 0.75 })`;
-  const res = await runWorkflow<{ real: boolean; realCount: number }>(script, { agent: mixed, persistLogs: false });
+  const res = await runWorkflow<{ real: boolean; realCount: number }>(script, {
+    agent: mixed,
+    structuredOutputEnabled: true,
+    persistLogs: false,
+  });
   assert.equal(res.result.realCount, 1);
   assert.equal(res.result.real, false);
 });
@@ -45,7 +54,11 @@ test("judgePanel(): picks the highest-mean-score attempt", async () => {
   const script = `export const meta = { name: 'j', description: 'judge' }
 const r = await judgePanel(['lose one', 'WIN candidate', 'lose two'], { judges: 2 })
 return { index: r.index, score: r.score }`;
-  const res = await runWorkflow<{ index: number; score: number }>(script, { agent: scorer, persistLogs: false });
+  const res = await runWorkflow<{ index: number; score: number }>(script, {
+    agent: scorer,
+    structuredOutputEnabled: true,
+    persistLogs: false,
+  });
   assert.equal(res.result.index, 1, "the WIN candidate wins");
 });
 
@@ -87,10 +100,39 @@ test("completenessCheck(): returns the critic's structured verdict", async () =>
 return await completenessCheck({ task: 1 }, [{ done: true }])`;
   const res = await runWorkflow<{ complete: boolean; missing: string[] }>(script, {
     agent: critic,
+    structuredOutputEnabled: true,
     persistLogs: false,
   });
   assert.equal(res.result.complete, false);
   assert.deepEqual([...res.result.missing], ["x"]);
+});
+
+test("schema-dependent helpers refuse before spawning children while disabled", async () => {
+  const scripts = [
+    `export const meta = { name: 'v-off', description: 'verify off' }\nreturn await verify('claim')`,
+    `export const meta = { name: 'j-off', description: 'judge off' }\nreturn await judgePanel(['candidate'])`,
+    `export const meta = { name: 'c-off', description: 'completeness off' }\nreturn await completenessCheck({}, [])`,
+  ];
+  for (const script of scripts) {
+    let calls = 0;
+    const agent = {
+      async run() {
+        calls++;
+        return "unexpected";
+      },
+    };
+    await assert.rejects(
+      () => runWorkflow(script, { agent, persistLogs: false }),
+      (error) => {
+        assert.equal(error?.code, WorkflowErrorCode.STRUCTURED_OUTPUT_DISABLED);
+        assert.equal(error.recoverable, false);
+        assert.match(error.message, /"structuredOutputEnabled": true/);
+        assert.match(error.message, /~\/\.pi\/workflows\/settings\.json/);
+        return true;
+      },
+    );
+    assert.equal(calls, 0, "disabled helper must refuse before creating a child");
+  }
 });
 
 test("retry(): stops when until() is satisfied, else returns the last after exhausting", async () => {

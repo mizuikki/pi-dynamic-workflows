@@ -494,7 +494,8 @@ export function installWorkflowEditor(
     } catch {
       // Tool restriction is best-effort; the directive still forces the workflow.
     }
-    const extra = byEffort && effort ? effortDirective(effort.level) : undefined;
+    const structuredOutputEnabled = readStructuredOutputEnabled(settingsStore);
+    const extra = byEffort && effort ? effortDirective(effort.level, structuredOutputEnabled) : undefined;
     return { action: "transform", text: buildForcedWorkflowPrompt(event.text, extra) } as const;
   });
 
@@ -527,6 +528,14 @@ function loadInitialWorkflowSettings(settingsStore: WorkflowSettingsStore): Work
     };
   } catch {
     return { keywordTriggerEnabled: true, keywordTriggerWord: DEFAULT_KEYWORD_TRIGGER_WORD };
+  }
+}
+
+function readStructuredOutputEnabled(settingsStore: WorkflowSettingsStore): boolean {
+  try {
+    return settingsStore.load().structuredOutputEnabled === true;
+  } catch {
+    return false;
   }
 }
 
