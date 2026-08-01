@@ -34,7 +34,7 @@ const ULTRA_TEXT_DIRECTIVE =
   "Effort: ULTRA. Be exhaustive — fan out widely with text-safe reviewers, deeper loopUntilDry rounds, and a final prose completeness pass; use retry() or gate() where useful, and prefer the big tier for synthesis. This can spend a lot of tokens quickly, so set explicit caps you're comfortable paying for (a generous but bounded tokenBudget and a high maxAgents) on the workflow tool call. Workflow structured output is disabled, so do not rely on completenessCheck(), verify(), or judgePanel().";
 
 /** The extra directive appended to the forced-workflow prompt for an effort level. */
-export function effortDirective(level: EffortLevel, structuredOutputEnabled = true): string | undefined {
+export function effortDirective(level: EffortLevel, structuredOutputEnabled = false): string | undefined {
   if (level === "high") return structuredOutputEnabled ? HIGH_DIRECTIVE : HIGH_TEXT_DIRECTIVE;
   if (level === "ultra") return structuredOutputEnabled ? ULTRA_DIRECTIVE : ULTRA_TEXT_DIRECTIVE;
   return undefined;
