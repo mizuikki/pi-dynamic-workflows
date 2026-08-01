@@ -22,6 +22,7 @@ import type { PersistedRunState, WorkflowRunSummary } from "./run-persistence.js
 import { registerSavedWorkflow } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
+import { isWorkflowStructuredOutputEnabled } from "./workflow-settings.js";
 
 const STATUS_ICON: Record<string, string> = {
   pending: "·",
@@ -1099,6 +1100,7 @@ export function openWorkflowNavigator(
             const { runId: newId } = manager.startInBackground(run.script, run.args, {
               ...run.executionPolicy,
               hostRetryPolicy: opts.readHostRetryPolicy(),
+              structuredOutputEnabled: isWorkflowStructuredOutputEnabled(opts.cwd ?? process.cwd()),
             });
             model.refreshRuns();
             ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");

@@ -156,7 +156,7 @@ test("/workflows run carries standing effort directives", async () => {
   effort.level = "ultra";
   const h = harness({}, { effort });
   await h.run("run do X");
-  assert.equal(h.sent[0].content, buildForcedWorkflowPrompt("do X", effortDirective("ultra")));
+  assert.equal(h.sent[0].content, buildForcedWorkflowPrompt("do X", effortDirective("ultra", false)));
 });
 
 test("/workflows stop <id> calls manager.stop", async () => {

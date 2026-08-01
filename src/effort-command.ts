@@ -28,11 +28,15 @@ const HIGH_DIRECTIVE =
   "Effort: HIGH. Be thorough — use a few parallel reviewers/perspectives and an adversarial verify pass (see verify()/judgePanel()); set a moderate tokenBudget and maxAgents on the workflow tool call.";
 const ULTRA_DIRECTIVE =
   "Effort: ULTRA. Be exhaustive — fan out widely (more reviewers/judges, deeper loopUntilDry rounds, a completenessCheck at the end), and prefer the big tier for synthesis. This can spend a lot of tokens quickly, so set explicit caps you're comfortable paying for (a generous but bounded tokenBudget and a high maxAgents) on the workflow tool call rather than leaving them unbounded.";
+const HIGH_TEXT_DIRECTIVE =
+  "Effort: HIGH. Be thorough — use a few parallel text reviewers/perspectives and a final prose synthesis; use loopUntilDry(), retry(), or gate() when useful, and set a moderate tokenBudget and maxAgents on the workflow tool call. Workflow structured output is disabled, so do not rely on verify() or judgePanel().";
+const ULTRA_TEXT_DIRECTIVE =
+  "Effort: ULTRA. Be exhaustive — fan out widely with text-safe reviewers, deeper loopUntilDry rounds, and a final prose completeness pass; use retry() or gate() where useful, and prefer the big tier for synthesis. This can spend a lot of tokens quickly, so set explicit caps you're comfortable paying for (a generous but bounded tokenBudget and a high maxAgents) on the workflow tool call. Workflow structured output is disabled, so do not rely on completenessCheck(), verify(), or judgePanel().";
 
 /** The extra directive appended to the forced-workflow prompt for an effort level. */
-export function effortDirective(level: EffortLevel): string | undefined {
-  if (level === "high") return HIGH_DIRECTIVE;
-  if (level === "ultra") return ULTRA_DIRECTIVE;
+export function effortDirective(level: EffortLevel, structuredOutputEnabled = false): string | undefined {
+  if (level === "high") return structuredOutputEnabled ? HIGH_DIRECTIVE : HIGH_TEXT_DIRECTIVE;
+  if (level === "ultra") return structuredOutputEnabled ? ULTRA_DIRECTIVE : ULTRA_TEXT_DIRECTIVE;
   return undefined;
 }
 

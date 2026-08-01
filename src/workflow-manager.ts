@@ -69,6 +69,8 @@ export interface ManagedRun {
 
 /** Per-execution options shared by sync, background, and resume runs. */
 export interface ExecOptions {
+  /** Sampled workflow structured-output capability for this execution. */
+  structuredOutputEnabled?: boolean;
   /** Replay these journaled agent results for the unchanged prefix (resume). */
   resumeJournal?: Map<number, JournalEntry>;
   /** Cap on total agents for this run. */
@@ -510,6 +512,7 @@ export class WorkflowManager extends EventEmitter {
       tokenBudget,
       concurrency,
       hostRetryPolicy,
+      structuredOutputEnabled,
       confirm,
       tools,
       onPhase,
@@ -547,6 +550,7 @@ export class WorkflowManager extends EventEmitter {
         keelHost: this.keelHost,
         extensionPathFilters: this.extensionPathFilters,
         hostRetryPolicy,
+        structuredOutputEnabled,
         agentTurnRetry: managed.executionPolicy?.agentTurnRetry,
         sessionId: managed.sessionId,
         signal: managed.controller.signal,
@@ -805,7 +809,10 @@ export class WorkflowManager extends EventEmitter {
    * Resume an interrupted run: replay journaled results for the unchanged prefix
    * and run the rest live. Returns false if there is nothing resumable.
    */
-  async resume(runId: string, exec: Pick<ExecOptions, "hostRetryPolicy"> = {}): Promise<boolean> {
+  async resume(
+    runId: string,
+    exec: Pick<ExecOptions, "hostRetryPolicy" | "structuredOutputEnabled"> = {},
+  ): Promise<boolean> {
     // Guard: refuse to resume a run that is already running, or one that was
     // intentionally aborted (pause/stop/Esc). Paused and failed runs can restart.
     const active = this.getRun(runId);

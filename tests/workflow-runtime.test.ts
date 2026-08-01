@@ -508,6 +508,159 @@ test("runWorkflow plumbs opts.tier through to the agent with correct precedence"
   assert.deepEqual(seen[1], { model: "explicit-model", tier: "small" });
 });
 
+test("runWorkflow degrades disabled ad-hoc schemas to text and logs the ignored request", async () => {
+  const seen: Array<{ schema?: unknown; structuredOutputEnabled?: boolean }> = [];
+  const logs: string[] = [];
+  const result = await runWorkflow(
+    `export const meta = { name: 'schema_off', description: 'schema off' }
+return await agent('plain answer', { label: 'text fallback', schema: { type: 'object', properties: { ok: { type: 'boolean' } } } })`,
+    {
+      agent: {
+        async run(_prompt: string, options: { schema?: unknown; structuredOutputEnabled?: boolean }) {
+          seen.push(options);
+          return "ordinary assistant text";
+        },
+      },
+      structuredOutputEnabled: false,
+      persistLogs: false,
+      onLog: (message) => logs.push(message),
+    },
+  );
+
+  assert.equal(result.result, "ordinary assistant text");
+  assert.equal(seen[0]?.schema, undefined);
+  assert.equal(seen[0]?.structuredOutputEnabled, false);
+  assert.ok(logs.some((message) => /text fallback: opts\.schema ignored/.test(message)));
+  assert.ok(logs.some((message) => /using text output/.test(message)));
+});
+
+test("runWorkflow keeps an explicitly enabled schema on the child boundary", async () => {
+  const seen: Array<{ schema?: unknown; structuredOutputEnabled?: boolean }> = [];
+  const result = await runWorkflow(
+    `export const meta = { name: 'schema_on', description: 'schema on' }
+return await agent('structured answer', { label: 'structured', schema: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } } })`,
+    {
+      agent: {
+        async run(_prompt: string, options: { schema?: unknown; structuredOutputEnabled?: boolean }) {
+          seen.push(options);
+          return { ok: true };
+        },
+      },
+      structuredOutputEnabled: true,
+      persistLogs: false,
+    },
+  );
+
+  assert.deepEqual(result.result, { ok: true });
+  assert.ok(seen[0]?.schema);
+  assert.equal(seen[0]?.structuredOutputEnabled, true);
+});
+
+test("disabled schema calls use ordinary empty-output recovery instead of schema noncompliance", async () => {
+  const ended: Array<{ errorCode?: WorkflowErrorCode; recoverable?: boolean }> = [];
+  const result = await runWorkflow(
+    `export const meta = { name: 'schema_empty_off', description: 'schema empty off' }
+const answer = await agent('empty answer', { label: 'empty', schema: { type: 'object' } })
+return answer`,
+    {
+      agent: {
+        async run() {
+          return "";
+        },
+      },
+      structuredOutputEnabled: false,
+      persistLogs: false,
+      onAgentEnd: (event) => ended.push(event),
+    },
+  );
+
+  assert.equal(result.result, null);
+  assert.equal(ended[0]?.errorCode, WorkflowErrorCode.AGENT_EMPTY_OUTPUT);
+  assert.equal(ended[0]?.recoverable, true);
+});
+
+test("ignored schema edits preserve text resume identity, while capability transitions miss the cache", async () => {
+  const scriptWithSchema = (
+    schema: string,
+  ) => `export const meta = { name: 'schema_identity', description: 'schema identity' }
+return await agent('same prompt', { label: 'same', schema: ${schema} })`;
+
+  const first = countingAgent();
+  const journal: JournalEntry[] = [];
+  await runWorkflow(scriptWithSchema(`{ type: 'string' }`), {
+    agent: first.runner,
+    structuredOutputEnabled: false,
+    persistLogs: false,
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+
+  const ignoredEdit = countingAgent();
+  await runWorkflow(scriptWithSchema(`{ type: 'object', properties: { changed: { type: 'number' } } }`), {
+    agent: ignoredEdit.runner,
+    structuredOutputEnabled: false,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(ignoredEdit.state.calls, 0, "an ignored schema edit must not invalidate text replay");
+
+  const enabledTransition = countingAgent();
+  await runWorkflow(scriptWithSchema(`{ type: 'string' }`), {
+    agent: enabledTransition.runner,
+    structuredOutputEnabled: true,
+    persistLogs: false,
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(enabledTransition.state.calls, 1, "enabling structured output must miss a text journal entry");
+
+  const enabledJournal: JournalEntry[] = [];
+  await runWorkflow(scriptWithSchema(`{ type: 'string' }`), {
+    agent: countingAgent().runner,
+    structuredOutputEnabled: true,
+    persistLogs: false,
+    onAgentJournal: (entry) => enabledJournal.push(entry),
+  });
+  const disabledTransition = countingAgent();
+  await runWorkflow(scriptWithSchema(`{ type: 'string' }`), {
+    agent: disabledTransition.runner,
+    structuredOutputEnabled: false,
+    persistLogs: false,
+    resumeJournal: new Map(enabledJournal.map((entry) => [entry.index, entry])),
+  });
+  assert.equal(disabledTransition.state.calls, 1, "disabling structured output must miss a structured journal entry");
+});
+
+test("nested workflow calls inherit the parent's structured-output snapshot", async () => {
+  const seen: Array<{ schema?: unknown; structuredOutputEnabled?: boolean }> = [];
+  let calls = 0;
+  const child = `export const meta = { name: 'nested_schema', description: 'nested schema' }
+return await agent('child', { label: 'child', schema: { type: 'object' } })`;
+  const parent = `export const meta = { name: 'parent_schema', description: 'parent schema' }
+await agent('parent', { label: 'parent' })
+return await workflow('nested')`;
+
+  const result = await runWorkflow(parent, {
+    agent: {
+      async run(_prompt: string, options: { schema?: unknown; structuredOutputEnabled?: boolean }) {
+        calls++;
+        seen.push(options);
+        return calls === 1 ? "parent text" : "child text";
+      },
+    },
+    structuredOutputEnabled: false,
+    persistLogs: false,
+    loadSavedWorkflow: (name) => (name === "nested" ? child : undefined),
+  });
+
+  assert.equal(result.result, "child text");
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0]?.schema, undefined);
+  assert.equal(seen[1]?.schema, undefined);
+  assert.deepEqual(
+    seen.map((options) => options.structuredOutputEnabled),
+    [false, false],
+  );
+});
+
 const resumeScript = `export const meta = { name: 'resume_demo', description: 'resume' }
 const a = await agent('first', { label: 'a' })
 const b = await agent('second', { label: 'b' })

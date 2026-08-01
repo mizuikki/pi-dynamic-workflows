@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { saveWorkflowSettings } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
@@ -117,10 +118,16 @@ describe("registerSavedWorkflow", () => {
     const { registerSavedWorkflow } = await load();
     let startedBackground = false;
     let receivedPolicy: unknown;
+    let receivedStructuredOutput: boolean | undefined;
     const manager = {
-      startInBackground: (_script: string, _args: unknown, options: { hostRetryPolicy?: unknown }) => {
+      startInBackground: (
+        _script: string,
+        _args: unknown,
+        options: { hostRetryPolicy?: unknown; structuredOutputEnabled?: boolean },
+      ) => {
         startedBackground = true;
         receivedPolicy = options.hostRetryPolicy;
+        receivedStructuredOutput = options.structuredOutputEnabled;
         return { runId: "test-run", promise: Promise.resolve({ result: { report: "done" } }) };
       },
     };
@@ -136,11 +143,20 @@ describe("registerSavedWorkflow", () => {
       getterCalls++;
       return originalGetter();
     };
-    await commands[0].handler("", ctx);
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-saved-cap-home-"));
+    try {
+      await withFakeHomeAsync(fakeHome, async () => {
+        saveWorkflowSettings({ structuredOutputEnabled: true });
+        await commands[0].handler("", ctx);
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
 
     assert.equal(startedBackground, true, "should use startInBackground when manager provided");
     assert.equal(getterCalls, 1);
     assert.equal(Object.isFrozen(receivedPolicy), true);
+    assert.equal(receivedStructuredOutput, true);
   });
 
   it("falls back to runWorkflow (inline) when no manager is provided", async () => {

@@ -88,7 +88,12 @@ describe("resolveStructuredOutput", () => {
     const { session, capture } = makeSession();
     await assert.rejects(
       () => resolveStructuredOutput(session, capture, Schema, opts, () => "no json at all"),
-      /structured_output/i,
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, WorkflowErrorCode.SCHEMA_NONCOMPLIANCE);
+        assert.equal((error as { recoverable?: boolean }).recoverable, false);
+        assert.match((error as Error).message, /structured_output/i);
+        return true;
+      },
     );
   });
 

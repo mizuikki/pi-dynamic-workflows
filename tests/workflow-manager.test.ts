@@ -119,6 +119,34 @@ test(
 );
 
 test(
+  "manager progress retains disabled-schema diagnostics for /workflows",
+  withTempCwd(async (cwd) => {
+    const seen: Array<{ schema?: unknown; structuredOutputEnabled?: boolean }> = [];
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(_prompt: string, options: { schema?: unknown; structuredOutputEnabled?: boolean }) {
+          seen.push(options);
+          return "text result";
+        },
+      },
+    });
+    const script = `export const meta = { name: 'schema-progress', description: 'schema progress' }
+return await agent('answer', { label: 'visible schema', schema: { type: 'object' } })`;
+
+    const result = await manager.runSync(script, undefined, { structuredOutputEnabled: false });
+    const run = manager.listRuns()[0];
+    const persisted = run ? manager.loadRun(run.runId) : undefined;
+
+    assert.equal(result.result, "text result");
+    assert.equal(seen[0]?.schema, undefined);
+    assert.equal(seen[0]?.structuredOutputEnabled, false);
+    assert.ok(persisted?.logs.some((message) => /opts\.schema ignored/.test(message)));
+    assert.ok(persisted?.logs.some((message) => /using text output/.test(message)));
+  }),
+);
+
+test(
   "manager defaultAgentTimeoutMs applies when run options omit agentTimeoutMs",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });

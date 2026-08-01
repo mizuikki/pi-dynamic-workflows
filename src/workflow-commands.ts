@@ -12,6 +12,7 @@ import { registerSavedWorkflow } from "./saved-commands.js";
 import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME } from "./workflow-editor.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
+import { isWorkflowStructuredOutputEnabled } from "./workflow-settings.js";
 import { openWorkflowNavigator } from "./workflow-ui.js";
 
 const STATUS_ICON: Record<string, string> = {
@@ -155,7 +156,9 @@ export function registerWorkflowCommands(
           }
 
           const effort = opts.effort;
-          const extra = effort && effort.level !== "off" ? effortDirective(effort.level) : undefined;
+          const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(opts.cwd ?? process.cwd());
+          const extra =
+            effort && effort.level !== "off" ? effortDirective(effort.level, structuredOutputEnabled) : undefined;
           const forced = buildForcedWorkflowPrompt(prompt, extra);
           ctx.ui.notify(`Forcing workflow: ${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}`, "info");
           try {
@@ -236,7 +239,11 @@ export function registerWorkflowCommands(
         }
         case "resume": {
           if (!id) return ctx.ui.notify(USAGE, "warning");
-          const ok = await manager.resume(id, { hostRetryPolicy: readRequiredHostRetryPolicy(ctx) });
+          const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(opts.cwd ?? process.cwd());
+          const ok = await manager.resume(id, {
+            hostRetryPolicy: readRequiredHostRetryPolicy(ctx),
+            structuredOutputEnabled,
+          });
           ctx.ui.notify(ok ? `Resumed ${id}` : `Resume not available for ${id} yet`, ok ? "info" : "warning");
           return;
         }

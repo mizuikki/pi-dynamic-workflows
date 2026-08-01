@@ -23,6 +23,8 @@ export enum WorkflowErrorCode {
   SCRIPT_VALIDATION_ERROR = "SCRIPT_VALIDATION_ERROR",
   /** A schema agent never produced valid structured_output (after repair + extraction). */
   SCHEMA_NONCOMPLIANCE = "SCHEMA_NONCOMPLIANCE",
+  /** A schema-dependent workflow surface was used without the explicit opt-in. */
+  STRUCTURED_OUTPUT_DISABLED = "STRUCTURED_OUTPUT_DISABLED",
   /** A non-schema agent completed without any assistant text output. */
   AGENT_EMPTY_OUTPUT = "AGENT_EMPTY_OUTPUT",
   /** Agent execution failed. */

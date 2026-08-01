@@ -5,8 +5,23 @@ import { buildForcedWorkflowPrompt } from "../src/workflow-editor.js";
 
 test("effortDirective returns a tier nudge for high/ultra, nothing for off", () => {
   assert.equal(effortDirective("off"), undefined);
-  assert.match(effortDirective("high") ?? "", /HIGH/);
-  assert.match(effortDirective("ultra") ?? "", /ULTRA/);
+  const high = effortDirective("high") ?? "";
+  const ultra = effortDirective("ultra") ?? "";
+  assert.match(high, /HIGH/);
+  assert.match(ultra, /ULTRA/);
+  assert.match(high, /structured output is disabled/i);
+  assert.match(ultra, /structured output is disabled/i);
+});
+
+test("effortDirective adapts quality guidance to the structured-output capability", () => {
+  const disabled = effortDirective("ultra", false) ?? "";
+  assert.match(disabled, /text-safe reviewers/i);
+  assert.match(disabled, /structured output is disabled/i);
+  assert.doesNotMatch(disabled, /prefer verify\(\)/i);
+
+  const enabled = effortDirective("ultra", true) ?? "";
+  assert.match(enabled, /reviewers\/judges/i);
+  assert.match(enabled, /completenessCheck/i);
 });
 
 test("isSubstantive accepts real requests, rejects terse text and slash commands", () => {

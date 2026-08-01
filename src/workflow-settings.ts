@@ -23,6 +23,8 @@ export interface TrellisAdapterSetting {
 }
 
 export interface WorkflowSettings {
+  /** Enable the workflow-specific structured return channel. Default: false. */
+  structuredOutputEnabled?: boolean;
   keywordTriggerEnabled?: boolean;
   /** Literal keyword that arms workflows mode from interactive input. */
   keywordTriggerWord?: string;
@@ -59,6 +61,9 @@ export interface WorkflowSettingsStore {
   save(settings: WorkflowSettings): void;
 }
 
+export const WORKFLOW_STRUCTURED_OUTPUT_SETTINGS_PATH = "~/.pi/workflows/settings.json";
+export const WORKFLOW_STRUCTURED_OUTPUT_OPT_IN = '"structuredOutputEnabled": true';
+
 export interface WorkflowSettingsOptions {
   /** Explicit settings path, primarily for tests and migrations. */
   settingsPath?: string;
@@ -88,6 +93,20 @@ export function loadWorkflowSettings(settingsPathOrOptions?: string | WorkflowSe
     options.projectSettingsPath ?? (options.cwd ? getWorkflowProjectSettingsPath(options.cwd) : undefined);
   if (!projectPath) return globalSettings;
   return { ...globalSettings, ...readSettings(projectPath) };
+}
+
+/** Sample the merged structured-output preference for one execution admission. */
+export function isWorkflowStructuredOutputEnabled(cwd: string = process.cwd()): boolean {
+  try {
+    return loadWorkflowSettings({ cwd }).structuredOutputEnabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Stable user-facing guidance for the manual structured-output opt-in. */
+export function structuredOutputDisabledGuidance(subject = "Workflow structured output"): string {
+  return `${subject} is disabled by default. Set ${WORKFLOW_STRUCTURED_OUTPUT_OPT_IN} in ${WORKFLOW_STRUCTURED_OUTPUT_SETTINGS_PATH} to enable it.`;
 }
 
 /** Merge known settings into the user-level settings file. */
@@ -135,6 +154,9 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const raw = value as Record<string, unknown>;
   const settings: WorkflowSettings = {};
+  if (typeof raw.structuredOutputEnabled === "boolean") {
+    settings.structuredOutputEnabled = raw.structuredOutputEnabled;
+  }
   if (typeof raw.keywordTriggerEnabled === "boolean") {
     settings.keywordTriggerEnabled = raw.keywordTriggerEnabled;
   }
