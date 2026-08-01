@@ -316,19 +316,16 @@ describe("agentDefinitionKey", () => {
       "source is not part of identity",
     );
   });
-  it("changes when tools/model/prompt change", () => {
+  it("changes when tools/prompt change but ignores model metadata", () => {
     const base: AgentDefinition = { name: "x", prompt: "p", model: "m", tools: ["read"], source: "project" };
     assert.notEqual(agentDefinitionKey(base), agentDefinitionKey({ ...base, prompt: "p2" }));
-    assert.notEqual(agentDefinitionKey(base), agentDefinitionKey({ ...base, model: "m2" }));
+    assert.equal(agentDefinitionKey(base), agentDefinitionKey({ ...base, model: "m2" }));
     assert.notEqual(agentDefinitionKey(base), agentDefinitionKey({ ...base, tools: ["read", "write"] }));
   });
 
   it("preserves the pre-isolation key shape when isolation is absent", () => {
     const def: AgentDefinition = { name: "x", prompt: "p", source: "project" };
-    assert.equal(
-      agentDefinitionKey(def),
-      JSON.stringify({ tools: null, disallowedTools: null, model: null, prompt: "p" }),
-    );
+    assert.equal(agentDefinitionKey(def), JSON.stringify({ tools: null, disallowedTools: null, prompt: "p" }));
   });
 
   it("changes when isolation changes", () => {
@@ -337,12 +334,12 @@ describe("agentDefinitionKey", () => {
   });
 });
 
-// ── runtime integration: agentType binds tools/model/prompt via runWorkflow ──
+// ── runtime integration: agentType binds tools/prompt via runWorkflow ──
 
 function capturingAgent() {
   const seen: Array<{
     model?: string;
-    tier?: string;
+    effort?: string;
     toolNames?: string[];
     disallowedToolNames?: string[];
     instructions?: string;
@@ -353,7 +350,7 @@ function capturingAgent() {
     async run(_prompt: string, options: Record<string, unknown>) {
       seen.push({
         model: options.model as string | undefined,
-        tier: options.tier as string | undefined,
+        effort: options.effort as string | undefined,
         toolNames: options.toolNames as string[] | undefined,
         disallowedToolNames: options.disallowedToolNames as string[] | undefined,
         instructions: options.instructions as string | undefined,
@@ -382,7 +379,7 @@ const registry: AgentRegistry = new Map([
 ]);
 
 describe("agentType binding through runWorkflow", () => {
-  it("binds tools, model, and the body prompt for a known agentType", async () => {
+  it("binds tools and the body prompt while ignoring definition model metadata", async () => {
     const { seen, runner } = capturingAgent();
     const script = `export const meta = { name: 'at', description: 'agentType' }
 const r = await agent('audit', { label: 'a', agentType: 'security-auditor' })
@@ -390,28 +387,39 @@ return r`;
     await runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry });
 
     assert.equal(seen.length, 1);
-    assert.equal(seen[0].model, "vendor/auditor-model", "agentType model is applied");
+    assert.equal(seen[0].model, undefined, "agentType model metadata is ignored");
     assert.deepEqual(seen[0].toolNames, ["read", "grep"], "allowlist forwarded");
     assert.deepEqual(seen[0].disallowedToolNames, ["write", "bash"], "denylist forwarded");
     assert.ok(seen[0].instructions?.includes("You are a security auditor."), "body prompt injected");
   });
 
-  it("explicit opts.model beats the agentType model", async () => {
+  it("explicit opts.model is independently selected", async () => {
     const { seen, runner } = capturingAgent();
+    const model = { provider: "explicit", id: "model", name: "model", reasoning: false } as any;
+    const modelRegistry = { getAll: () => [model] } as any;
     const script = `export const meta = { name: 'at', description: 'agentType' }
 await agent('audit', { label: 'a', agentType: 'security-auditor', model: 'explicit/model' })
 return {}`;
-    await runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry });
+    await runWorkflow(script, {
+      agent: runner,
+      persistLogs: false,
+      agentRegistry: registry,
+      modelRegistry,
+      session: { model },
+      workflowModelSetting: null,
+    });
     assert.equal(seen[0].model, "explicit/model");
   });
 
-  it("agentType model beats a tier (model passed, tier still forwarded)", async () => {
+  it("rejects retired tier options instead of routing by definition metadata", async () => {
     const { seen, runner } = capturingAgent();
     const script = `export const meta = { name: 'at', description: 'agentType' }
 await agent('audit', { label: 'a', agentType: 'security-auditor', tier: 'small' })
 return {}`;
-    await runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry });
-    assert.equal(seen[0].model, "vendor/auditor-model", "definition model wins over tier");
+    await assert.rejects(() => runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry }), {
+      code: "SCRIPT_VALIDATION_ERROR",
+    });
+    assert.equal(seen.length, 0);
   });
 
   it("agentType isolation: worktree runs the agent in an isolated cwd", async () => {
@@ -536,7 +544,7 @@ return r`;
     });
     assert.equal(first.seen.length, 1);
 
-    // Resume with an EDITED definition (different model) → cache must miss → re-run.
+    // Editing ignored model metadata does not change Workflow behavior or the hash.
     const securityAuditor = registry.get("security-auditor");
     assert.ok(securityAuditor, "security-auditor definition should be loaded");
     const editedRegistry: AgentRegistry = new Map([
@@ -549,8 +557,7 @@ return r`;
       agentRegistry: editedRegistry,
       resumeJournal: new Map(journal.map((e) => [e.index, e])),
     });
-    assert.equal(second.seen.length, 1, "edited definition busts the cache and re-runs live");
-    assert.equal(second.seen[0].model, "vendor/changed-model");
+    assert.equal(second.seen.length, 0, "ignored definition model metadata must not bust the cache");
   });
 
   it("resume cache HITS when the definition is unchanged", async () => {

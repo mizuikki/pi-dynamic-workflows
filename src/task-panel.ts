@@ -93,8 +93,11 @@ export function deliverText(run: ManagedRun, opts: { maxChars?: number } = {}): 
   const tokens = run.result?.tokenUsage ? ` · ${run.result.tokenUsage.total.toLocaleString()} tokens` : "";
   const agents = run.result?.agentCount ?? run.snapshot.agentCount;
   const duration = run.result?.durationMs ? ` · ${(run.result.durationMs / 1000).toFixed(1)}s` : "";
+  const model = run.workflowModel
+    ? ` Default Workflow Model: ${run.workflowModel.model} @ ${run.workflowModel.effort}.`
+    : "";
   const lines = [
-    `✓ Background workflow "${run.snapshot.name}" finished (${agents} agents${tokens}${duration}).`,
+    `✓ Background workflow "${run.snapshot.name}" finished (${agents} agents${tokens}${duration}).${model}`,
     "",
     summary,
   ];
@@ -239,7 +242,10 @@ export function renderPanel(snapshot: WorkflowPanelSnapshot, theme: Theme, width
     const total = live?.agents.length ?? summary.agentCounts.total;
     const icon = summary.status === "paused" ? "⏸" : "◆";
     const phase = live?.currentPhase ?? summary.currentPhase;
-    return `  ${icon} ${summary.workflowName}  ${done}/${total} agents${phase ? ` · ${phase}` : ""}`;
+    const defaultPair = live?.defaultModel
+      ? ` · default ${shortModel(live.defaultModel) ?? live.defaultModel}${live.defaultEffort ? ` @ ${live.defaultEffort}` : ""}`
+      : "";
+    return `  ${icon} ${summary.workflowName}  ${done}/${total} agents${phase ? ` · ${phase}` : ""}${defaultPair}`;
   });
   // Finished runs leave this live panel but are kept in the navigator. Tell the
   // user so a completed run doesn't look like it vanished.
@@ -346,7 +352,7 @@ function renderRunBody(
     for (const a of visible) {
       const tok = a.tokens ? dim(` ${fmtTokensShort(a.tokens)} tok`) : "";
       const mdl = shortModel(a.model);
-      const model = mdl ? dim(` · ${mdl}`) : "";
+      const model = mdl ? dim(` · ${mdl}${a.effort ? ` @ ${a.effort}` : ""}`) : "";
       lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}`);
     }
     if (phaseAgents.length > visible.length) {
@@ -394,6 +400,9 @@ export function renderPanelDetailed(
       `${done}/${agentTotal} agents`,
       snap?.currentPhase || "",
       total > 0 ? `${fmtTokensShort(total)} tok` : "",
+      snap?.defaultModel
+        ? `default ${shortModel(snap.defaultModel) ?? snap.defaultModel}${snap.defaultEffort ? ` @ ${snap.defaultEffort}` : ""}`
+        : "",
       // 2 decimals for ≥1¢, 4 for sub-cent so a real cost never shows as "$0.00".
       // (cost is only known once the run finalizes its usage.)
       usage?.cost ? `$${usage.cost.toFixed(usage.cost >= 0.01 ? 2 : 4)}` : "",

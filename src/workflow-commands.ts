@@ -93,11 +93,16 @@ function watchRun(manager: WorkflowManager, pi: ExtensionAPI, ctx: ExtensionComm
 
 function renderPersistedStatus(run: PersistedRunState): string {
   const lines = [`${STATUS_ICON[run.status] ?? "?"} ${run.workflowName} (${run.runId}) — ${run.status}`];
+  if (run.defaultModel) {
+    lines.push(`  default Workflow Model: ${run.defaultModel}${run.defaultEffort ? ` @ ${run.defaultEffort}` : ""}`);
+  }
   if (run.currentPhase) lines.push(`  phase: ${run.currentPhase}`);
   for (const agent of run.agents) {
     const icon =
       agent.status === "done" ? "✓" : agent.status === "error" ? "✗" : agent.status === "running" ? "◆" : "·";
-    lines.push(`  ${icon} ${agent.label}`);
+    lines.push(
+      `  ${icon} ${agent.label}${agent.model ? ` — ${agent.model}` : ""}${agent.effort ? ` @ ${agent.effort}` : ""}`,
+    );
   }
   if (run.tokenUsage) lines.push(`  tokens: ${run.tokenUsage.total.toLocaleString()}`);
   if (run.durationMs) lines.push(`  duration: ${(run.durationMs / 1000).toFixed(1)}s`);

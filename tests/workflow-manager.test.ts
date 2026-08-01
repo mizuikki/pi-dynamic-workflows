@@ -276,9 +276,18 @@ test(
 );
 
 test(
-  "each agent's model is recorded for /workflows: explicit opts.model, else the main model",
+  "each agent's concrete model and effort are recorded for /workflows",
   withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), mainModel: "anthropic/claude-opus-4-8" });
+    const mainModel = { provider: "anthropic", id: "claude-opus-4-8", name: "opus", reasoning: false } as any;
+    const selectedModel = { provider: "openai", id: "gpt-5-mini", name: "mini", reasoning: false } as any;
+    const modelRegistry = { getAll: () => [mainModel, selectedModel] } as any;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: fakeAgent(),
+      mainModel: "anthropic/claude-opus-4-8",
+      modelRegistry,
+      session: { model: mainModel },
+    });
     const script = `export const meta = { name: 'model_demo', description: 'per-agent models' }
 const a = await agent('explore', { label: 'scan', model: 'openai/gpt-5-mini' })
 const b = await agent('reason', { label: 'judge' })
@@ -290,6 +299,8 @@ return { a, b }`;
     const byLabel = Object.fromEntries((run?.agents ?? []).map((a) => [a.label, a.model]));
     assert.equal(byLabel.scan, "openai/gpt-5-mini", "explicit per-agent model is recorded");
     assert.equal(byLabel.judge, "anthropic/claude-opus-4-8", "default agent shows the main model");
+    assert.ok(run?.agents.every((a) => a.effort === "off"));
+    assert.equal(run?.defaultModel, "anthropic/claude-opus-4-8");
   }),
 );
 
@@ -1053,6 +1064,40 @@ test(
     // Verify persistence was updated to completed
     const persisted = manager.listRuns().find((r) => r.runId === runId);
     assert.equal(persisted?.status, "completed", "persistence should reflect completed status");
+  }),
+);
+
+test(
+  "cold-start resume admits a current model for older additive payloads",
+  withTempCwd(async (cwd) => {
+    const sessionModel = { provider: "provider", id: "session", name: "session", reasoning: false } as any;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: fakeAgent(),
+      session: { model: sessionModel },
+      modelRegistry: { getAll: () => [sessionModel] } as any,
+    });
+    const runId = "cold-start-legacy-model-1";
+
+    seedRun(cwd, {
+      runId,
+      workflowName: "cold_start_legacy_model",
+      script: oneAgentScript,
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    assert.equal(await manager.resume(runId), true);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const run = manager.getRun(runId);
+    assert.equal(run?.status, "completed");
+    assert.equal(run?.snapshot.defaultModel, "provider/session");
+    assert.equal(run?.snapshot.defaultEffort, "off");
   }),
 );
 

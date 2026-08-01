@@ -3,6 +3,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type {
   CreateAgentSessionOptions,
   ModelRegistry,
@@ -13,6 +14,12 @@ import type { WorkflowAgent, WorkflowAgentOptions } from "./agent.js";
 import { preview, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import type { KeelHostBridgeV1 } from "./keel-host-contract.js";
+import {
+  type ResolvedWorkflowModel,
+  resolveWorkflowModel,
+  resolveWorkflowModelSnapshot,
+  type WorkflowModelSnapshot,
+} from "./model-selection.js";
 import {
   type AgentTurnRetryOverride,
   type ImmutableHostRetryPolicySnapshot,
@@ -34,6 +41,7 @@ import {
 } from "./run-persistence.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import { WorkflowPersistenceError } from "./workflow-database.js";
+import { loadWorkflowSettings } from "./workflow-settings.js";
 
 export interface ManagedRun {
   runId: string;
@@ -47,6 +55,8 @@ export interface ManagedRun {
   startedAt: Date;
   /** The real script, kept so the run can be resumed. */
   script: string;
+  /** Concrete default model/effort admitted for this run. */
+  workflowModel?: WorkflowModelSnapshot;
   args?: unknown;
   /** Accumulated agent results for resume (deterministic call index -> result). */
   journal: JournalEntry[];
@@ -108,10 +118,10 @@ export interface WorkflowManagerOptions {
   loadSavedWorkflow?: (name: string) => string | undefined;
   /** Inject a custom agent runner (tests); defaults to a real subagent session. */
   agent?: Pick<WorkflowAgent, "run">;
-  /** The session's main model (provider/id), for auto-tiering explore agents. */
+  /** The session's main model (provider/id), used as a session-inheritance fallback. */
   mainModel?: string;
   /**
-   * Host extension ModelRegistry facade. Used for model-spec resolution and as
+   * Host extension ModelRegistry facade. Used for strict model resolution and as
    * the source of registered dynamic providers to copy into the plugin runtime.
    */
   modelRegistry?: ModelRegistry;
@@ -119,7 +129,7 @@ export interface WorkflowManagerOptions {
   modelRuntime?: ModelRuntime;
   /** Base host session options used by subagents; per-run model overrides win. */
   session?: WorkflowAgentOptions["session"];
-  /** Current host thinking level, snapshotted when a run starts. */
+  /** Current host Pi reasoning effort, sampled when a run starts. */
   thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
   /** The pi session id to tag runs with (see setSessionId). */
   sessionId?: string;
@@ -158,7 +168,7 @@ export class WorkflowManager extends EventEmitter {
   private concurrency: number;
   private loadSavedWorkflow?: (name: string) => string | undefined;
   private agent?: Pick<WorkflowAgent, "run">;
-  /** The session's main model (provider/id), for auto-tiering explore agents. */
+  /** The session's main model (provider/id), used as a session-inheritance fallback. */
   private mainModel?: string;
   /** Host extension ModelRegistry facade. */
   private modelRegistry?: ModelRegistry;
@@ -176,6 +186,23 @@ export class WorkflowManager extends EventEmitter {
   private extensionPathFilters?: WorkflowAgentOptions["extensionPathFilters"];
   private leaseHeartbeatIntervalMs: number;
   private leaseStaleAfterMs: number;
+
+  private admitWorkflowModel(): ResolvedWorkflowModel | undefined {
+    const sessionModel = this.sessionOptions?.model as Model<Api> | undefined;
+    const setting = loadWorkflowSettings({ cwd: this.cwd }).workflowModel;
+    const canResolve =
+      setting !== undefined ||
+      sessionModel !== undefined ||
+      (this.mainModel !== undefined && this.modelRegistry !== undefined);
+    if (!canResolve) return undefined;
+    return resolveWorkflowModel({
+      setting,
+      sessionModel,
+      sessionModelId: this.mainModel,
+      sessionEffort: this.currentThinkingLevel as ModelThinkingLevel | undefined,
+      registry: this.modelRegistry,
+    });
+  }
 
   constructor(options: WorkflowManagerOptions = {}) {
     super();
@@ -281,7 +308,7 @@ export class WorkflowManager extends EventEmitter {
     }
   }
 
-  /** Set the session's main model (provider/id). Used to auto-tier explore agents. */
+  /** Set the session's main model (provider/id) for session inheritance. */
   setMainModel(spec: string | undefined): void {
     this.mainModel = spec;
   }
@@ -322,7 +349,7 @@ export class WorkflowManager extends EventEmitter {
 
   /**
    * The host session's model registry facade, when set. Read lazily (e.g. by the
-   * workflow tool's model routing guideline) since `setModelRegistry` is called
+   * workflow tool's Workflow Model guideline) since `setModelRegistry` is called
    * from `session_start`, which runs after the tool is created — a snapshot
    * taken at tool-creation time would miss it.
    */
@@ -346,6 +373,7 @@ export class WorkflowManager extends EventEmitter {
     const persistence = this.repository();
     const executionPolicy = normalizeExecutionPolicy(exec);
     const parsed = parseWorkflowScript(script);
+    const admittedWorkflowModel = this.admitWorkflowModel();
     const slug = parsed.meta.name
       ? parsed.meta.name
           .toLowerCase()
@@ -366,6 +394,9 @@ export class WorkflowManager extends EventEmitter {
       snapshot: {
         name: parsed.meta.name,
         description: parsed.meta.description,
+        ...(admittedWorkflowModel
+          ? { defaultModel: admittedWorkflowModel.model, defaultEffort: admittedWorkflowModel.effort }
+          : {}),
         phases: parsed.meta.phases?.map((p) => p.title) ?? [],
         logs: [],
         agents: [],
@@ -377,6 +408,9 @@ export class WorkflowManager extends EventEmitter {
       controller,
       startedAt: new Date(),
       script,
+      ...(admittedWorkflowModel
+        ? { workflowModel: { model: admittedWorkflowModel.model, effort: admittedWorkflowModel.effort } }
+        : {}),
       args,
       journal: [],
       ...(Object.keys(executionPolicy).length ? { executionPolicy } : {}),
@@ -395,6 +429,9 @@ export class WorkflowManager extends EventEmitter {
         args,
         sessionId: managed.sessionId,
         status: "running",
+        ...(admittedWorkflowModel
+          ? { defaultModel: admittedWorkflowModel.model, defaultEffort: admittedWorkflowModel.effort }
+          : {}),
         phases: managed.snapshot.phases,
         agents: [],
         logs: [],
@@ -465,6 +502,7 @@ export class WorkflowManager extends EventEmitter {
   /** Build a fresh managed run with an empty snapshot. */
   private createManaged(script: string, args?: unknown): ManagedRun {
     const parsed = parseWorkflowScript(script);
+    const admittedWorkflowModel = this.admitWorkflowModel();
     const slug = parsed.meta.name
       ? parsed.meta.name
           .toLowerCase()
@@ -480,6 +518,9 @@ export class WorkflowManager extends EventEmitter {
       snapshot: {
         name: parsed.meta.name,
         description: parsed.meta.description,
+        ...(admittedWorkflowModel
+          ? { defaultModel: admittedWorkflowModel.model, defaultEffort: admittedWorkflowModel.effort }
+          : {}),
         phases: parsed.meta.phases?.map((p) => p.title) ?? [],
         logs: [],
         agents: [],
@@ -491,6 +532,9 @@ export class WorkflowManager extends EventEmitter {
       controller: new AbortController(),
       startedAt: new Date(),
       script,
+      ...(admittedWorkflowModel
+        ? { workflowModel: { model: admittedWorkflowModel.model, effort: admittedWorkflowModel.effort } }
+        : {}),
       args,
       journal: [],
       background: false,
@@ -544,6 +588,8 @@ export class WorkflowManager extends EventEmitter {
               }
             : undefined,
         currentThinkingLevel: this.currentThinkingLevel,
+        sessionModel: this.sessionOptions?.model as Model<Api> | undefined,
+        workflowModel: managed.workflowModel,
         persistAgentSessions: this.persistAgentSessions,
         projectTrusted: this.projectTrusted,
         contextLoader: this.contextLoader,
@@ -591,6 +637,7 @@ export class WorkflowManager extends EventEmitter {
             prompt: event.prompt,
             status: "running",
             model: event.model,
+            effort: event.effort,
           });
           this.emit("agentStart", { runId: managed.runId, ...event });
           progress();
@@ -607,6 +654,7 @@ export class WorkflowManager extends EventEmitter {
             agent.recoverable = event.recoverable;
             agent.tokens = event.tokens;
             if (event.model) agent.model = event.model;
+            if (event.effort) agent.effort = event.effort;
           }
           this.emit("agentEnd", { runId: managed.runId, ...event });
           progress();
@@ -735,6 +783,9 @@ export class WorkflowManager extends EventEmitter {
       workflowName: managed.snapshot.name,
       script: managed.script,
       args: managed.args,
+      ...(managed.workflowModel
+        ? { defaultModel: managed.workflowModel.model, defaultEffort: managed.workflowModel.effort }
+        : {}),
       sessionId: managed.sessionId,
       journal: managed.journal,
       ...(managed.executionPolicy ? { executionPolicy: managed.executionPolicy } : {}),
@@ -845,6 +896,45 @@ export class WorkflowManager extends EventEmitter {
       return false;
     }
 
+    let resumedWorkflowModel: WorkflowModelSnapshot | undefined;
+    try {
+      const persistedModel =
+        typeof persisted.defaultModel === "string" && persisted.defaultModel.trim()
+          ? persisted.defaultModel.trim()
+          : undefined;
+      const persistedEffort =
+        typeof persisted.defaultEffort === "string" && persisted.defaultEffort.trim()
+          ? persisted.defaultEffort
+          : undefined;
+      if (persistedModel === undefined && persistedEffort === undefined) {
+        // Runs written before the additive snapshot fields have no original pair
+        // to restore. Keep those payloads structurally resumable when the host can
+        // still admit a model; every new run persists both fields and therefore
+        // always follows the strict snapshot path below.
+        const admitted = this.admitWorkflowModel();
+        resumedWorkflowModel = admitted ? { model: admitted.model, effort: admitted.effort } : undefined;
+      } else {
+        if (persistedModel === undefined || persistedEffort === undefined) {
+          throw new WorkflowError(
+            "This run has an incomplete persisted Workflow Model snapshot and cannot be resumed safely. " +
+              "Start a new run with a registered Pi model.",
+            WorkflowErrorCode.MODEL_SELECTION_ERROR,
+            { recoverable: false },
+          );
+        }
+        resumedWorkflowModel = resolveWorkflowModelSnapshot(
+          { model: persistedModel, effort: persistedEffort },
+          {
+            sessionModel: this.sessionOptions?.model as Model<Api> | undefined,
+            registry: this.modelRegistry,
+          },
+        );
+      }
+    } catch (error) {
+      persistence.releaseRunLease(lease);
+      throw error;
+    }
+
     const controller = new AbortController();
     const managed: ManagedRun = {
       runId,
@@ -853,6 +943,9 @@ export class WorkflowManager extends EventEmitter {
       status: "running",
       snapshot: {
         name: persisted.workflowName,
+        ...(resumedWorkflowModel
+          ? { defaultModel: resumedWorkflowModel.model, defaultEffort: resumedWorkflowModel.effort }
+          : {}),
         phases: persisted.phases ?? [],
         logs: persisted.logs ?? [],
         agents: [],
@@ -864,6 +957,7 @@ export class WorkflowManager extends EventEmitter {
       controller,
       startedAt: new Date(),
       script: persisted.script,
+      workflowModel: resumedWorkflowModel,
       args: persisted.args,
       journal: persisted.journal ?? [],
       executionPolicy: persisted.executionPolicy,

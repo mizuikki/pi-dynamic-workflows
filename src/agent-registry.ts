@@ -11,13 +11,13 @@
  * discovery convention. The legacy `~/.pi/agents/*.md` location is still scanned as
  * a deprecated fallback (with a one-time warning) so users who followed this repo's
  * earlier docs are not silently broken; the new location wins on a name collision.
- * Frontmatter binds the subagent's tools, model, and a body prompt; project
- * definitions win over both user-level locations on a name collision. This mirrors
- * Claude Code's `.claude/agents` registry: agentType is a real binding of
- * tools+model+system-prompt, not a prose hint.
+ * Frontmatter binds the subagent's tools and body prompt; project definitions
+ * win over both user-level locations on a name collision. Model metadata is
+ * retained for non-Workflow consumers but ignored by Workflow execution.
  *
- * Bound today: `tools` (allowlist), `disallowedTools` (denylist), `model`,
- * and the markdown body (`prompt`). Parsed-but-ignored for now (documented): `mcp`, `skills`, `background`.
+ * Bound today: `tools` (allowlist), `disallowedTools` (denylist), and the
+ * markdown body (`prompt`). Parsed-but-ignored metadata includes `model`, `mcp`,
+ * `skills`, and `background`.
  * Wired: `isolation` ("worktree") → createWorktree() in workflow.ts.
  */
 
@@ -36,7 +36,7 @@ export interface AgentDefinition {
   tools?: string[];
   /** Denylist of coding-tool names, applied after the allowlist. */
   disallowedTools?: string[];
-  /** Model spec (`provider/modelId` or bare id) for this subagent. */
+  /** Legacy model metadata; Workflow execution deliberately ignores it. */
   model?: string;
   /** Isolation mode. When "worktree", agents using this type run in a git worktree. */
   isolation?: "worktree";
@@ -209,13 +209,11 @@ export function agentDefinitionKey(def: AgentDefinition | undefined): string | n
   const key: {
     tools: string[] | null;
     disallowedTools: string[] | null;
-    model: string | null;
     isolation?: "worktree";
     prompt: string;
   } = {
     tools: def.tools ?? null,
     disallowedTools: def.disallowedTools ?? null,
-    model: def.model ?? null,
     prompt: def.prompt,
   };
   // Preserve the pre-isolation serialized shape for definitions that do not use

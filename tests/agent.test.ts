@@ -11,8 +11,7 @@ import {
   WorkflowAgent,
 } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
-import { resolveModelSpecWithThinking } from "../src/model-spec.js";
-import type { ModelTierConfig } from "../src/model-tier-config.js";
+import { resolveRegisteredModel } from "../src/model-selection.js";
 import { runWorkflow } from "../src/workflow.js";
 import { withFakeHome } from "./helpers/fake-home.js";
 
@@ -180,56 +179,12 @@ test("listAvailableModelSpecs entries have provider/model format when non-empty"
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// resolveAgentModelSpec — model precedence: explicit model > tier > main model
+// Per-agent model selection is strict and has no tier fallback.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const tierConfig: ModelTierConfig = {
-  tiers: { small: "vendor/small", medium: "vendor/medium", big: "vendor/big" },
-};
-const loadCfg = () => tierConfig;
-const noCfg = () => null;
-
-test("resolveAgentModelSpec: explicit model wins over tier (the precedence bug fix)", () => {
-  // Even with a tier set AND a config that resolves it, an explicit model wins.
-  assert.equal(
-    resolveAgentModelSpec({ model: "explicit/model", tier: "small" }, "main/model", loadCfg),
-    "explicit/model",
-  );
-});
-
-test("resolveAgentModelSpec: explicit model wins even when no config exists", () => {
-  assert.equal(
-    resolveAgentModelSpec({ model: "explicit/model", tier: "small" }, "main/model", noCfg),
-    "explicit/model",
-  );
-});
-
-test("resolveAgentModelSpec: tier resolves from config when no explicit model", () => {
-  assert.equal(resolveAgentModelSpec({ tier: "big" }, "main/model", loadCfg), "vendor/big");
-});
-
-test("resolveAgentModelSpec: unconfigured tier falls back to the main model", () => {
-  assert.equal(resolveAgentModelSpec({ tier: "small" }, "main/model", noCfg), "main/model");
-  assert.equal(resolveAgentModelSpec({ tier: "unknown-tier" }, "main/model", loadCfg), "main/model");
-});
-
-test("resolveAgentModelSpec: untagged agent defaults to the configured medium tier", () => {
-  // The "set tier but nothing changed" fix: an agent with no model and no tier
-  // falls back to the user's medium tier when a config exists.
-  assert.equal(resolveAgentModelSpec({}, "main/model", loadCfg), "vendor/medium");
-});
-
-test("resolveAgentModelSpec: untagged agent with NO config falls through to session default", () => {
-  assert.equal(resolveAgentModelSpec({}, "main/model", noCfg), undefined);
-});
-
-test("resolveAgentModelSpec: untagged agent with a config lacking a medium tier => session default", () => {
-  const noMedium = () => ({ tiers: { small: "vendor/small" } });
-  assert.equal(resolveAgentModelSpec({}, "main/model", noMedium), undefined);
-});
-
-test("resolveAgentModelSpec: tier with no main model and no config yields undefined", () => {
-  assert.equal(resolveAgentModelSpec({ tier: "small" }, undefined, noCfg), undefined);
+test("resolveAgentModelSpec returns only an explicit model", () => {
+  assert.equal(resolveAgentModelSpec({ model: " provider/model " }, "session/model"), "provider/model");
+  assert.equal(resolveAgentModelSpec({}, "session/model"), undefined);
 });
 
 test("WorkflowAgent constructor accepts all option shapes without throwing", () => {
@@ -266,8 +221,8 @@ test("WorkflowAgent reuses an injected ModelRegistry for resolution", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: registry });
   const host = (agent as any).getHostRegistry();
   assert.equal(host, registry);
-  const resolved = resolveModelSpecWithThinking("mock/shared", host);
-  assert.equal(resolved.model, mockModel, "should resolve via the injected registry");
+  const resolved = resolveRegisteredModel("mock/shared", host);
+  assert.equal(resolved, mockModel, "should resolve via the injected registry");
 });
 
 test("WorkflowAgent creates a cached plugin ModelRuntime when none is injected", async () => {
@@ -290,8 +245,8 @@ test("WorkflowAgent.resolveModel resolves via a per-run registry when the constr
 
   const agent = new WorkflowAgent({ cwd: "/tmp" });
   const host = (agent as any).getHostRegistry(perRunRegistry);
-  const resolved = resolveModelSpecWithThinking("router/per-run-only", host);
-  assert.equal(resolved.model, perRunModel, "should resolve via the per-run registry, not a disk registry");
+  const resolved = resolveRegisteredModel("router/per-run-only", host);
+  assert.equal(resolved, perRunModel, "should resolve via the per-run registry, not a disk registry");
 });
 
 test("WorkflowAgent.resolveModel: per-run registry takes precedence over the constructor's shared registry", () => {
@@ -311,11 +266,11 @@ test("WorkflowAgent.resolveModel: per-run registry takes precedence over the con
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: constructorRegistry });
   // The per-run registry, not the constructor's, is consulted when both are set.
-  const resolved = resolveModelSpecWithThinking("run/override", (agent as any).getHostRegistry(perRunRegistry));
-  assert.equal(resolved.model, perRunModel, "per-run registry should win over the constructor's shared registry");
+  const resolved = resolveRegisteredModel("run/override", (agent as any).getHostRegistry(perRunRegistry));
+  assert.equal(resolved, perRunModel, "per-run registry should win over the constructor's shared registry");
   // And the constructor registry is still used when no per-run registry is given.
-  const fallback = resolveModelSpecWithThinking("ctor/shared", (agent as any).getHostRegistry());
-  assert.equal(fallback.model, constructorModel, "constructor registry should still apply without a per-run override");
+  const fallback = resolveRegisteredModel("ctor/shared", (agent as any).getHostRegistry());
+  assert.equal(fallback, constructorModel, "constructor registry should still apply without a per-run override");
 });
 
 test("WorkflowAgent.getHostRegistry: per-run registry wins, then constructor's shared registry", () => {
@@ -524,28 +479,45 @@ test("agent() in workflow forwards modelRegistry to the runner", async () => {
 
 test("agent() in workflow passes model spec to runner", async () => {
   const rec = new CallRecordingAgent();
+  const model = { provider: "fast-llm", id: "model", name: "model", reasoning: false } as any;
+  const modelRegistry = { getAvailable: () => [model], find: () => model, getAll: () => [model] } as any;
   await runWorkflow(
     `export const meta = { name: 'test', description: 't' }
      const r = await agent('task', { label: 't', model: 'fast-llm/model' })
      return r`,
-    { agent: rec, persistLogs: false },
+    {
+      agent: rec,
+      persistLogs: false,
+      modelRegistry,
+      session: { model },
+      workflowModelSetting: null,
+    },
   );
   assert.equal(rec.calls.length, 1);
   assert.equal((rec.calls[0].options as { model?: string }).model, "fast-llm/model");
+  assert.equal((rec.calls[0].options as { effort?: string }).effort, "off");
 });
 
-test("agent() in workflow forwards modelRegistry for CLI-style model parsing", async () => {
+test("agent() rejects CLI-style effort suffixes in model identifiers", async () => {
   const rec = new CallRecordingAgent();
-  const modelRegistry = { getAll: () => [] };
-  await runWorkflow(
-    `export const meta = { name: 'test', description: 't' }
+  const model = { provider: "fast-llm", id: "model", name: "model", reasoning: false } as any;
+  const modelRegistry = { getAll: () => [model] };
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        `export const meta = { name: 'test', description: 't' }
      const r = await agent('task', { label: 't', model: 'fast-llm/model:xhigh' })
      return r`,
-    { agent: rec, modelRegistry: modelRegistry as never, persistLogs: false },
+        {
+          agent: rec,
+          modelRegistry: modelRegistry as never,
+          session: { model },
+          workflowModelSetting: null,
+          persistLogs: false,
+        },
+      ),
+    { code: "MODEL_SELECTION_ERROR" },
   );
-  assert.equal(rec.calls.length, 1);
-  assert.equal((rec.calls[0].options as { modelRegistry?: unknown }).modelRegistry, modelRegistry);
-  assert.equal((rec.calls[0].options as { model?: string }).model, "fast-llm/model:xhigh");
 });
 
 test("agent() in workflow fires onAgentStart and onAgentEnd callbacks", async () => {
@@ -723,6 +695,7 @@ test("agent() in workflow fires onTokenUsage after run", async () => {
 
 test("agent() passes onModelResolved callback for display model updates", async () => {
   const rec = new CallRecordingAgent();
+  const model = { provider: "some", id: "model", name: "model", reasoning: false } as any;
   await runWorkflow(
     `export const meta = { name: 'test', description: 't' }
      await agent('task', { label: 't', model: 'some/model' })
@@ -730,6 +703,9 @@ test("agent() passes onModelResolved callback for display model updates", async 
     {
       agent: rec,
       persistLogs: false,
+      modelRegistry: { getAll: () => [model] } as any,
+      sessionModel: model,
+      workflowModelSetting: null,
       onAgentEnd: (e) => {
         assert.equal(e.model, "openai/gpt-4.1-mini");
       },

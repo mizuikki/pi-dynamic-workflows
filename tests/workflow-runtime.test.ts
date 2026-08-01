@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
-import { saveModelTierConfig } from "../src/model-tier-config.js";
 import { SharedStore } from "../src/shared-store.js";
 import { type JournalEntry, runWorkflow } from "../src/workflow.js";
 
@@ -334,60 +330,121 @@ test("runWorkflow accumulates real per-agent usage (incl. cost + cache tokens)",
   assert.equal(result.tokenUsage?.cacheWrite, 20, "cacheWrite accumulates across agents");
 });
 
-test("meta.model is parsed and routes as the default model for agents", async () => {
-  let seenModel: string | undefined;
-  const recorder = {
-    async run(_p: string, o: { model?: string }) {
-      seenModel = o.model;
+test("runWorkflow admits one default pair and supports four independent override combinations", async () => {
+  const sessionModel = {
+    provider: "provider",
+    id: "session",
+    name: "session",
+    reasoning: true,
+    thinkingLevelMap: { off: null, low: "low", medium: "medium", high: "high" },
+  } as any;
+  const alternateModel = {
+    provider: "provider",
+    id: "alternate",
+    name: "alternate",
+    reasoning: true,
+    thinkingLevelMap: { off: null, low: "low", medium: "medium", high: "high" },
+  } as any;
+  const registry = { getAll: () => [sessionModel, alternateModel] } as any;
+  const calls: Array<{ model?: string; effort?: string }> = [];
+  const runner = {
+    async run(_prompt: string, options: { model?: string; effort?: string }) {
+      calls.push({ model: options.model, effort: options.effort });
       return "ok";
     },
   };
-  const script = `export const meta = { name: 'm', description: 'd', model: 'meta/default-model' }
-await agent('x', { label: 'x' })
+  const script = `export const meta = { name: 'model_effort', description: 'pair selection' }
+await agent('default', { label: 'default' })
+await agent('model only', { label: 'model', model: 'provider/alternate' })
+await agent('effort only', { label: 'effort', effort: 'low' })
+await agent('both', { label: 'both', model: 'provider/alternate', effort: 'high' })
 return 1`;
-  await runWorkflow(script, { agent: recorder, persistLogs: false });
-  assert.equal(seenModel, "meta/default-model", "an agent with no model/tier/phase route uses meta.model");
+
+  const result = await runWorkflow(script, {
+    agent: runner,
+    persistLogs: false,
+    modelRegistry: registry,
+    session: { model: sessionModel },
+    workflowModelSetting: null,
+    currentThinkingLevel: "high",
+  });
+
+  assert.deepEqual(calls, [
+    { model: "provider/session", effort: "high" },
+    { model: "provider/alternate", effort: "high" },
+    { model: "provider/session", effort: "low" },
+    { model: "provider/alternate", effort: "high" },
+  ]);
+  assert.equal(result.defaultModel, "provider/session");
+  assert.equal(result.defaultEffort, "high");
 });
 
-test("runWorkflow passes tier-configured thinking level only when the tier supplies the model", async () => {
-  const calls: Array<{ model?: string; tier?: string; thinkingLevel?: string }> = [];
-  const runner = {
-    async run(_prompt: string, options: { model?: string; tier?: string; thinkingLevel?: string }) {
-      calls.push(options);
-      return "ok";
-    },
-  };
-  const script = `export const meta = { name: 'tier_thinking', description: 'thinking propagation' }
-await agent('tier model', { label: 'tier-model', tier: 'small' })
-await agent('explicit model', { label: 'explicit-model', tier: 'small', model: 'override/model' })
-return 1`;
+test("journal identity includes the admitted model and effort", async () => {
+  const modelOne = {
+    provider: "provider",
+    id: "one",
+    name: "one",
+    reasoning: true,
+    thinkingLevelMap: { off: null, low: "low", high: "high" },
+  } as any;
+  const modelTwo = {
+    provider: "provider",
+    id: "two",
+    name: "two",
+    reasoning: true,
+    thinkingLevelMap: { off: null, low: "low", high: "high" },
+  } as any;
+  const registry = { getAll: () => [modelOne, modelTwo] } as any;
+  const script = `export const meta = { name: 'journal_identity', description: 'model and effort identity' }
+return await agent('same prompt')`;
 
-  const tmpHome = mkdtempSync(join(tmpdir(), "workflow-tier-home-"));
-  const previousHome = process.env.HOME;
-  process.env.HOME = tmpHome;
-  try {
-    saveModelTierConfig({
-      tiers: {
-        small: { model: "vendor/small", thinkingLevel: "low" },
-        medium: { model: "vendor/medium" },
-        big: { model: "vendor/big", thinkingLevel: "high" },
-      },
-    });
-
+  const journalHash = async (workflowModelSetting: { model: string; effort: "low" | "high" }) => {
+    const journal: JournalEntry[] = [];
     await runWorkflow(script, {
-      agent: runner,
+      agent: fakeAgent({}, "ok"),
+      modelRegistry: registry,
+      session: { model: modelOne },
+      workflowModelSetting,
       persistLogs: false,
+      onAgentJournal: (entry) => journal.push(entry),
     });
-  } finally {
-    process.env.HOME = previousHome;
-    rmSync(tmpHome, { recursive: true, force: true });
-  }
+    return journal[0]?.hash;
+  };
 
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].tier, "small");
-  assert.equal(calls[0].thinkingLevel, "low");
-  assert.equal(calls[1].model, "override/model");
-  assert.equal(calls[1].thinkingLevel, undefined);
+  const modelHash = await journalHash({ model: "provider/one", effort: "low" });
+  const otherModelHash = await journalHash({ model: "provider/two", effort: "low" });
+  const otherEffortHash = await journalHash({ model: "provider/one", effort: "high" });
+
+  assert.ok(modelHash);
+  assert.notEqual(modelHash, otherModelHash);
+  assert.notEqual(modelHash, otherEffortHash);
+});
+
+test("runWorkflow rejects retired meta, phase, and agent tier routing fields", async () => {
+  const runner = { run: async () => "unexpected" };
+  await assert.rejects(
+    () =>
+      runWorkflow("export const meta = { name: 'm', description: 'd', model: 'provider/model' }\nreturn 1", {
+        agent: runner,
+      }),
+    { code: "SCRIPT_VALIDATION_ERROR" },
+  );
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        "export const meta = { name: 'm', description: 'd', phases: [{ title: 'A', model: 'provider/model' }] }\nreturn 1",
+        { agent: runner },
+      ),
+    { code: "SCRIPT_VALIDATION_ERROR" },
+  );
+  await assert.rejects(
+    () =>
+      runWorkflow(
+        "export const meta = { name: 'm', description: 'd' }\nawait agent('x', { label: 'x', tier: 'small' })",
+        { agent: runner },
+      ),
+    { code: "SCRIPT_VALIDATION_ERROR" },
+  );
 });
 
 test("runWorkflow falls back to an estimate when provider reports total === 0", async () => {
@@ -452,60 +509,6 @@ test("no declared phases => agent phase stays undefined (no synthetic phase)", a
     { agent: noop, persistLogs: false, onAgentStart: (e) => phases.push(e.phase) },
   );
   assert.deepEqual(phases, [undefined]);
-});
-
-test("runWorkflow routes models: explicit opts.model > phase model > default", async () => {
-  const seen: Array<string | undefined> = [];
-  const capturingAgent = {
-    async run(_prompt: string, options: { model?: string; onUsage?: (u: AgentUsage) => void }) {
-      seen.push(options.model);
-      return "ok";
-    },
-  };
-
-  const script = `export const meta = {
-    name: 'routing', description: 'model routing',
-    phases: [{ title: 'A', model: 'phase-a-model' }, { title: 'B' }]
-  }
-  phase('A')
-  await agent('explicit wins', { label: 'e', model: 'explicit-model' })
-  await agent('phase routed', { label: 'p' })
-  phase('B')
-  await agent('no model -> default', { label: 'n' })
-  return {}`;
-
-  await runWorkflow(script, { agent: capturingAgent, persistLogs: false });
-
-  assert.deepEqual(seen, ["explicit-model", "phase-a-model", undefined]);
-});
-
-test("runWorkflow plumbs opts.tier through to the agent with correct precedence", async () => {
-  // Regression guard: tier must reach WorkflowAgent.run() (it was previously
-  // dropped). Precedence: explicit model > tier > phase model.
-  const seen: Array<{ model?: string; tier?: string }> = [];
-  const capturingAgent = {
-    async run(_prompt: string, options: { model?: string; tier?: string }) {
-      seen.push({ model: options.model, tier: options.tier });
-      return "ok";
-    },
-  };
-
-  const script = `export const meta = {
-    name: 'tier_routing', description: 'tier routing',
-    phases: [{ title: 'A', model: 'phase-a-model' }]
-  }
-  phase('A')
-  await agent('tier beats phase', { label: 't', tier: 'small' })
-  await agent('explicit beats tier', { label: 'e', tier: 'small', model: 'explicit-model' })
-  return {}`;
-
-  await runWorkflow(script, { agent: capturingAgent, persistLogs: false });
-
-  // 1) tier set, no explicit model: model is left undefined so the tier (resolved
-  //    inside run()) wins over the phase model; tier is forwarded.
-  assert.deepEqual(seen[0], { model: undefined, tier: "small" });
-  // 2) explicit model + tier: explicit model is forwarded and still wins.
-  assert.deepEqual(seen[1], { model: "explicit-model", tier: "small" });
 });
 
 test("runWorkflow degrades disabled ad-hoc schemas to text and logs the ignored request", async () => {

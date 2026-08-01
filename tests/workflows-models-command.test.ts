@@ -1,212 +1,84 @@
-/**
- * Tests for workflows-models-command.ts
- *
- * Since pi.registerCommand and ctx.ui functions are only available at runtime
- * inside Pi, these tests focus on the pure logic: command creation,
- * the editSingleTier single-select helper, and integration with model-tier-config.
- *
- * editSingleTier now uses ctx.ui.custom() with SelectList.
- * In tests, we mock ctx.ui.custom to directly return the expected value.
- */
-
 import assert from "node:assert/strict";
-import { describe, it, mock } from "node:test";
+import { mock, test } from "node:test";
+import { editWorkflowModel, registerWorkflowModelsCommand } from "../src/workflows-models-command.js";
 
-async function loadCommand() {
-  const mod = await import("../src/workflows-models-command.js");
-  return mod;
+function model(provider: string, id: string, reasoning = false) {
+  return {
+    provider,
+    id,
+    name: id,
+    reasoning,
+    ...(reasoning
+      ? {
+          thinkingLevelMap: {
+            off: null,
+            minimal: "minimal",
+            low: "low",
+            medium: "medium",
+            high: "high",
+            xhigh: "xhigh",
+            max: "max",
+          },
+        }
+      : {}),
+  } as any;
 }
 
-const availableModelRegistry = {
-  getAvailable: async () =>
-    ["gpt-4.1-mini", "gpt-5", "openai-codex/gpt-5.5", "openai-codex/gpt-5.6-sol", "openai/gpt-4.1-mini"].map((spec) => {
-      const [provider, ...idParts] = spec.split("/");
-      return { provider: idParts.length > 0 ? provider : "openai", id: idParts.join("/") || provider };
-    }),
-} as never;
+function context(select: (...args: any[]) => Promise<string | undefined>, models = [model("provider", "plain")]) {
+  return {
+    cwd: "/tmp/workflow-model-command",
+    model: models[0],
+    modelRegistry: { getAll: () => models },
+    ui: { select: mock.fn(select), notify: mock.fn() },
+  } as any;
+}
 
-describe("workflows-models-command", () => {
-  describe("registerWorkflowModelsCommand", () => {
-    it("registers the workflows-models command with Pi", async () => {
-      const { registerWorkflowModelsCommand } = await loadCommand();
-      const commands: string[] = [];
-      const mockPi = {
-        registerCommand: mock.fn((name: string, _opts: unknown) => {
-          commands.push(name);
-        }),
-      };
+test("registerWorkflowModelsCommand registers a single Workflow Model command", () => {
+  let description = "";
+  const pi = {
+    registerCommand: (_name: string, options: { description?: string }) => {
+      description = options.description ?? "";
+    },
+  };
+  registerWorkflowModelsCommand(pi as never);
+  assert.match(description, /Workflow Model/);
+  assert.doesNotMatch(description, /small|medium|big|tier/i);
+});
 
-      registerWorkflowModelsCommand(mockPi as never);
+test("editWorkflowModel reports an empty Pi registry", async () => {
+  const ctx = context(async () => undefined, []);
+  const result = await editWorkflowModel(ctx, null);
+  assert.equal(result, undefined);
+  assert.equal(ctx.ui.notify.mock.callCount(), 1);
+  assert.match(String(ctx.ui.notify.mock.calls[0]?.arguments[0]), /No registered Pi models/);
+});
 
-      assert.equal(mockPi.registerCommand.mock.callCount(), 1);
-      assert.equal(commands[0], "workflows-models");
-    });
+test("editWorkflowModel returns a model with inherited effort", async () => {
+  const ctx = context(async (_title: string, choices: string[]) => choices[0] as string, [model("provider", "plain")]);
+  const result = await editWorkflowModel(ctx, undefined);
+  assert.deepEqual(result, { model: "provider/plain" });
+  assert.equal(ctx.ui.select.mock.callCount(), 2);
+});
 
-    it("provides a description", async () => {
-      const { registerWorkflowModelsCommand } = await loadCommand();
-      let capturedDescription = "";
+test("editWorkflowModel offers only Pi-supported dynamic efforts", async () => {
+  let effortChoices: string[] = [];
+  const reasoning = model("provider", "reasoning", true);
+  const ctx = context(
+    async (_title: string, choices: string[]) => {
+      if (choices[0] === "provider/reasoning") return "provider/reasoning";
+      effortChoices = choices;
+      return "xhigh";
+    },
+    [reasoning],
+  );
+  const result = await editWorkflowModel(ctx, undefined);
+  assert.deepEqual(result, { model: "provider/reasoning", effort: "xhigh" });
+  assert.ok(effortChoices.includes("xhigh"));
+  assert.ok(effortChoices.includes("max"));
+  assert.ok(!effortChoices.includes("ultra"));
+});
 
-      const mockPi = {
-        registerCommand: mock.fn((_name: string, opts: { description?: string }) => {
-          capturedDescription = opts.description ?? "";
-        }),
-      };
-
-      registerWorkflowModelsCommand(mockPi as never);
-      assert.ok(capturedDescription.length > 0, "description should not be empty");
-      assert.ok(capturedDescription.toLowerCase().includes("tier"), "description should mention tiers");
-    });
-  });
-
-  describe("editSingleTier", () => {
-    it("exports editSingleTier function", async () => {
-      const mod = await import("../src/workflows-models-command.js");
-      assert.equal(typeof mod.editSingleTier, "function");
-    });
-
-    it("returns null when user presses Escape (done with null)", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return null (simulating user cancelling)
-      const ctx = {
-        modelRegistry: availableModelRegistry,
-        ui: {
-          custom: mock.fn(async () => null),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
-      assert.equal(result, null);
-    });
-
-    it("notifies and exits when no authenticated models are available", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      const custom = mock.fn(async () => "unexpected");
-      const notify = mock.fn();
-      const ctx = {
-        modelRegistry: { getAvailable: async () => [] },
-        ui: { custom, notify },
-      };
-
-      const result = await editSingleTier(ctx as never, {}, "small");
-      assert.equal(result, null);
-      assert.equal(custom.mock.callCount(), 0);
-      assert.equal(notify.mock.callCount(), 1);
-      assert.match(String(notify.mock.calls[0]?.arguments[0]), /No models available/);
-    });
-
-    it("returns null when user selects the same model and default thinking (no change)", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return the same model that's already selected
-      const ctx = {
-        modelRegistry: availableModelRegistry,
-        ui: {
-          custom: mock.fn(async () => "gpt-4.1-mini"),
-          select: mock.fn(async () => "Default thinking (session setting)"),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
-      assert.equal(result, null); // no change
-    });
-
-    it("selects a different model and returns updated tiers with default thinking", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return a different model
-      const ctx = {
-        modelRegistry: availableModelRegistry,
-        ui: {
-          custom: mock.fn(async () => "gpt-5"),
-          select: mock.fn(async () => "Default thinking (session setting)"),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
-      assert.ok(result, "should return updated tiers");
-      assert.equal(result.small, "gpt-5", "should have changed model");
-      assert.equal(typeof result.small, "string", "should still be a string");
-    });
-
-    it("lets users choose a thinking level for the selected model", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      let thinkingOptions: string[] = [];
-      const ctx = {
-        modelRegistry: availableModelRegistry,
-        ui: {
-          custom: mock.fn(async () => "openai-codex/gpt-5.5"),
-          select: mock.fn(async (_title: string, options: string[]) => {
-            thinkingOptions = options;
-            return "xhigh";
-          }),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { big: "openai-codex/gpt-5.5" };
-
-      const result = await editSingleTier(ctx as never, tiers, "big");
-      assert.ok(result, "should return updated tiers");
-      assert.equal(result.big, "openai-codex/gpt-5.5:xhigh");
-      assert.ok(thinkingOptions.includes("xhigh"), "TUI should offer xhigh thinking");
-    });
-
-    it("offers max thinking for the selected model", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      let thinkingOptions: string[] = [];
-      const ctx = {
-        modelRegistry: availableModelRegistry,
-        ui: {
-          custom: mock.fn(async () => "openai-codex/gpt-5.6-sol"),
-          select: mock.fn(async (_title: string, options: string[]) => {
-            thinkingOptions = options;
-            return "max";
-          }),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { big: "openai-codex/gpt-5.6-sol" };
-
-      const result = await editSingleTier(ctx as never, tiers, "big");
-      assert.ok(result, "should return updated tiers");
-      assert.equal(result.big, "openai-codex/gpt-5.6-sol:max");
-      assert.ok(thinkingOptions.includes("max"), "TUI should offer max thinking");
-    });
-
-    it("preselects the base model when the current tier has a thinking suffix", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      const ctx = {
-        modelRegistry: availableModelRegistry,
-        ui: {
-          custom: mock.fn(async () => "openai-codex/gpt-5.5"),
-          select: mock.fn(async () => "xhigh"),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { big: "openai-codex/gpt-5.5:xhigh" };
-
-      const result = await editSingleTier(ctx as never, tiers, "big");
-      assert.equal(result, null, "same model plus same thinking suffix should be unchanged");
-    });
-
-    it("selects a model when no current model exists", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      const ctx = {
-        modelRegistry: availableModelRegistry,
-        ui: {
-          custom: mock.fn(async () => "openai/gpt-4.1-mini"),
-          select: mock.fn(async () => "Default thinking (session setting)"),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = {};
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
-      assert.ok(result, "should return updated tiers");
-      assert.equal(result.small, "openai/gpt-4.1-mini");
-    });
-  });
+test("editWorkflowModel can be cancelled before persistence", async () => {
+  const ctx = context(async () => undefined);
+  assert.equal(await editWorkflowModel(ctx, undefined), undefined);
 });

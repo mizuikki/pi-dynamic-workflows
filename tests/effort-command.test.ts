@@ -3,7 +3,7 @@ import test from "node:test";
 import { createEffortState, effortDirective, isSubstantive, registerEffortCommand } from "../src/effort-command.js";
 import { buildForcedWorkflowPrompt } from "../src/workflow-editor.js";
 
-test("effortDirective returns a tier nudge for high/ultra, nothing for off", () => {
+test("effortDirective returns an orchestration-intensity nudge for high/ultra, nothing for off", () => {
   assert.equal(effortDirective("off"), undefined);
   const high = effortDirective("high") ?? "";
   const ultra = effortDirective("ultra") ?? "";

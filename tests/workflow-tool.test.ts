@@ -6,7 +6,7 @@ import test from "node:test";
 import type { Model } from "@earendil-works/pi-ai";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { saveWorkflowSettings } from "../src/workflow-settings.js";
-import { backgroundStartedText, createWorkflowTool, modelRoutingGuideline } from "../src/workflow-tool.js";
+import { backgroundStartedText, createWorkflowTool, workflowModelGuideline } from "../src/workflow-tool.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 /** Minimal fake ModelRegistry, matching the shape the PR's existing tests use. */
@@ -75,9 +75,10 @@ test("createWorkflowTool has promptGuidelines array", () => {
 test("createWorkflowTool promptGuidelines mention model routing", () => {
   const tool = createWorkflowTool();
   const all = tool.promptGuidelines.join(" ");
-  assert.ok(all.includes("opts.tier"), "should mention opts.tier");
   assert.ok(all.includes("opts.model"), "should mention opts.model");
-  assert.ok(all.includes("small") || all.includes("medium") || all.includes("big"), "should mention tier names");
+  assert.ok(all.includes("opts.effort"), "should mention opts.effort");
+  assert.match(all, /one default Workflow Model/i);
+  assert.match(all, /nested and background/i);
 });
 
 test("createWorkflowTool guidance follows the merged structured-output setting", async () => {
@@ -152,34 +153,25 @@ test("createWorkflowTool promptGuidelines mention retry and concurrency controls
   assert.match(all, /at-least-once/i);
 });
 
-// ─── modelRoutingGuideline ──────────────────────────────────────────────────────
+// ─── workflowModelGuideline ──────────────────────────────────────────────────────
 
-test("modelRoutingGuideline mentions all three tier names", () => {
-  const text = modelRoutingGuideline();
-  assert.ok(text.includes("small"), "should mention small tier");
-  assert.ok(text.includes("medium"), "should mention medium tier");
-  assert.ok(text.includes("big"), "should mention big tier");
+test("workflowModelGuideline describes one default and independent overrides", () => {
+  const text = workflowModelGuideline();
+  assert.match(text, /one default Workflow Model/i);
+  assert.match(text, /opts\.model/);
+  assert.match(text, /opts\.effort/);
+  assert.match(text, /independent partial overrides/i);
 });
 
-test("modelRoutingGuideline describes each tier purpose", () => {
-  const text = modelRoutingGuideline();
-  assert.ok(text.includes("lightweight"), "should contain lightweight");
-  assert.ok(text.includes("balanced"), "should contain balanced");
-  assert.ok(text.includes("synthesis"), "should contain synthesis");
+test("workflowModelGuideline rejects invented ids and model suffixes", () => {
+  const text = workflowModelGuideline();
+  assert.match(text, /exact registered provider\/modelId/i);
+  assert.match(text, /Do not invent/i);
+  assert.match(text, /effort suffix/i);
 });
 
-test("modelRoutingGuideline explains tier vs model priority", () => {
-  const text = modelRoutingGuideline();
-  assert.ok(text.includes("opts.tier"), "should mention opts.tier");
-  assert.ok(text.includes("opts.model"), "should mention opts.model");
-  assert.ok(
-    /opts\.(tier|model).+opts\.(model|tier)/.test(text),
-    "should explain ordering / relationship between tier and model",
-  );
-});
-
-test("modelRoutingGuideline references the model scope (auth-independent)", () => {
-  const text = modelRoutingGuideline();
+test("workflowModelGuideline references the model scope (auth-independent)", () => {
+  const text = workflowModelGuideline();
   // With auth configured it lists the available models; on a fresh/CI machine
   // with no models it falls back to a generic line. Accept either so the test
   // doesn't depend on the runner's authenticated providers.
@@ -189,7 +181,7 @@ test("modelRoutingGuideline references the model scope (auth-independent)", () =
   );
 });
 
-test("modelRoutingGuideline can list explicit models from the session registry", () => {
+test("workflowModelGuideline can list explicit models from the session registry", () => {
   const explicitModel = {
     provider: "explicit-faux",
     id: "faux-1",
@@ -203,21 +195,21 @@ test("modelRoutingGuideline can list explicit models from the session registry",
     maxTokens: 8192,
   } satisfies Model<"faux">;
 
-  const text = modelRoutingGuideline({ getAvailable: () => [explicitModel] });
+  const text = workflowModelGuideline({ getAvailable: () => [explicitModel] });
 
   assert.match(text, /explicit-faux\/faux-1/);
 });
 
-test("modelRoutingGuideline can list precomputed available model specs", () => {
-  const text = modelRoutingGuideline(["explicit-faux/faux-1"]);
+test("workflowModelGuideline can list precomputed available model specs", () => {
+  const text = workflowModelGuideline(["explicit-faux/faux-1"]);
 
   assert.match(text, /explicit-faux\/faux-1/);
 });
 
-test("modelRoutingGuideline explains when to use each option", () => {
-  const text = modelRoutingGuideline();
-  assert.ok(/small.*(exploration|search|inventory|agents)/i.test(text), "small tier should mention light workloads");
-  assert.ok(/big.*(synthesis|judgment|decision)/i.test(text), "big tier should mention heavy reasoning");
+test("workflowModelGuideline explains when to use each option", () => {
+  const text = workflowModelGuideline();
+  assert.match(text, /only for a temporary per-agent override/i);
+  assert.match(text, /only opts\.model changes.*clamped/i);
 });
 
 test("createWorkflowTool invalid args throws descriptive error", () => {
@@ -235,24 +227,24 @@ test("createWorkflowTool with custom cwd creates tool", () => {
   assert.equal(tool.name, "workflow");
 });
 
-test("modelRoutingGuideline advertises models from an injected registry", () => {
+test("workflowModelGuideline advertises models from an injected registry", () => {
   const registry = fakeRegistry([{ provider: "router", id: "shared-model" }]);
-  const text = modelRoutingGuideline(registry);
+  const text = workflowModelGuideline(registry);
   assert.match(text, /route only to these/i);
   assert.match(text, /router\/shared-model/);
 });
 
-test("modelRoutingGuideline accepts a getter and resolves it lazily at call time", () => {
+test("workflowModelGuideline accepts a getter and resolves it lazily at call time", () => {
   // Empty registry (not undefined) so the getter path is exercised end-to-end
   // rather than falling through to the disk-registry default.
   let registry: any = fakeRegistry([]);
-  const text = modelRoutingGuideline(() => registry);
+  const text = workflowModelGuideline(() => registry);
   assert.doesNotMatch(text, /router\/late-model/);
 
   // Registering after construction (simulating session_start running after the
   // guideline string was first read) is reflected on the next call.
   registry = fakeRegistry([{ provider: "router", id: "late-model" }]);
-  const later = modelRoutingGuideline(() => registry);
+  const later = workflowModelGuideline(() => registry);
   assert.match(later, /router\/late-model/);
 });
 
@@ -284,8 +276,8 @@ test("createWorkflowTool promptGuidelines reflect a registry set AFTER tool crea
   assert.doesNotMatch(latest, /router\/late-model/);
 });
 
-test("modelRoutingGuideline output is non-empty and well-formed", () => {
-  const text = modelRoutingGuideline();
+test("workflowModelGuideline output is non-empty and well-formed", () => {
+  const text = workflowModelGuideline();
   assert.ok(text.length > 50, "should be a substantial instruction");
   assert.ok(text.endsWith(".") || text.endsWith("") || text.endsWith("`"), "should end properly");
   assert.ok(!text.includes("undefined"), "no undefined interpolation");

@@ -1,212 +1,137 @@
 /**
- * `/workflows-models` command handler.
+ * `/workflows-models` command.
  *
- * Uses Pi's built-in `ctx.ui.select()`, `ctx.ui.confirm()`, and `ctx.ui.notify()`
- * to let users view and manage model tier configuration for workflows.
- *
- * Model selection draws from the host session's shared model registry so users
- * see every provider Pi can reach, including extension-registered providers such
- * as `ollama-cloud`.
- *
- * Each tier holds exactly one model spec string. The string may include Pi
- * CLI-style thinking suffixes, e.g. `openai-codex/gpt-5.5:xhigh`.
- * When editing a tier, users pick a model, then an optional thinking level.
+ * The command edits one persisted Workflow Model (model plus optional Pi-owned
+ * reasoning effort). A null value explicitly makes the scope inherit the live
+ * Pi session model; an absent project value inherits the global value.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
-  Container,
-  type SelectItem,
-  SelectList,
-  type SelectListTheme,
-  Spacer,
-  Text,
-  type TUI,
-} from "@earendil-works/pi-tui";
-import { listAvailableModelSpecsAsync } from "./agent.js";
-import {
-  formatModelSpecWithThinking,
+  canonicalModelSpec,
+  listRegisteredModels,
   type ModelThinkingLevel,
-  splitModelSpecThinking,
-  THINKING_LEVELS,
-} from "./model-spec.js";
+  supportedModelEfforts,
+  type WorkflowModelSetting,
+} from "./model-selection.js";
 import {
-  buildDefaultTierConfig,
-  loadModelTierConfig,
-  saveModelTierConfig,
-  sortedTierNames,
-} from "./model-tier-config.js";
+  clearWorkflowModelSetting,
+  getWorkflowProjectSettingsPath,
+  loadWorkflowSettings,
+  saveWorkflowSettings,
+} from "./workflow-settings.js";
 
-/**
- * Register the `/workflows-models` command with Pi.
- */
+const INHERIT_EFFORT = "Inherit current Pi session effort";
+
+/** Register the `/workflows-models` command with Pi. */
 export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
   pi.registerCommand("workflows-models", {
-    description: "View and edit model tiers used by workflows (small/medium/big)",
+    description: "View and edit the global or project Workflow Model",
     handler: async (_args, ctx) => {
       await ctx.waitForIdle();
-
-      // Load the saved config, or build an in-memory default spread across the
-      // available models. If the model registry is empty, fall back to the
-      // current Pi model so the tiers are still usable.
-      const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-      const availableModelSpecs = await listAvailableModelSpecsAsync(ctx.modelRegistry);
-      let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, availableModelSpecs);
-      let dirty = false;
-
-      const ensureFresh = (cfg: typeof config) => {
-        config = cfg;
-        dirty = true;
-      };
-
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const tiers = sortedTierNames(config);
-        const menuOptions: string[] = [];
-
-        menuOptions.push("─".repeat(30));
-        for (const name of tiers) {
-          const model = config.tiers[name];
-          menuOptions.push(`${name} tier → ${model}`);
-        }
-        menuOptions.push("─".repeat(30));
-
-        menuOptions.push("Reset to defaults");
-        menuOptions.push(dirty ? "Save and exit" : "Exit");
-
-        const choice = await ctx.ui.select("Model tier configuration", menuOptions);
-
-        if (!choice) break;
-
-        // Handle "<tier> → [model]" selections
-        for (const name of tiers) {
-          if (choice.startsWith(`${name} tier →`)) {
-            const updatedTiers = await editSingleTier(ctx, config.tiers, name);
-            if (updatedTiers !== null) {
-              ensureFresh({ ...config, tiers: updatedTiers });
-            }
-            break;
-          }
-        }
-
-        if (choice === "Reset to defaults") {
-          const confirmed = await ctx.ui.confirm(
-            "Reset model tiers",
-            "This will reset tiers from your available model list. Continue?",
-          );
-          if (confirmed) {
-            ensureFresh(buildDefaultTierConfig(currentModel, await listAvailableModelSpecsAsync(ctx.modelRegistry)));
-            ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
-          }
-        }
-
-        if (choice === "Save and exit" || choice === "Exit") {
-          if (choice === "Save and exit") {
-            saveModelTierConfig(config);
-            ctx.ui.notify("Model tiers saved.", "info");
-          }
-          break;
-        }
-      }
+      await openWorkflowModelEditor(ctx);
     },
   });
 }
 
-const DEFAULT_THINKING_CHOICE = "Default thinking (session setting)";
-const THINKING_CHOICES = [DEFAULT_THINKING_CHOICE, ...THINKING_LEVELS] as const;
+/** Interactive editor, exported for focused command tests. */
+export async function openWorkflowModelEditor(ctx: ExtensionCommandContext): Promise<void> {
+  const cwd = ctx.cwd ?? process.cwd();
+  const global = loadWorkflowSettings();
+  const project = loadWorkflowSettings({ settingsPath: getWorkflowProjectSettingsPath(cwd) });
+  const effective = loadWorkflowSettings({ cwd });
 
-function fromThinkingChoice(choice: string | undefined): ModelThinkingLevel | undefined {
-  return THINKING_LEVELS.find((level) => level === choice);
+  const choices = [
+    `Edit global Workflow Model (${describeSetting(global.workflowModel, ctx.model)})`,
+    `Edit project Workflow Model (${describeSetting(project.workflowModel, ctx.model)})`,
+    "Global: inherit current Pi session model",
+    "Project: inherit current Pi session model",
+    "Project: clear override and inherit global",
+    "Exit",
+  ];
+
+  while (true) {
+    const choice = await ctx.ui.select(
+      `Workflow Model (effective: ${describeSetting(effective.workflowModel, ctx.model)})`,
+      choices,
+    );
+    if (!choice || choice === "Exit") return;
+
+    if (choice.startsWith("Edit global")) {
+      const next = await editWorkflowModel(ctx, global.workflowModel);
+      if (next !== undefined) {
+        saveWorkflowSettings({ workflowModel: next });
+        ctx.ui.notify(`Global Workflow Model set to ${describeSetting(next, ctx.model)}.`, "info");
+        return;
+      }
+    } else if (choice.startsWith("Edit project")) {
+      const next = await editWorkflowModel(ctx, project.workflowModel);
+      if (next !== undefined) {
+        saveWorkflowSettings({ workflowModel: next }, { cwd, scope: "project" });
+        ctx.ui.notify(`Project Workflow Model set to ${describeSetting(next, ctx.model)}.`, "info");
+        return;
+      }
+    } else if (choice.startsWith("Global:")) {
+      saveWorkflowSettings({ workflowModel: null });
+      ctx.ui.notify("Global Workflow Model now inherits the current Pi session model.", "info");
+      return;
+    } else if (choice.startsWith("Project: inherit")) {
+      saveWorkflowSettings({ workflowModel: null }, { cwd, scope: "project" });
+      ctx.ui.notify("Project Workflow Model now inherits the current Pi session model.", "info");
+      return;
+    } else if (choice.startsWith("Project: clear")) {
+      clearWorkflowModelSetting({ cwd, scope: "project" });
+      ctx.ui.notify("Project Workflow Model override cleared; the global value now applies.", "info");
+      return;
+    }
+  }
 }
 
-/**
- * Interactive editor for a single tier — scrollable model picker plus optional
- * thinking-level picker.
- *
- * Uses `ctx.ui.custom()` with Pi TUI's `SelectList` for proper scrollable list
- * with limited visible rows (like `/advisor`). The currently selected base
- * model is shown in the dialog title. After choosing the model, users can set
- * a Pi CLI-style thinking suffix or keep the session default.
- *
- * Returns the updated tiers object, or null if nothing changed.
- */
-export async function editSingleTier(
+/** Pick a registered model, then choose only efforts Pi reports for that model. */
+export async function editWorkflowModel(
   ctx: ExtensionCommandContext,
-  tiers: Record<string, string>,
-  tierName: string,
-): Promise<Record<string, string> | null> {
-  const available = await listAvailableModelSpecsAsync(ctx.modelRegistry);
-  if (available.length === 0) {
-    ctx.ui.notify("No models available to choose from. Authenticate a model first.", "warning");
-    return null;
+  current?: WorkflowModelSetting,
+): Promise<WorkflowModelSetting | undefined> {
+  const models = listRegisteredModels(ctx.modelRegistry);
+  if (!models.length) {
+    ctx.ui.notify("No registered Pi models are available. Authenticate or select a model first.", "warning");
+    return undefined;
   }
-  const knownSpecs = available.length > 0 ? available : undefined;
-  const current = tiers[tierName];
-  const currentParts = splitModelSpecThinking(current, knownSpecs);
 
-  // Build SelectItems: all available models as scrollable list
-  const items: SelectItem[] = available.map((m) => ({ value: m, label: m }));
-
-  const selectedModel = await ctx.ui.custom<string | null>((tui: TUI, theme: Theme, _keybindings, done) => {
-    const container = new Container();
-
-    // Title showing current model
-    const titleText = current
-      ? `Pick a model for "${tierName}" (current: ${current})`
-      : `Pick a model for "${tierName}"`;
-    container.addChild(new Text(theme.fg("accent", titleText), 1, 0));
-    container.addChild(new Spacer(1));
-
-    // SelectList theme
-    const selectTheme: SelectListTheme = {
-      selectedPrefix: (t: string) => theme.bg("selectedBg", theme.fg("accent", t)),
-      selectedText: (t: string) => theme.bg("selectedBg", theme.bold(t)),
-      description: (t: string) => theme.fg("muted", t),
-      scrollInfo: (t: string) => theme.fg("dim", t),
-      noMatch: (t: string) => theme.fg("warning", t),
-    };
-
-    const selectList = new SelectList(items, 12, selectTheme);
-
-    // Preselect the current base model even when the stored tier has :thinking.
-    if (currentParts.modelSpec) {
-      const idx = items.findIndex((i) => i.value === currentParts.modelSpec);
-      if (idx >= 0) selectList.setSelectedIndex(idx);
-    }
-
-    // Wire up callbacks
-    selectList.onSelect = (item) => done(item.value);
-    selectList.onCancel = () => done(null);
-
-    container.addChild(selectList);
-    container.addChild(new Spacer(1));
-    container.addChild(
-      new Text(theme.fg("dim", "↑↓ navigate  enter select  esc cancel  · thinking is chosen next"), 1, 0),
-    );
-
-    return {
-      render: (w: number) => container.render(w),
-      invalidate: () => container.invalidate(),
-      handleInput: (data: string) => {
-        selectList.handleInput(data);
-        tui.requestRender();
-      },
-    };
-  });
-
-  if (!selectedModel) return null;
-
-  const currentThinkingLabel = currentParts.thinkingLevel ?? DEFAULT_THINKING_CHOICE;
-  const thinkingChoice = await ctx.ui.select(
-    `Thinking for "${tierName}" tier (current: ${currentThinkingLabel})`,
-    THINKING_CHOICES.map((choice) => String(choice)),
+  const modelChoices = models.map((model) => canonicalModelSpec(model));
+  const selectedModel = await ctx.ui.select(
+    `Pick a Workflow Model${current && current !== null ? ` (current: ${current.model})` : ""}`,
+    modelChoices,
   );
-  if (!thinkingChoice) return null;
+  if (!selectedModel) return undefined;
 
-  const thinkingLevel = fromThinkingChoice(thinkingChoice);
-  const result = formatModelSpecWithThinking(selectedModel, thinkingLevel);
-  if (result === current) return null;
+  const model = models.find((candidate) => canonicalModelSpec(candidate) === selectedModel);
+  if (!model) return undefined;
+  const effort = await chooseEffort(
+    ctx,
+    model,
+    current && current.model === selectedModel ? current.effort : undefined,
+  );
+  if (effort === undefined) return undefined;
+  return effort === null ? { model: selectedModel } : { model: selectedModel, effort };
+}
 
-  ctx.ui.notify(`"${tierName}" tier → ${result}`, "info");
-  return { ...tiers, [tierName]: result };
+async function chooseEffort(
+  ctx: ExtensionCommandContext,
+  model: Model<Api>,
+  current?: ModelThinkingLevel,
+): Promise<ModelThinkingLevel | null | undefined> {
+  const choices = [INHERIT_EFFORT, ...supportedModelEfforts(model)];
+  const currentLabel = current ?? INHERIT_EFFORT;
+  const selected = await ctx.ui.select(`Effort for ${canonicalModelSpec(model)} (current: ${currentLabel})`, choices);
+  if (!selected) return undefined;
+  return selected === INHERIT_EFFORT ? null : (selected as ModelThinkingLevel);
+}
+
+function describeSetting(setting: WorkflowModelSetting | undefined, sessionModel: Model<Api> | undefined): string {
+  if (setting === null || setting === undefined) {
+    return sessionModel ? `session (${canonicalModelSpec(sessionModel)})` : "current Pi session";
+  }
+  return `${setting.model}${setting.effort ? ` @ ${setting.effort}` : " @ session effort"}`;
 }

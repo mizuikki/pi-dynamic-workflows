@@ -16,7 +16,7 @@ export type RegisteredProviderTarget = Pick<ModelRuntime, "registerProvider"> & 
   registerNativeProvider(provider: Provider): void;
 };
 
-/** Model list surface used by resolveModelSpecWithThinking. */
+/** Model list surface used by the shared Workflow Model selector. */
 export type ModelListSource = {
   getAll(): readonly Model<Api>[];
 };
@@ -89,7 +89,7 @@ export function copyRegisteredProviders(
   }
 }
 
-/** Adapt ModelRuntime to the getAll() surface used by model-spec resolution. */
+/** Adapt ModelRuntime to the getAll() surface used by model selection. */
 export function modelListFromRuntime(runtime: ModelRuntime): ModelListSource {
   return {
     getAll: () => [...runtime.getModels()],

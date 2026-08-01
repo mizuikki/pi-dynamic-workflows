@@ -5,6 +5,7 @@ import { dirname, join, normalize } from "node:path";
 import { describe, it } from "node:test";
 import { WORKFLOW_SETTINGS_FILE } from "../src/config.js";
 import {
+  clearWorkflowModelSetting,
   getWorkflowProjectSettingsPath,
   getWorkflowSettingsPath,
   loadWorkflowSettings,
@@ -125,6 +126,58 @@ describe("workflow settings", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("preserves a single Workflow Model with project precedence and explicit inheritance", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-model-settings-"));
+    const cwd = join(dir, "project");
+    const fakeHome = join(dir, "home");
+    try {
+      await withFakeHomeAsync(fakeHome, async () => {
+        const globalPath = getWorkflowSettingsPath();
+        const projectPath = getWorkflowProjectSettingsPath(cwd);
+        const oldTierPath = join(fakeHome, ".pi", "workflows", "model-tiers.json");
+        mkdirSync(dirname(oldTierPath), { recursive: true });
+        writeFileSync(oldTierPath, '{"tiers":{"small":"legacy/model"}}\n', "utf-8");
+
+        assert.equal(loadWorkflowSettings({ cwd }).workflowModel, undefined);
+        saveWorkflowSettings({ workflowModel: { model: "global/model", effort: "high" } }, globalPath);
+        assert.deepEqual(loadWorkflowSettings({ cwd }).workflowModel, { model: "global/model", effort: "high" });
+
+        saveWorkflowSettings({ workflowModel: { model: "project/model" } }, { cwd, scope: "project" });
+        assert.deepEqual(loadWorkflowSettings({ cwd }).workflowModel, { model: "project/model" });
+        assert.deepEqual(loadWorkflowSettings({ settingsPath: projectPath }).workflowModel, {
+          model: "project/model",
+        });
+
+        saveWorkflowSettings({ workflowModel: null }, { cwd, scope: "project" });
+        assert.equal(loadWorkflowSettings({ cwd }).workflowModel, null);
+        assert.equal(readFileSync(oldTierPath, "utf-8"), '{"tiers":{"small":"legacy/model"}}\n');
+
+        clearWorkflowModelSetting({ cwd, scope: "project" });
+        assert.deepEqual(loadWorkflowSettings({ cwd }).workflowModel, { model: "global/model", effort: "high" });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves invalid Workflow Model fields for admission-time rejection", () => {
+    withSettingsPath((settingsPath) => {
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({ workflowModel: { model: "provider/model", effort: "unsupported" } }),
+        "utf-8",
+      );
+      assert.deepEqual(loadWorkflowSettings(settingsPath).workflowModel, {
+        model: "provider/model",
+        effort: "unsupported",
+      });
+
+      writeFileSync(settingsPath, JSON.stringify({ workflowModel: { model: 42, effort: null } }), "utf-8");
+      assert.deepEqual(loadWorkflowSettings(settingsPath).workflowModel, { model: "", effort: null });
+    });
   });
 
   it("saves cwd preferences globally without creating a project override", async () => {

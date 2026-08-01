@@ -76,6 +76,7 @@ interface AgentRow {
   phase?: string;
   tokens?: number;
   model?: string;
+  effort?: WorkflowAgentSnapshot["effort"];
 }
 
 /** Short, human-friendly model label: drop the provider prefix for display. */
@@ -181,7 +182,20 @@ export class NavigatorModel {
     if (!snap) return [];
     return snap.agents
       .filter((a) => (a.phase ?? "(no phase)") === phase)
-      .map((a) => ({ id: a.id, label: a.label, status: a.status, phase: a.phase, tokens: a.tokens, model: a.model }));
+      .map((a) => ({
+        id: a.id,
+        label: a.label,
+        status: a.status,
+        phase: a.phase,
+        tokens: a.tokens,
+        model: a.model,
+        effort: a.effort,
+      }));
+  }
+
+  defaultPair(runId: string): { model?: string; effort?: WorkflowAgentSnapshot["effort"] } {
+    const snap = this.snapshot(runId)?.snapshot;
+    return { model: snap?.defaultModel, effort: snap?.defaultEffort };
   }
 
   agentDetail(runId: string, agentId: number): WorkflowAgentSnapshot | undefined {
@@ -217,6 +231,7 @@ function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
       recoverable: a.recoverable,
       history: a.history,
       model: a.model,
+      effort: a.effort,
     })),
     agentCount: p.agents.length,
     runningCount: p.agents.filter((a) => a.status === "running").length,
@@ -224,6 +239,8 @@ function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
     errorCount: p.agents.filter((a) => a.status === "error").length,
     tokenUsage: p.tokenUsage ? { ...p.tokenUsage } : undefined,
     runId: p.runId,
+    defaultModel: p.defaultModel,
+    defaultEffort: p.defaultEffort,
   };
 }
 
@@ -472,7 +489,7 @@ function rightAgentRow(
 ): string {
   const dotColor = AGENT_DOT_COLOR[a.status] ?? "dim";
   const stats = `${compactTokens(a.tokens ?? 0)} tok`;
-  const model = shortModel(a.model) ?? "";
+  const model = [shortModel(a.model), a.effort].filter(Boolean).join(" @ ");
 
   // Stable 2-cell marker so columns never shift on selection: "› " | "  ".
   // Layout: <marker:2><dot><sp><name> … <model> … <stats(right-aligned)>.
@@ -820,6 +837,7 @@ export function renderNavigator(
       const body: string[] = [];
       body.push(dim("Status: ") + (a.status ?? ""));
       if (a.model) body.push(dim("Model: ") + (shortModel(a.model) ?? ""));
+      if (a.effort) body.push(dim("Effort: ") + a.effort);
       if (a.error) body.push(dim("Error: ") + a.error);
       if (a.errorCode) body.push(`${dim("Error code: ")}${a.errorCode}${a.recoverable ? " (recoverable)" : ""}`);
       body.push("", dim("Prompt:"));
@@ -871,6 +889,7 @@ function twoPaneHeader(
 ): string[] {
   const name = model.runName(runId);
   const status = model.runStatus(runId);
+  const defaultPair = model.defaultPair(runId);
   let done = 0;
   let total = 0;
   let tokens = 0;
@@ -884,7 +903,10 @@ function twoPaneHeader(
   const line0 = theme.fg("accent", theme.bold(nameText));
 
   // Line 1 — left status, right summary.
-  const rightRaw = `${done}/${total} ${pluralize("agent", total)}${tokens > 0 ? ` · ${compactTokens(tokens)} tok` : ""}`;
+  const defaultText = defaultPair.model
+    ? ` · default ${shortModel(defaultPair.model) ?? defaultPair.model}${defaultPair.effort ? ` @ ${defaultPair.effort}` : ""}`
+    : "";
+  const rightRaw = `${done}/${total} ${pluralize("agent", total)}${tokens > 0 ? ` · ${compactTokens(tokens)} tok` : ""}${defaultText}`;
   const rightW = visibleWidth(rightRaw);
   const gap = 2;
   let line1: string;

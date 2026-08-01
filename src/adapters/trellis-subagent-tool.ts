@@ -6,6 +6,7 @@
  * Registers only when the adapter is enabled and no native Trellis tool is present.
  */
 
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   defineTool,
   type ExtensionAPI,
@@ -16,7 +17,6 @@ import { Type } from "typebox";
 import type { WorkflowAgent } from "../agent.js";
 import type { AgentHistoryEntry } from "../agent-history.js";
 import { parseAgentDefinition } from "../agent-registry.js";
-import { isThinkingLevel, type ModelThinkingLevel } from "../model-spec.js";
 import { mergeSubagentEnv, type SubagentContextLoader } from "../subagent-context.js";
 import {
   buildTrellisTaskContext,
@@ -34,6 +34,10 @@ export const TRELLIS_SUBAGENT_TOOL_NAME = "trellis_subagent";
 export const MAX_TRELLIS_PARALLEL_PROMPTS = 6;
 
 const THINKING_ENUM = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+function isThinkingLevel(value: string): value is ModelThinkingLevel {
+  return (THINKING_ENUM as readonly string[]).includes(value);
+}
 
 const trellisSubagentSchema = Type.Object({
   agent: Type.Optional(
