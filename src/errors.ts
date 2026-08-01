@@ -21,6 +21,8 @@ export enum WorkflowErrorCode {
   PROVIDER_USAGE_LIMIT = "PROVIDER_USAGE_LIMIT",
   /** Script validation failed. */
   SCRIPT_VALIDATION_ERROR = "SCRIPT_VALIDATION_ERROR",
+  /** Workflow model or Pi reasoning-effort selection is invalid. */
+  MODEL_SELECTION_ERROR = "MODEL_SELECTION_ERROR",
   /** A schema agent never produced valid structured_output (after repair + extraction). */
   SCHEMA_NONCOMPLIANCE = "SCHEMA_NONCOMPLIANCE",
   /** A schema-dependent workflow surface was used without the explicit opt-in. */

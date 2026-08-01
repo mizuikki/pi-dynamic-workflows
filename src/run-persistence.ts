@@ -3,6 +3,7 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { WorkflowErrorCode } from "./errors.js";
+import type { ModelThinkingLevel } from "./model-selection.js";
 import { normalizeExecutionPolicy, type WorkflowExecutionPolicy } from "./retry-policy.js";
 import {
   type OpenWorkflowDatabaseOptions,
@@ -33,6 +34,7 @@ export interface PersistedAgentState {
   startedAt?: string;
   endedAt?: string;
   model?: string;
+  effort?: ModelThinkingLevel;
 }
 
 export interface PersistedRunState {
@@ -40,6 +42,9 @@ export interface PersistedRunState {
   workflowName: string;
   script: string;
   args?: unknown;
+  /** Concrete default pair sampled at workflow admission. */
+  defaultModel?: string;
+  defaultEffort?: ModelThinkingLevel;
   toolNames?: string[];
   sessionId?: string;
   status: RunStatus;
@@ -62,7 +67,7 @@ export interface PersistedRunState {
     cacheRead?: number;
     cacheWrite?: number;
   };
-  journal?: Array<{ index: number; hash: string; result: unknown }>;
+  journal?: Array<{ index: number; hash: string; result: unknown; storeDelta?: Record<string, unknown> }>;
   /** Explicit canonical run policy only; host snapshots are never persisted. */
   executionPolicy?: WorkflowExecutionPolicy;
 }
@@ -210,6 +215,8 @@ function validateState(state: PersistedRunState): void {
   validString(state.workflowName, "workflow name", true);
   validString(state.script, "script", true);
   validOptionalString(state.sessionId, "session id");
+  validOptionalString(state.defaultModel, "default model");
+  validOptionalString(state.defaultEffort, "default effort");
   validOptionalString(state.pauseReason, "pause reason");
   validOptionalString(state.resetHint, "reset hint");
   if (!RUN_STATUSES.has(state.status)) fail("INVALID_RUN_STATE", "Invalid run status.");
@@ -245,6 +252,7 @@ function validateState(state: PersistedRunState): void {
     validOptionalString(agent.startedAt, "agent start time");
     validOptionalString(agent.endedAt, "agent end time");
     validOptionalString(agent.model, "agent model");
+    validOptionalString(agent.effort, "agent effort");
     if (agent.recoverable !== undefined && typeof agent.recoverable !== "boolean") {
       fail("INVALID_RUN_STATE", "Invalid agent recoverability.");
     }

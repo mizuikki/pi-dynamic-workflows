@@ -7,6 +7,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createCodingTools } from "@earendil-works/pi-coding-agent";
 import { createWebTools } from "../src/web-tools.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
+import { saveWorkflowSettings } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
 
@@ -94,6 +95,31 @@ test(
     } finally {
       faux.dispose();
     }
+  }),
+);
+
+test(
+  "WorkflowManager rejects a fixed unavailable model before starting a child",
+  withTempCwd(async (cwd) => {
+    let agentCalls = 0;
+    const availableModel = { provider: "deepseek", id: "available", name: "Available", reasoning: false } as any;
+    saveWorkflowSettings({ workflowModel: { model: "deepseek/registered-only" } }, { cwd, scope: "project" });
+
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run() {
+          agentCalls++;
+          return "unexpected";
+        },
+      },
+      modelRegistry: { getAvailable: () => [availableModel] } as any,
+      session: { model: availableModel },
+    });
+
+    await assert.rejects(manager.runSync(oneAgentScript), { code: "MODEL_SELECTION_ERROR" });
+    assert.equal(agentCalls, 0, "unavailable fixed settings must fail before child execution");
+    assert.deepEqual(manager.listRuns(), [], "admission failure must not create a persisted run");
   }),
 );
 

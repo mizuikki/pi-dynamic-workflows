@@ -11,8 +11,9 @@ all projects in one database:
 
 The workflow home is tightened to mode `0700` and the database to `0600` on
 POSIX systems. The parent directory is the access boundary for temporary WAL
-and shared-memory files. Settings, model tiers, project settings, and saved
-workflow definitions remain file-backed.
+and shared-memory files. Settings, the Workflow Model, project settings, and
+saved workflow definitions remain file-backed. The legacy `model-tiers.json`
+file is ignored and left untouched.
 
 ## Version 1 contract
 
@@ -67,7 +68,8 @@ Status, save, restart, and resume authorize a keyed summary before selecting one
 payload, then verify the immutable session identity again after decoding.
 
 Payloads can contain scripts, arguments, prompts, results, journals, errors,
-compact tool history, and an optional canonical `executionPolicy`. The policy
+compact tool history, the run-owned default Workflow Model model/effort pair,
+each agent's concrete model/effort pair, and an optional canonical `executionPolicy`. The policy
 contains only explicit `agentTurnRetry` and `agentRunRetries` overrides. Host
 retry-policy snapshots and deprecated alias names are never persisted. A warm
 or cold resume keeps the explicit policy but samples a fresh host snapshot, so

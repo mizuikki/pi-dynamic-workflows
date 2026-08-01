@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { MAX_AGENT_RETRIES, MAX_CONCURRENCY, normalizeKeywordTriggerWord } from "./config.js";
+import type { ModelThinkingLevel, WorkflowModelSetting } from "./model-selection.js";
 import { workflowHomeDir, workflowProjectPaths } from "./workflow-paths.js";
 
 export interface TrellisAdapterSetting {
@@ -23,6 +24,8 @@ export interface TrellisAdapterSetting {
 }
 
 export interface WorkflowSettings {
+  /** One persisted default Workflow Model; null explicitly inherits the Pi session. */
+  workflowModel?: WorkflowModelSetting;
   /** Enable the workflow-specific structured return channel. Default: false. */
   structuredOutputEnabled?: boolean;
   keywordTriggerEnabled?: boolean;
@@ -126,6 +129,19 @@ export function saveWorkflowSettings(
   writeFileSync(path, `${JSON.stringify({ ...existing, ...normalizeSettings(settings) }, null, 2)}\n`, "utf-8");
 }
 
+/** Remove only the persisted Workflow Model field, preserving all other settings. */
+export function clearWorkflowModelSetting(options: WorkflowSettingsOptions = {}): void {
+  const projectPath =
+    options.projectSettingsPath ?? (options.cwd ? getWorkflowProjectSettingsPath(options.cwd) : undefined);
+  const path =
+    options.scope === "project" && projectPath ? projectPath : (options.settingsPath ?? getWorkflowSettingsPath());
+  if (!existsSync(path)) return;
+  const existing = readObject(path);
+  if (!Object.hasOwn(existing, "workflowModel")) return;
+  delete existing.workflowModel;
+  writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`, "utf-8");
+}
+
 /** Save a global preference and update an existing project override if one is present. */
 export function saveWorkflowSettingsForCwd(settings: WorkflowSettings, cwd: string): void {
   saveWorkflowSettings(settings);
@@ -154,6 +170,21 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const raw = value as Record<string, unknown>;
   const settings: WorkflowSettings = {};
+  if (raw.workflowModel === null) {
+    settings.workflowModel = null;
+  } else if (Object.hasOwn(raw, "workflowModel")) {
+    const workflowModel =
+      raw.workflowModel && typeof raw.workflowModel === "object" && !Array.isArray(raw.workflowModel)
+        ? (raw.workflowModel as Record<string, unknown>)
+        : undefined;
+    const model = typeof workflowModel?.model === "string" ? workflowModel.model.trim() : "";
+    settings.workflowModel = {
+      model,
+      ...(workflowModel && Object.hasOwn(workflowModel, "effort")
+        ? { effort: workflowModel.effort as ModelThinkingLevel }
+        : {}),
+    } as WorkflowModelSetting;
+  }
   if (typeof raw.structuredOutputEnabled === "boolean") {
     settings.structuredOutputEnabled = raw.structuredOutputEnabled;
   }

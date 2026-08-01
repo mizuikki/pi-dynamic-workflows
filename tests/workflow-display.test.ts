@@ -30,7 +30,7 @@ function agent(
   label: string,
   status: "queued" | "running" | "done" | "error" | "skipped",
   phase?: string,
-  opts?: { resultPreview?: string; tokens?: number; model?: string; prompt?: string },
+  opts?: { resultPreview?: string; tokens?: number; model?: string; effort?: string; prompt?: string },
 ) {
   return {
     id,
@@ -41,6 +41,7 @@ function agent(
     ...(opts?.resultPreview ? { resultPreview: opts.resultPreview } : {}),
     ...(opts?.tokens ? { tokens: opts.tokens } : {}),
     ...(opts?.model ? { model: opts.model } : {}),
+    ...(opts?.effort ? { effort: opts.effort } : {}),
   };
 }
 
@@ -170,6 +171,21 @@ describe("renderWorkflowText", () => {
     // toLocaleString() output depends on locale (UK/US uses commas, PL uses NBSP)
     // Check with a regex matching any thousands separator between 12 and 345
     assert.ok(/12[ ,.\u00a0]345/.test(text), "should show formatted token count");
+  });
+
+  it("shows model and effort independently for phased and unphased agents", async () => {
+    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const snap = createWorkflowSnapshot(fakeMeta());
+    snap.agents = [
+      agent(1, "effort-only", "running", "Research", { effort: "high" }),
+      agent(2, "model-and-effort", "queued", undefined, { model: "provider/model", effort: "low" }),
+    ] as never[];
+    snap.agentCount = 2;
+    snap.runningCount = 1;
+    snap.doneCount = 0;
+    const text = renderWorkflowLines(snap).join("\n");
+    assert.match(text, /effort-only.* · high/);
+    assert.match(text, /model-and-effort.*provider\/model @ low/);
   });
 
   it("truncates long agent labels", async () => {

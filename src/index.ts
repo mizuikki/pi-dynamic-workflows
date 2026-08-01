@@ -143,27 +143,27 @@ export {
   type WorkflowMainPromptResult,
   type WorkflowMainPromptState,
 } from "./main-agent-prompt.js";
-export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";
-export { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
-export type { ModelThinkingLevel, ResolvedModelSpec } from "./model-spec.js";
+export type {
+  AvailableModelSource,
+  ModelRegistrySource,
+  ModelThinkingLevel,
+  ResolvedWorkflowModel,
+  WorkflowModelSetting,
+  WorkflowModelSnapshot,
+} from "./model-selection.js";
 export {
   canonicalModelSpec,
-  formatModelSpecWithThinking,
-  isThinkingLevel,
-  resolveModelSpecWithThinking,
-  splitModelSpecThinking,
-  THINKING_LEVELS,
-} from "./model-spec.js";
-export type { ModelTierConfig } from "./model-tier-config.js";
-export {
-  buildDefaultTierConfig,
-  getModelTierConfigPath,
-  loadModelTierConfig,
-  resolveTierModel,
-  resolveTierThinkingLevel,
-  saveModelTierConfig,
-  sortedTierNames,
-} from "./model-tier-config.js";
+  defaultModelEffort,
+  listAvailableModels,
+  listRegisteredModels,
+  resolveAgentModelOverride,
+  resolveAvailableModel,
+  resolveRegisteredModel,
+  resolveWorkflowModel,
+  resolveWorkflowModelSnapshot,
+  supportedModelEfforts,
+  validateModelEffort,
+} from "./model-selection.js";
 export type { ModelAvailabilitySource } from "./pi-compat.js";
 export {
   getAvailableModels,
@@ -272,6 +272,7 @@ export type {
   WorkflowSettingsStore,
 } from "./workflow-settings.js";
 export {
+  clearWorkflowModelSetting,
   getWorkflowProjectSettingsPath,
   getWorkflowSettingsPath,
   isWorkflowStructuredOutputEnabled,

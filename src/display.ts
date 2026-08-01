@@ -1,6 +1,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { WorkflowErrorCode } from "./errors.js";
+import type { ModelThinkingLevel } from "./model-selection.js";
 import type { WorkflowMeta } from "./workflow.js";
 
 export type WorkflowAgentStatus = "queued" | "running" | "done" | "error" | "skipped";
@@ -20,11 +21,16 @@ export interface WorkflowAgentSnapshot {
   tokens?: number;
   /** The model this agent ran on (provider/id), when known. */
   model?: string;
+  /** The Pi reasoning effort this agent ran with, when known. */
+  effort?: ModelThinkingLevel;
 }
 
 export interface WorkflowSnapshot {
   name: string;
   description?: string;
+  /** Concrete default pair admitted for this run. */
+  defaultModel?: string;
+  defaultEffort?: ModelThinkingLevel;
   phases: string[];
   currentPhase?: string;
   logs: string[];
@@ -215,7 +221,9 @@ export function renderWorkflowLines(
       const order = `[${agent.id}]`;
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
-      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
+      const modelText = [agent.model, agent.effort].filter(Boolean).join(" @ ");
+      const model = modelText ? theme.fg("dim", ` · ${modelText}`) : "";
+      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${model}${result}`);
     }
     if (agents.length > visibleAgents.length)
       lines.push(theme.fg("dim", `    … ${agents.length - visibleAgents.length} earlier agents`));
@@ -227,7 +235,11 @@ export function renderWorkflowLines(
     for (const agent of unphased.slice(-maxAgents)) {
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
-      lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
+      const modelText = [agent.model, agent.effort].filter(Boolean).join(" @ ");
+      const model = modelText ? theme.fg("dim", ` · ${modelText}`) : "";
+      lines.push(
+        `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${model}${result}`,
+      );
     }
   }
 

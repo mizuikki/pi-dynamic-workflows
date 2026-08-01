@@ -1,14 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createLocalForkFixture, installManifestSdk } from "../../pi/scripts/local-fork-fixture.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const piForkDirectory = resolve(process.env.PI_FORK_DIR ?? join(projectDirectory, "../pi"));
 const piForkRef = process.env.PI_FORK_REF ?? "HEAD";
 const keepTemp = process.env.KEEP_TEMP === "1";
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const { createLocalForkFixture, installManifestSdk } = await import(
+  pathToFileURL(join(piForkDirectory, "scripts/local-fork-fixture.mjs")).href
+);
 
 function run(command, args, options = {}) {
   console.log(`$ ${[command, ...args].join(" ")}`);

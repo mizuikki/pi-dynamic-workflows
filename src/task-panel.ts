@@ -9,7 +9,7 @@
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
-import type { WorkflowRunSummary } from "./run-persistence.js";
+import type { PersistedRunState, WorkflowRunSummary } from "./run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import type { WorkflowSettings } from "./workflow-settings.js";
@@ -93,8 +93,11 @@ export function deliverText(run: ManagedRun, opts: { maxChars?: number } = {}): 
   const tokens = run.result?.tokenUsage ? ` · ${run.result.tokenUsage.total.toLocaleString()} tokens` : "";
   const agents = run.result?.agentCount ?? run.snapshot.agentCount;
   const duration = run.result?.durationMs ? ` · ${(run.result.durationMs / 1000).toFixed(1)}s` : "";
+  const model = run.workflowModel
+    ? ` Default Workflow Model: ${run.workflowModel.model} @ ${run.workflowModel.effort}.`
+    : "";
   const lines = [
-    `✓ Background workflow "${run.snapshot.name}" finished (${agents} agents${tokens}${duration}).`,
+    `✓ Background workflow "${run.snapshot.name}" finished (${agents} agents${tokens}${duration}).${model}`,
     "",
     summary,
   ];
@@ -198,6 +201,7 @@ export function installResultDelivery(
 export interface WorkflowPanelRunSnapshot {
   summary: WorkflowRunSummary;
   live?: WorkflowSnapshot;
+  persisted?: Pick<PersistedRunState, "defaultModel" | "defaultEffort">;
 }
 
 export interface WorkflowPanelSnapshot {
@@ -226,7 +230,25 @@ export function createWorkflowPanelSnapshot(manager: WorkflowManager): WorkflowP
   return {
     active: all
       .filter((summary) => summary.status === "running" || summary.status === "paused")
-      .map((summary) => ({ summary, live: manager.getRun(summary.runId)?.snapshot })),
+      .map((summary) => {
+        const live = manager.getRun(summary.runId)?.snapshot;
+        if (live || summary.status !== "paused") return { summary, live };
+
+        // A recovered paused run has no in-memory snapshot. Load only its small
+        // persisted model pair so the panel keeps showing the admitted choice.
+        try {
+          const persisted = manager.loadRun(summary.runId);
+          return persisted
+            ? {
+                summary,
+                live,
+                persisted: { defaultModel: persisted.defaultModel, defaultEffort: persisted.defaultEffort },
+              }
+            : { summary, live };
+        } catch {
+          return { summary, live };
+        }
+      }),
     finishedCount: all.filter((summary) => summary.status !== "running" && summary.status !== "paused").length,
   };
 }
@@ -234,12 +256,17 @@ export function createWorkflowPanelSnapshot(manager: WorkflowManager): WorkflowP
 export function renderPanel(snapshot: WorkflowPanelSnapshot, theme: Theme, width?: number): string[] {
   const { active } = snapshot;
   if (!active.length) return [];
-  const rows = active.map(({ summary, live }) => {
+  const rows = active.map(({ summary, live, persisted }) => {
     const done = live ? live.agents.filter((agent) => agent.status === "done").length : summary.agentCounts.done;
     const total = live?.agents.length ?? summary.agentCounts.total;
     const icon = summary.status === "paused" ? "⏸" : "◆";
     const phase = live?.currentPhase ?? summary.currentPhase;
-    return `  ${icon} ${summary.workflowName}  ${done}/${total} agents${phase ? ` · ${phase}` : ""}`;
+    const defaultModel = live?.defaultModel ?? persisted?.defaultModel;
+    const defaultEffort = live?.defaultEffort ?? persisted?.defaultEffort;
+    const defaultPair = defaultModel
+      ? ` · default ${shortModel(defaultModel) ?? defaultModel}${defaultEffort ? ` @ ${defaultEffort}` : ""}`
+      : "";
+    return `  ${icon} ${summary.workflowName}  ${done}/${total} agents${phase ? ` · ${phase}` : ""}${defaultPair}`;
   });
   // Finished runs leave this live panel but are kept in the navigator. Tell the
   // user so a completed run doesn't look like it vanished.
@@ -346,7 +373,8 @@ function renderRunBody(
     for (const a of visible) {
       const tok = a.tokens ? dim(` ${fmtTokensShort(a.tokens)} tok`) : "";
       const mdl = shortModel(a.model);
-      const model = mdl ? dim(` · ${mdl}`) : "";
+      const modelText = [mdl, a.effort].filter(Boolean).join(" @ ");
+      const model = modelText ? dim(` · ${modelText}`) : "";
       lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}`);
     }
     if (phaseAgents.length > visible.length) {
@@ -373,7 +401,7 @@ export function renderPanelDetailed(
   const dim = (t: string) => theme.fg("dim", t);
   const out: string[] = [theme.bold(`Workflows running (${active.length}):`)];
 
-  for (const { summary, live: snap } of active) {
+  for (const { summary, live: snap, persisted } of active) {
     const agents = (snap?.agents ?? []) as WorkflowAgentSnapshot[];
     const done = snap ? agents.filter((a) => a.status === "done").length : summary.agentCounts.done;
     const agentTotal = snap ? agents.length : summary.agentCounts.total;
@@ -390,10 +418,15 @@ export function renderPanelDetailed(
     // accrue tokens, so their rate is suppressed (a stalled rate would mislead).
     sampleTokens(summary.runId, total, now);
     const rate = summary.status === "running" ? tokensPerSecond(summary.runId) : 0;
+    const defaultModel = snap?.defaultModel ?? persisted?.defaultModel;
+    const defaultEffort = snap?.defaultEffort ?? persisted?.defaultEffort;
     const meta = [
       `${done}/${agentTotal} agents`,
       snap?.currentPhase || "",
       total > 0 ? `${fmtTokensShort(total)} tok` : "",
+      defaultModel
+        ? `default ${shortModel(defaultModel) ?? defaultModel}${defaultEffort ? ` @ ${defaultEffort}` : ""}`
+        : "",
       // 2 decimals for ≥1¢, 4 for sub-cent so a real cost never shows as "$0.00".
       // (cost is only known once the run finalizes its usage.)
       usage?.cost ? `$${usage.cost.toFixed(usage.cost >= 0.01 ? 2 : 4)}` : "",

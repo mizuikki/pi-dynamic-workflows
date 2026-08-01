@@ -132,6 +132,39 @@ test("D4: single mode returns child text and includes Active task + context in p
   }
 });
 
+test("accepts the Pi max thinking level for trellis_subagent", async () => {
+  const cwd = makeProject();
+  try {
+    writeTask(cwd);
+    writeAgent(cwd);
+    let thinkingLevel: unknown;
+    const tool = createTrellisSubagentTool({
+      cwd,
+      agent: {
+        async run(_prompt, options) {
+          thinkingLevel = options.thinkingLevel;
+          return "child-ok";
+        },
+      },
+    });
+    await tool.execute(
+      "tc-max-thinking",
+      {
+        agent: "trellis-implement",
+        mode: "single",
+        prompt: "Active task: .trellis/tasks/04-17-demo\nImplement now",
+        thinking: "max",
+      },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    assert.equal(thinkingLevel, "max");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("D5: parallel joins with --- and runs all prompts", async () => {
   const cwd = makeProject();
   try {

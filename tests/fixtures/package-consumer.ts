@@ -1,7 +1,7 @@
 import {
   createKeelPiHostDescriptor,
-  formatModelSpecWithThinking,
   type KeelHostBridgeV1,
+  type ModelThinkingLevel,
   type WorkflowManager,
   type WorkflowRunOptions,
 } from "@quintinshaw/pi-dynamic-workflows";
@@ -17,4 +17,5 @@ void manager;
 void options;
 void descriptor;
 void bridge;
-void formatModelSpecWithThinking("provider/model", "low");
+const effort: ModelThinkingLevel = "low";
+void effort;

@@ -79,32 +79,32 @@ export const meta = {
 }
 
 phase('Scan')
-const files = await agent('List every route file under src/routes/.', { tier: 'small' })
+const files = await agent('List every route file under src/routes/.')
 
 phase('Review')
 const findings = await parallel(
   files.split('\n').filter(Boolean).map((file) =>
-    () => agent(`Audit ${file} for missing auth checks.`, { tier: 'medium', isolation: 'worktree' }),
+    () => agent(`Audit ${file} for missing auth checks.`, { isolation: 'worktree' }),
   ),
 )
 
 phase('Verify')
-return await agent('Synthesize and double-check these findings:\n' + findings.join('\n\n'), { tier: 'big' })
+return await agent('Synthesize and double-check these findings:\n' + findings.join('\n\n'))
 ```
 
-`agent()` spawns an isolated subagent, `parallel()` runs many at once, `phase()` groups them in the live view, and `tier` routes each one to the right model. That's the whole idea.
+`agent()` spawns an isolated subagent, `parallel()` runs many at once, and `phase()` groups them in the live view. Every call inherits the run's admitted Workflow Model unless it explicitly supplies a temporary `model` and/or `effort` override.
 
 ## Highlights
 
 - **Fan-out orchestration** — `agent()`, `parallel()`, `pipeline()`, `phase()` in a sandboxed script. Up to 16 concurrent / 1000 total subagents; intermediate results stay in variables, not the chat.
-- **Real model routing** — `small` / `medium` / `big` tiers (or an exact `model`) per agent. It actually switches the subagent's model — cheap work on a light one, hard synthesis on a big one.
+- **One default Workflow Model** — `/workflows-models` selects one currently available model and optional Pi-supported reasoning effort. An individual `agent()` call may explicitly override either axis for that call only.
 - **Journaled resume** — an interrupted run replays finished agents from a journal (no re-run, no tokens) and runs only what's left or what you changed.
 - **Git worktree isolation** — `isolation: "worktree"` gives an agent its own branch, so parallel agents can edit the same files without clobbering each other.
 - **Real token & cost accounting** — read from each subagent's session, not estimated. Runs have no default token cap; `tokenBudget`, phase budgets, and `budget` let you add explicit gates when you want them.
 - **Background by default** — the turn ends right away, a live "Workflows running" panel tracks runs, and each result is delivered back so the conversation auto-continues when it finishes. The panel is compact by default; `/workflows-progress detailed` expands it inline to per-phase/per-agent rows with tokens, cost, and a live tok/s rate (so a stalled agent shows as 0 tok/s) — no need to open `/workflows`.
 - **Interactive `/workflows` TUI** — drill runs → phases → agents → detail; inspect per-agent failures and compact subagent history; pause, stop, restart, and save runs from the keyboard.
 - **Quality patterns built in** — `verify()`, `judgePanel()`, `loopUntilDry()`, and `completenessCheck()` for adversarial review, best-of-N, and exhaustive discovery. The schema-dependent helpers require the explicit structured-output opt-in; `loopUntilDry()`, `retry()`, and `gate()` remain available by default.
-- **Ultracode** — `/ultracode` is a standing opt-in that auto-arms an exhaustive multi-agent workflow for every substantive message, the way Claude Code's ultracode does. `/effort high` is the lighter tier.
+- **Ultracode** — `/ultracode` is a standing opt-in that auto-arms an exhaustive multi-agent workflow for every substantive message, the way Claude Code's ultracode does. `/effort high` controls orchestration intensity; it is separate from `agent.effort`, which is Pi model reasoning effort.
 - **Bundled `/deep-research` + `/adversarial-review` + `/code-review`** — real web search, source cross-checking, cited reports, and a 7-angle parallel code review with a verify pass.
 - **Saved & nested workflows** — turn any run into a `/<name>` command, and compose saved workflows from inside other scripts.
 
@@ -119,7 +119,7 @@ The same model — on Pi, plus the production pieces a real run needs:
 | Structured outputs | Optional JSON-Schema `schema` → a validated object, with bounded repair if the model misses; off by default |
 | Background runs | Non-blocking by default, a live task panel, and auto-continue delivery |
 | Resume | **Journaled + replayable** — survives restarts and replays the unchanged prefix |
-| Model selection | **Per-agent / per-phase routing** across any provider Pi is authenticated for |
+| Model selection | **One admitted Workflow Model plus explicit per-agent overrides** across any model Pi currently makes available |
 | Ultracode (standing maximal-effort opt-in) | **`/ultracode`** (or `/effort ultra`) — auto-arms an exhaustive workflow for every substantive message |
 | — | **Git worktree isolation**, **real cost accounting**, **`/deep-research`**, and a **quality-pattern stdlib** |
 
@@ -142,7 +142,7 @@ The same model — on Pi, plus the production pieces a real run needs:
                             switch the live panel between the compact one-liner and the detailed
                             per-phase/per-agent view (with tokens, cost, and a live tok/s rate)
 /workflows-progress-max <N> cap agents shown per phase in detailed mode (1-1000, default 8)
-/workflows-models           map the small / medium / big tiers to real models, optionally with thinking levels
+/workflows-models           edit one global or project Workflow Model and its Pi-supported effort
 /workflows-prompt enable    confirm and enable the project-local main-agent prompt
 /workflows-prompt disable   disable the project-local main-agent prompt
 /workflows-prompt status    inspect project prompt metadata (path, state, size, and hash only)
@@ -191,7 +191,7 @@ In the navigator: `↑/↓` select · `enter`/`→` open · `esc`/`←` back · 
 
 Workflow run history and resume journals for every project are stored in one SQLite database at `~/.pi/workflows/workflows.sqlite3`. Runs remain isolated by a stable project key and Pi session ID. Listing and the live panel use summary records; private prompts, scripts, results, errors, and journals are loaded only for an authorized run detail or resume operation. The workflow home is user-only and the database file is created with user-only permissions on supported platforms.
 
-Global settings and model tiers remain text files at `~/.pi/workflows/settings.json` and `~/.pi/workflows/model-tiers.json`. Saved workflow definitions and project settings also remain file-backed under `~/.pi/workflows/projects/<project>/`. Existing run JSON, backup, temporary, and lock files are deliberately ignored: they are not imported, read as a fallback, or deleted. See [docs/storage.md](docs/storage.md) for the schema, durability, lease, backup, and recovery contract.
+Global settings, including the optional Workflow Model, remain in `~/.pi/workflows/settings.json`. Saved workflow definitions and project settings also remain file-backed under `~/.pi/workflows/projects/<project>/`. The legacy `model-tiers.json` file is not read, written, migrated, or deleted. Existing run JSON, backup, temporary, and lock files are deliberately ignored: they are not imported, read as a fallback, or deleted. See [docs/storage.md](docs/storage.md) for the schema, durability, lease, backup, and recovery contract.
 
 ### Structured-output gate
 
@@ -219,21 +219,22 @@ remain available in either state. A direct programmatic `WorkflowAgent` or
 `runWorkflow()` caller also defaults to structured output off unless it passes
 the explicit capability.
 
-`model-tiers.json` uses Pi CLI-style model parsing. A tier can be a plain model spec or include an optional thinking suffix:
+### Workflow Model selection
+
+The merged global/project settings may contain one default Workflow Model:
 
 ```json
 {
-  "tiers": {
-    "small": "openai-codex/gpt-5.4-mini:low",
-    "medium": "openai-codex/gpt-5.4:medium",
-    "big": "openai-codex/gpt-5.5:xhigh"
+  "workflowModel": {
+    "model": "openai-codex/gpt-5.4",
+    "effort": "high"
   }
 }
 ```
 
-Use `/workflows-models` to edit these in the TUI: choose the base model first, then choose `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or the session default.
+An absent setting supplies no scope override. `null` explicitly inherits the current Pi session model and effort; a project-level `null` therefore blocks a fixed global model. A project object or `null` takes precedence over the global setting. `/workflows-models` exposes these choices and fills the effort picker from the selected model's live Pi metadata.
 
-Older installations may still have object-valued tiers such as `{ "model": "provider/model", "thinkingLevel": "low" }`. They are read and migrated in memory to the string form above; saving the configuration writes the new format. Invalid tiers are skipped individually, so one damaged entry does not silently enable the default capability spread. Reading never rewrites the file. If the file does not exist, the initial defaults are spread across authenticated model capabilities rather than assigning every tier to the current model.
+Workflow model identifiers should use an exact currently available `provider/modelId`. A bare model ID or name is accepted only when it matches one available Pi model. Unknown, unavailable, and ambiguous values fail closed; the extension never silently falls back to the session model. Explicit effort must be supported by the selected model. When an agent changes only its model, the inherited effort is clamped through Pi and the concrete pair is shown in status and progress output. The legacy `~/.pi/workflows/model-tiers.json`, if present from an older installation, remains untouched.
 
 To avoid accidental keyword triggers, configure a custom trigger word in `~/.pi/workflows/settings.json`:
 
@@ -309,9 +310,9 @@ The full guide — every global, agent option, `agentType` definitions, structur
 
 | Agent option | Description |
 | --- | --- |
-| `tier` | `"small"` \| `"medium"` \| `"big"` — coarse model routing (configure via `/workflows-models`; tiers may store `provider/modelId:thinking`). |
-| `model` | Exact `provider/modelId` or `provider/modelId:thinking` (always wins over `tier`). |
-| `agentType` | A named definition (`.pi/agents/<name>.md` project-level, or `~/.pi/agent/agents/<name>.md` user-level — `~/.pi/agents/<name>.md` still works as a deprecated fallback) binding tools + model + role prompt. |
+| `model` | Temporary exact available `provider/modelId` or unique bare model ID/name override for this call. |
+| `effort` | Temporary Pi-supported reasoning effort override for the selected model. |
+| `agentType` | A named definition (`.pi/agents/<name>.md` project-level, or `~/.pi/agent/agents/<name>.md` user-level — `~/.pi/agents/<name>.md` still works as a deprecated fallback) binding tools + role prompt. Its model metadata does not route Workflow agents. |
 | `isolation: "worktree"` | Run in a throwaway git worktree for conflict-free parallel edits. |
 | `schema` | With structured output enabled, JSON Schema → validated object with bounded repair/extraction; while disabled, the request is ignored and the final assistant text is returned. |
 | `label` / `phase` / `timeoutMs` | Display label / phase override / optional per-agent hard timeout. Omit `timeoutMs` for no hard timeout. |
@@ -332,9 +333,9 @@ When a background run finishes, its bounded result summary is followed by `Run d
 
 Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()`, and `require`/`import`/`fs`/network are unavailable, so runs stay reproducible — which is what makes resume reliable.
 
-## Default tier assignment
+## Workflow Model admission
 
-When no `~/.pi/workflows/model-tiers.json` exists, pi-dynamic-workflows builds a default config from the models you have authenticated. The registry returns models grouped by provider, not ranked by capability, so a naive positional spread (`first → small`, `last → big`) can put a mini or flash model in the big slot — or even collapse two tiers onto the same model. To avoid this, `buildDefaultTierConfig` first ranks every available model with a capability score based on well-known substrings: names containing `mini`, `flash`, `haiku`, `nano`, or `small` rank lowest, names containing `opus`, `pro`, `ultra`, `large`, or `plus` rank highest, and everything else ranks neutral (checks are case-insensitive; a name matching both hint sets ranks as small, so it can never outrank a bigger model). Models keep their registry order within the same rank. Tiers are then assigned from this single ranked pool — the least-capable model becomes `small`, the most-capable becomes `big`, and the middle-ranked one becomes `medium` — so distinct tiers never collapse onto the same model and a smaller model can never land in a higher tier than a bigger one. With fewer than 3 distinct models the assignment degrades gracefully: with 2 models the weaker one becomes `small` and the stronger one covers both `medium` and `big`; with 1 (or 0) models every tier resolves to that model (or the current Pi model / empty string as a last resort). You can review or override the assignment at any time with `/workflows-models`.
+At top-level admission, the extension resolves the effective model and Pi-supported effort once and persists that concrete pair with the run. Nested and background work inherit the same snapshot. Resume uses the original snapshot rather than current settings; if its model is no longer available or its effort is unsupported, the run fails with actionable model-selection diagnostics instead of substituting another model. Runs written before these snapshot fields existed are re-admitted using current settings, so their model or effort may differ from the values used when they originally started. Progress, navigator, task-panel, logs, and status output show each agent's resolved model and effort.
 
 ## Optional Trellis adapter
 

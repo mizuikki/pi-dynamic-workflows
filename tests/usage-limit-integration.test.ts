@@ -30,17 +30,19 @@ async function withFauxSession(
   fn: (ctx: {
     cwd: string;
     model: unknown;
+    faux: ReturnType<typeof createExplicitFauxModels>;
     modelRegistry: ModelRegistry;
     modelRuntime: ModelRuntime;
     setResponses: (msgs: unknown[]) => void;
     fauxAssistantMessage: typeof fauxAssistantMessage;
   }) => Promise<void>,
+  models = [{ id: "faux-deepseek", name: "Faux DeepSeek", contextWindow: 128000, maxTokens: 4096 }],
 ): Promise<void> {
   let home: string | undefined;
   let cwd: string | undefined;
   const faux = createExplicitFauxModels({
     provider: "deepseek",
-    models: [{ id: "faux-deepseek", name: "Faux DeepSeek", contextWindow: 128000, maxTokens: 4096 }],
+    models,
   });
   try {
     home = mkdtempSync(join(tmpdir(), "pi-dw-i26-home-"));
@@ -53,6 +55,7 @@ async function withFauxSession(
       fn({
         cwd: testCwd,
         model: faux.model,
+        faux,
         modelRegistry,
         modelRuntime,
         setResponses: (msgs) => faux.setResponses(msgs as never),
@@ -100,6 +103,42 @@ test("a successful real turn whose text merely mentions 'rate limit' is NOT misc
     const text = await agent.run("do the task", { label: "ok" });
     assert.ok(typeof text === "string" && text.includes("Done."), `expected normal text, got ${String(text)}`);
   }));
+
+test("the real child session receives an available model and never starts for an unavailable override", () =>
+  withFauxSession(
+    async ({ cwd, model, faux, modelRegistry, modelRuntime, setResponses, fauxAssistantMessage }) => {
+      const available = (modelRegistry.getAvailable() as Array<{ provider: string; id: string }>)[0];
+      if (!available) throw new Error("the faux availability snapshot should contain a model");
+
+      const availableOnlyRegistry = {
+        getAvailable: () => [available],
+      };
+      setResponses([(_context, _options, _state, selectedModel) => fauxAssistantMessage(`used:${selectedModel.id}`)]);
+      const agent = new WorkflowAgent({
+        cwd,
+        modelRegistry: availableOnlyRegistry as never,
+        modelRuntime,
+        session: { model: model as never },
+      });
+
+      assert.equal(await agent.run("use the available model", { model: available.id }), `used:${available.id}`);
+
+      setResponses([fauxAssistantMessage("must not reach the provider")]);
+      await assert.rejects(
+        () => agent.run("reject the unavailable model", { model: "deepseek/registered-only" }),
+        (error: unknown) => (error as { code?: string }).code === WorkflowErrorCode.MODEL_SELECTION_ERROR,
+      );
+      assert.equal(
+        faux.getPendingResponseCount(),
+        1,
+        "unavailable model admission must reject before a real child session consumes a response",
+      );
+    },
+    [
+      { id: "available", name: "Available Faux", contextWindow: 128000, maxTokens: 4096 },
+      { id: "registered-only", name: "Registered Only Faux", contextWindow: 128000, maxTokens: 4096 },
+    ],
+  ));
 
 test("through the manager: a usage limit pauses the run (not fails) and resume replays the journal", () =>
   withFauxSession(async ({ cwd, model, modelRegistry, modelRuntime, setResponses, fauxAssistantMessage }) => {

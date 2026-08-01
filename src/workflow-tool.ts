@@ -18,9 +18,9 @@ import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js
 import { isWorkflowStructuredOutputEnabled, loadWorkflowSettings } from "./workflow-settings.js";
 
 /**
- * Model routing guideline for workflow authors.
- * Tells the LLM about opts.tier (small/medium/big) for runtime-enforced
- * model selection, and opts.model for an exact provider/id override.
+ * Workflow Model guideline for workflow authors.
+ * Explains the one admitted default pair and the independent per-agent
+ * model/effort overrides.
  *
  * This string is injected into the workflow tool's promptGuidelines and
  * therefore appears in the LLM's system prompt for every workflow execution.
@@ -30,7 +30,7 @@ import { isWorkflowStructuredOutputEnabled, loadWorkflowSettings } from "./workf
  * the registry as it stands at that moment — the manager's registry is set on
  * session_start, after the tool is created, so an early snapshot would miss it.
  */
-export function modelRoutingGuideline(
+export function workflowModelGuideline(
   registryOrAvailable?: AvailableModelsSource | readonly string[] | (() => AvailableModelsSource | undefined),
 ): string {
   const resolved = typeof registryOrAvailable === "function" ? registryOrAvailable() : registryOrAvailable;
@@ -44,14 +44,11 @@ export function modelRoutingGuideline(
     ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
     : "Use models the user has configured.";
   return [
-    "For workflow, the user configures per-tier models (/workflows-models), so TAG EVERY agent with opts.tier by role so those models are actually used.",
-    "opts.tier accepts 'small', 'medium', or 'big' and is enforced at runtime.",
-    "Small tier: lightweight exploration/search/inventory agents.",
-    "Medium tier: balanced analysis agents.",
-    "Big tier: synthesis/judgment/decision agents spanning the full context.",
-    "An agent with no opts.tier and no opts.model falls back to the user's medium tier; do not rely on that — tag agents explicitly so small/big are used where they fit.",
-    "If the user named a specific model, use opts.model with that exact provider/id; opts.model always takes precedence over opts.tier.",
-    "Exact model specs may include Pi CLI-style thinking suffixes such as openai-codex/gpt-5.5:xhigh or anthropic/claude-fable-5:max when the user requests a specific effort level.",
+    "For workflow, /workflows-models configures one default Workflow Model as a concrete currently available provider/modelId plus optional Pi reasoning effort. Every agent inherits that admitted model/effort, including nested and background work.",
+    "Use opts.model and/or opts.effort only for a temporary per-agent override requested by the user; model and effort are independent partial overrides.",
+    "opts.model must be an exact currently available provider/modelId, or a bare model id only when it matches one available model. Do not invent provider/model ids or append an effort suffix to the model string.",
+    "opts.effort must be one of the Pi-supported reasoning efforts for the selected model. If only opts.model changes, the inherited effort is clamped through Pi for that model.",
+    "Do not route by role automatically and do not use retired tier names. If no override is needed, omit both opts.model and opts.effort.",
     list,
   ].join(" ");
 }
@@ -70,7 +67,7 @@ export function agentTypeGuideline(cwd: string = process.cwd()): string | undefi
   }
   if (!types.length) return undefined;
   const list = types.map((t) => (t.description ? `${t.name} (${t.description})` : t.name)).join(", ");
-  return `For workflow, opts.agentType routes an agent to a named definition that binds its tools, model, and role prompt. Available agentTypes: ${list}. An explicit opts.model still overrides the definition's model.`;
+  return `For workflow, opts.agentType selects a named definition that binds tools, isolation, and role prompt. Its optional model metadata is ignored by Workflow; use explicit opts.model/opts.effort only when the user requests a temporary override. Available agentTypes: ${list}.`;
 }
 
 const workflowToolSchema = Type.Object({
@@ -162,7 +159,7 @@ export interface WorkflowToolOptions {
   defaultAgentTimeoutMs?: number | null;
   /** Default max concurrent agents when no tool-level concurrency is passed. */
   defaultConcurrency?: number;
-  /** Current session model registry, used to list explicit Models in prompt guidance. */
+  /** Current session model registry, used to list available models in prompt guidance. */
   modelRegistry?: AvailableModelsSource;
   /** Auth-verified available model specs for prompt guidance. */
   availableModelSpecs?: readonly string[];
@@ -205,7 +202,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           : "For workflow, structured output is disabled by default. Use text-safe synthesis and the ungated loopUntilDry(), retry(), and gate() helpers; verify(), judgePanel(), and completenessCheck() refuse before spawning child agents while disabled.",
         "For workflow, when meta.phases declares more than one phase, call phase('Exact Title') at the start of each phase's work (or set opts.phase on each agent) so every agent groups under the correct phase; never declare a phase you don't switch into — a declared phase with no agents shows as 0/0 and any agent you forgot to move stays in the previous phase.",
         "For workflow, do not set tokenBudget or agentTimeoutMs unless the user explicitly asks to cap spend or time; the defaults are unbounded.",
-        "For workflow, to bound spend: pass tokenBudget for a hard run-wide cap; carve a per-phase ceiling with phase('Name', {budget: N}) (that phase throws at its sub-budget without touching the run total — wrap its work in try/catch so later phases proceed); use retry(thunk, {attempts, until}) for bounded retry, and gate(thunk, validator, {attempts}) when a validator's feedback should steer the next attempt. To degrade gracefully, branch on budget.remaining() to skip optional rounds or choose a lighter tier.",
+        "For workflow, to bound spend: pass tokenBudget for a hard run-wide cap; carve a per-phase ceiling with phase('Name', {budget: N}) (that phase throws at its sub-budget without touching the run total — wrap its work in try/catch so later phases proceed); use retry(thunk, {attempts, until}) for bounded retry, and gate(thunk, validator, {attempts}) when a validator's feedback should steer the next attempt. To degrade gracefully, branch on budget.remaining() to skip optional rounds.",
         "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
         "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
         "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
@@ -221,7 +218,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         structuredOutputEnabled
           ? "For workflow, structured output is enabled: if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors."
           : "For workflow, opts.schema is ignored while structured output is disabled; agent() returns final assistant text and logs a visible ignored-schema diagnostic. Do not dereference that result as a schema-shaped object; use text-safe scripts or parse deliberately in your own workflow code if needed.",
-        modelRoutingGuideline(
+        workflowModelGuideline(
           options.availableModelSpecs ?? options.modelRegistry ?? (() => manager.getModelRegistry()),
         ),
         agentTypeGuidelineText,

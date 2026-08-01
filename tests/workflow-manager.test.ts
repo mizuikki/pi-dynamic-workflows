@@ -276,9 +276,18 @@ test(
 );
 
 test(
-  "each agent's model is recorded for /workflows: explicit opts.model, else the main model",
+  "each agent's concrete model and effort are recorded for /workflows",
   withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), mainModel: "anthropic/claude-opus-4-8" });
+    const mainModel = { provider: "anthropic", id: "claude-opus-4-8", name: "opus", reasoning: false } as any;
+    const selectedModel = { provider: "openai", id: "gpt-5-mini", name: "mini", reasoning: false } as any;
+    const modelRegistry = { getAvailable: () => [mainModel, selectedModel] } as any;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: fakeAgent(),
+      mainModel: "anthropic/claude-opus-4-8",
+      modelRegistry,
+      session: { model: mainModel },
+    });
     const script = `export const meta = { name: 'model_demo', description: 'per-agent models' }
 const a = await agent('explore', { label: 'scan', model: 'openai/gpt-5-mini' })
 const b = await agent('reason', { label: 'judge' })
@@ -290,6 +299,8 @@ return { a, b }`;
     const byLabel = Object.fromEntries((run?.agents ?? []).map((a) => [a.label, a.model]));
     assert.equal(byLabel.scan, "openai/gpt-5-mini", "explicit per-agent model is recorded");
     assert.equal(byLabel.judge, "anthropic/claude-opus-4-8", "default agent shows the main model");
+    assert.ok(run?.agents.every((a) => a.effort === "off"));
+    assert.equal(run?.defaultModel, "anthropic/claude-opus-4-8");
   }),
 );
 
@@ -465,7 +476,6 @@ test(
     const fakeRegistry = {
       getAvailable: () => [{ provider: "mock", id: "m" }],
       find: () => undefined,
-      getAll: () => [],
     } as any;
     const rec = new (class {
       calls: Array<{ options: any }> = [];
@@ -1053,6 +1063,108 @@ test(
     // Verify persistence was updated to completed
     const persisted = manager.listRuns().find((r) => r.runId === runId);
     assert.equal(persisted?.status, "completed", "persistence should reflect completed status");
+  }),
+);
+
+test(
+  "cold-start resume admits a current model for older additive payloads",
+  withTempCwd(async (cwd) => {
+    const sessionModel = { provider: "provider", id: "session", name: "session", reasoning: false } as any;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: fakeAgent(),
+      session: { model: sessionModel },
+      modelRegistry: { getAvailable: () => [sessionModel] } as any,
+    });
+    const runId = "cold-start-legacy-model-1";
+
+    seedRun(cwd, {
+      runId,
+      workflowName: "cold_start_legacy_model",
+      script: oneAgentScript,
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    assert.equal(await manager.resume(runId), true);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const run = manager.getRun(runId);
+    assert.equal(run?.status, "completed");
+    assert.equal(run?.snapshot.defaultModel, "provider/session");
+    assert.equal(run?.snapshot.defaultEffort, "off");
+  }),
+);
+
+test(
+  "cold-start resume reuses a persisted model only when it remains available",
+  withTempCwd(async (cwd) => {
+    const availableModel = { provider: "provider", id: "available", name: "available", reasoning: false } as any;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: fakeAgent(),
+      modelRegistry: { getAvailable: () => [availableModel] } as any,
+    });
+    const runId = "cold-start-available-model-1";
+
+    seedRun(cwd, {
+      runId,
+      workflowName: "cold_start_available_model",
+      script: oneAgentScript,
+      defaultModel: "provider/available",
+      defaultEffort: "off",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    assert.equal(await manager.resume(runId), true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(manager.getRun(runId)?.status, "completed");
+    assert.equal(manager.getRun(runId)?.snapshot.defaultModel, "provider/available");
+  }),
+);
+
+test(
+  "cold-start resume rejects an unavailable persisted model without invoking a child",
+  withTempCwd(async (cwd) => {
+    let agentCalls = 0;
+    const availableModel = { provider: "provider", id: "available", name: "available", reasoning: false } as any;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run() {
+          agentCalls++;
+          return "unexpected";
+        },
+      },
+      modelRegistry: { getAvailable: () => [availableModel] } as any,
+    });
+    const runId = "cold-start-unavailable-model-1";
+
+    seedRun(cwd, {
+      runId,
+      workflowName: "cold_start_unavailable_model",
+      script: oneAgentScript,
+      defaultModel: "provider/registered-only",
+      defaultEffort: "off",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    await assert.rejects(manager.resume(runId), { code: "MODEL_SELECTION_ERROR" });
+    assert.equal(agentCalls, 0, "unavailable persisted models must fail before child execution");
   }),
 );
 

@@ -171,5 +171,5 @@ test("generateCodeReviewWorkflow bounds and cheapens verification fan-out", () =
   assert.match(body, /MAX_VERIFY_CANDIDATES = 30/);
   assert.match(body, /allCandidates\.slice\(0, MAX_VERIFY_CANDIDATES\)/);
   assert.match(body, /candidatesToVerify\.map/);
-  assert.match(body, /tier: 'small'/);
+  assert.doesNotMatch(body, /\btier\s*:/);
 });

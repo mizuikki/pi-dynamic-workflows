@@ -274,7 +274,7 @@ export class WorkflowEditor extends CustomEditor {
 
 /**
  * The directive appended to a submitted message when workflows mode is armed.
- * `extraDirective` (e.g. an effort-tier nudge) is appended when present.
+ * `extraDirective` (e.g. an orchestration-intensity nudge) is appended when present.
  */
 export function buildForcedWorkflowPrompt(text: string, extraDirective?: string): string {
   const lines = [

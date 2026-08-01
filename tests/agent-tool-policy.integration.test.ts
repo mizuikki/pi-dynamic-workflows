@@ -581,7 +581,7 @@ test("T11: resume hash differs when call-site isolation is worktree vs absent", 
   const base = {
     prompt: "p",
     model: null,
-    tier: null,
+    effort: null,
     phase: null,
     agentType: null,
     agentDef: null,

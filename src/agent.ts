@@ -30,13 +30,12 @@ import {
   modelListFromRegistry,
   modelListFromRuntime,
 } from "./model-runtime.js";
-import { canonicalModelSpec, resolveModelSpecWithThinking } from "./model-spec.js";
 import {
-  loadModelTierConfig,
-  type ModelTierConfig,
-  resolveTierModel,
-  resolveTierThinkingLevel,
-} from "./model-tier-config.js";
+  canonicalModelSpec,
+  type ModelThinkingLevel,
+  resolveAvailableModel,
+  validateModelEffort,
+} from "./model-selection.js";
 import {
   listAvailableModelSpecsAsync as listAvailableModelSpecsAsyncCompat,
   listAvailableModelSpecs as listAvailableModelSpecsCompat,
@@ -391,47 +390,9 @@ export async function resolveStructuredOutput<T>(
   );
 }
 
-/**
- * Resolve which concrete model spec a subagent should use. Precedence, most
- * specific first:
- *   1. options.model — an explicit per-agent model (also carries agentType /
- *      phase model, which the workflow layer folds into options.model).
- *   2. options.tier  — resolved via the model-tiers config, falling back to the
- *      session's main model when the tier has no configured entry.
- *   3. DEFAULT TIER — when neither is set but the user has a model-tiers config,
- *      untagged agents default to the "medium" tier so a configured tier set
- *      actually affects the whole workflow (not just agents the script tagged).
- *      Fresh-install medium == the session model, so this is a no-op until the
- *      user customizes tiers via /workflows-models.
- * Returns undefined when nothing applies, so the session default is used.
- *
- * `loadConfig` is injectable for testing; it defaults to reading from disk.
- */
-export function resolveAgentModelSpec(
-  options: { model?: string; tier?: string },
-  mainModel: string | undefined,
-  loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
-): string | undefined {
-  if (options.model) return options.model;
-  const config = loadConfig();
-  if (options.tier) {
-    return (config ? resolveTierModel(options.tier, config) : undefined) ?? mainModel;
-  }
-  // Untagged agent: default to the configured medium tier when one exists.
-  if (config) {
-    const medium = resolveTierModel("medium", config);
-    if (medium) return medium;
-  }
-  return undefined;
-}
-
-export function resolveAgentTierThinkingLevel(
-  options: { tier?: string },
-  loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
-): CreateAgentSessionOptions["thinkingLevel"] | undefined {
-  if (!options.tier) return undefined;
-  const config = loadConfig();
-  return config ? resolveTierThinkingLevel(options.tier, config) : undefined;
+/** Return the explicit per-agent model, or leave selection to the session. */
+export function resolveAgentModelSpec(options: { model?: string }, _mainModel?: string): string | undefined {
+  return options.model?.trim() || undefined;
 }
 
 export interface WorkflowAgentOptions {
@@ -445,15 +406,10 @@ export interface WorkflowAgentOptions {
   session?: Omit<Partial<CreateAgentSessionOptions>, "modelRuntime">;
   /** Extra system guidance prepended to every subagent task. */
   instructions?: string;
-  /**
-   * The session's main model (`provider/modelId`). Used as a fallback when
-   * resolving opts.tier and no model-tiers.json config exists. Without this,
-   * a workflow using `{ tier: "small" }` would log a warning and fall through
-   * to the session default when no config is saved yet.
-   */
+  /** The session's main model (`provider/modelId`) for display and host fallback. */
   mainModel?: string;
   /**
-   * Host extension ModelRegistry facade. Used for model-spec resolution and as
+   * Host extension ModelRegistry facade. Used for available-model selection and as
    * the source of registered dynamic provider configs to copy into the plugin
    * ModelRuntime. Not passed to createAgentSession.
    */
@@ -592,25 +548,14 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * usage is never lost. `total === 0` means the provider reported no usage.
    */
   onUsage?: (usage: AgentUsage) => void;
-  /**
-   * Model spec for this subagent: either `provider/modelId` (unambiguous) or a
-   * bare `modelId`. When it can't be resolved, the session default is used and
-   * a warning is logged. When omitted, the session default applies.
-   */
+  /** Available `provider/modelId` or unique bare model id for this subagent. */
   model?: string;
-  /**
-   * Model tier name (e.g. "small", "medium", "big"). When set (and no explicit
-   * `model` is given), the model is resolved from the user's model-tiers.json
-   * config before `run()` starts, falling back to the session's main model when
-   * the tier has no configured entry. An explicit `model` always takes priority,
-   * so workflow scripts can use `{ tier: "small" }` for coarse routing without
-   * caring which concrete model backs that tier.
-   */
-  tier?: string;
+  /** Pi-owned reasoning effort for this subagent. */
+  effort?: ModelThinkingLevel;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
-  /** Called when `model`/`tier`/phase resolved to a spec that wasn't found (fell back to session default). */
-  onModelFallback?: (requestedSpec: string) => void;
+  /** Called with the validated Pi-owned effort once known (for display/telemetry). */
+  onEffortResolved?: (effort: ModelThinkingLevel) => void;
   /** Called with a compact snapshot of this subagent's message/tool history. */
   onHistory?: (history: AgentHistoryEntry[]) => void;
   /** Run this agent in a different working directory (e.g. an isolated worktree). */
@@ -749,7 +694,7 @@ export class WorkflowAgent {
 
   /**
    * Resolution list source after providers have been copied into the runtime.
-   * Prefer the host registry (routing/catalog surface); fall back to the plugin runtime.
+   * Prefer the host availability snapshot; otherwise use the plugin runtime snapshot.
    */
   private getResolutionSource(runtime: ModelRuntime, hostRegistry?: ModelRegistry): ModelListSource {
     if (hostRegistry) return modelListFromRegistry(hostRegistry);
@@ -828,9 +773,8 @@ export class WorkflowAgent {
     const systemNameSet = new Set([...systemToolNames, ...(schemaTool ? ["structured_output"] : [])]);
     const excludeTools = (options.disallowedToolNames ?? []).filter((name) => !systemNameSet.has(name));
 
-    // Resolve the model spec (explicit model > tier > session default). This
-    // composes with phase-based routing in workflow.ts, which only supplies
-    // options.model when a phase pattern matches — so an explicit model wins.
+    // Resolve only an explicit per-agent model. Unoverridden calls inherit the
+    // model selected by the owning Workflow admission.
     const modelSpec = resolveAgentModelSpec(options, this.mainModel);
 
     // Plugin-owned execution runtime (never unwrap host runtime from ModelRegistry).
@@ -838,24 +782,28 @@ export class WorkflowAgent {
     const modelRuntime = await this.getModelRuntime();
     copyRegisteredProviders(hostRegistry, modelRuntime);
 
-    // Resolve a requested model spec to a Model object. Specs use Pi CLI-style
-    // parsing, including an optional :thinking suffix such as gpt-5.5:xhigh.
-    // A given-but-unresolved spec falls back to the session default (with a
-    // warning) rather than failing.
+    // Resolve a requested model to a concrete Pi registry model. Model selection
+    // failures are non-recoverable; a child must never silently use another model.
     const resolutionSource = this.getResolutionSource(modelRuntime, hostRegistry);
     let resolvedModel: Model<any> | undefined;
     let resolvedThinkingLevel: CreateAgentSessionOptions["thinkingLevel"] | undefined;
     if (modelSpec) {
-      const resolved = resolveModelSpecWithThinking(modelSpec, resolutionSource);
-      if (resolved.warning) console.warn(`[workflow] ${resolved.warning}`);
-      if (resolved.model) {
-        resolvedModel = resolved.model;
-        resolvedThinkingLevel = resolved.thinkingLevel;
-        options.onModelResolved?.(resolved.resolvedSpec ?? canonicalModelSpec(resolved.model));
-      } else {
-        console.warn(`[workflow] model "${modelSpec}" not found; using session default`);
-        options.onModelFallback?.(modelSpec);
+      resolvedModel = resolveAvailableModel(modelSpec, resolutionSource);
+      options.onModelResolved?.(canonicalModelSpec(resolvedModel));
+    }
+
+    const effortModel = resolvedModel ?? (this.sessionOptions.model as Model<any> | undefined);
+    if (options.effort !== undefined) {
+      if (!effortModel) {
+        throw new WorkflowError(
+          "An agent effort override requires a concrete Pi session model.",
+          WorkflowErrorCode.MODEL_SELECTION_ERROR,
+          { recoverable: false, agentLabel: options.label },
+        );
       }
+      const validatedEffort = validateModelEffort(effortModel, options.effort, "Requested agent effort");
+      resolvedThinkingLevel = validatedEffort as CreateAgentSessionOptions["thinkingLevel"];
+      options.onEffortResolved?.(validatedEffort);
     }
 
     const agentDir = this.sessionOptions.agentDir ?? getAgentDir();
@@ -938,11 +886,9 @@ export class WorkflowAgent {
       resourceLoader,
       // Per-call model/thinking wins over any sessionOptions defaults.
       ...(resolvedModel ? { model: resolvedModel } : {}),
-      ...(options.thinkingLevel
-        ? { thinkingLevel: options.thinkingLevel }
-        : resolvedThinkingLevel
-          ? { thinkingLevel: resolvedThinkingLevel }
-          : {}),
+      ...((options.effort ?? resolvedThinkingLevel ?? options.thinkingLevel) !== undefined
+        ? { thinkingLevel: (options.effort ?? resolvedThinkingLevel ?? options.thinkingLevel) as never }
+        : {}),
       // Re-assert after baseSessionOptions so caller overrides cannot drop the allowlist.
       customTools,
       ...(childSessionAllowlist ? { tools: childSessionAllowlist } : {}),

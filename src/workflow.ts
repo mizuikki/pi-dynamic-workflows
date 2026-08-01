@@ -4,7 +4,7 @@ import type { Node } from "acorn";
 import { parse } from "acorn";
 import type { TSchema } from "typebox";
 import type { AgentUsage } from "./agent.js";
-import { resolveAgentTierThinkingLevel, WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
+import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import {
   type AgentDefinition,
@@ -25,7 +25,15 @@ import {
   validateKeelHostBridge,
 } from "./keel-host-contract.js";
 import { createWorkflowLogger } from "./logger.js";
-import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
+import {
+  type ModelThinkingLevel,
+  type ResolvedWorkflowModel,
+  resolveAgentModelOverride,
+  resolveWorkflowModel,
+  resolveWorkflowModelSnapshot,
+  type WorkflowModelSetting,
+  type WorkflowModelSnapshot,
+} from "./model-selection.js";
 import {
   type AgentTurnRetryOverride,
   normalizeAgentTurnRetryOverride,
@@ -34,27 +42,24 @@ import {
 } from "./retry-policy.js";
 import { createAgentStoreTools, SharedStore } from "./shared-store.js";
 import { applySubagentContext, mergeSubagentContexts, type SubagentContext } from "./subagent-context.js";
-import { structuredOutputDisabledGuidance } from "./workflow-settings.js";
+import { loadWorkflowSettings, structuredOutputDisabledGuidance } from "./workflow-settings.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 export interface WorkflowMetaPhase {
   title: string;
   detail?: string;
-  model?: string;
 }
 
 export interface WorkflowMeta {
   name: string;
   description: string;
   phases?: WorkflowMetaPhase[];
-  /** Default model for agents whose phase has no route and that set no model/tier. */
-  model?: string;
 }
 
 /** One cached agent() result, keyed by its deterministic call index. */
 export interface JournalEntry {
   index: number;
-  /** sha256 of the call's identity (prompt + model + phase + agentType + schema). */
+  /** sha256 of the call's identity (prompt + model + effort + phase + agentType + schema). */
   hash: string;
   result: unknown;
   /**
@@ -86,8 +91,14 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), shown in /workflows for default agents. */
   mainModel?: string;
-  /** The session's current thinking level; tier configs inherit from this when unspecified. */
+  /** The session's current Pi reasoning effort. */
   currentThinkingLevel?: string;
+  /** Concrete host session model when the run is admitted. */
+  sessionModel?: import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>;
+  /** Admission snapshot; nested/resumed runs must pass this instead of settings. */
+  workflowModel?: WorkflowModelSnapshot;
+  /** Direct-run settings override; manager-admitted runs use workflowModel instead. */
+  workflowModelSetting?: WorkflowModelSetting;
   /** Optional versioned Keel host integration. Omit for the legacy workflow path. */
   keelHost?: KeelHostBridgeV1;
   /**
@@ -138,7 +149,13 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string }) => void;
+  onAgentStart?: (event: {
+    label: string;
+    phase?: string;
+    prompt: string;
+    model?: string;
+    effort?: ModelThinkingLevel;
+  }) => void;
   onAgentEnd?: (event: {
     label: string;
     phase?: string;
@@ -146,6 +163,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     tokens?: number;
     worktree?: string;
     model?: string;
+    effort?: ModelThinkingLevel;
     error?: string;
     errorCode?: WorkflowErrorCode;
     recoverable?: boolean;
@@ -169,6 +187,9 @@ export interface WorkflowRunResult<T = unknown> {
   agentCount: number;
   durationMs: number;
   runId?: string;
+  /** Concrete default pair sampled before the first agent() admission. */
+  defaultModel?: string;
+  defaultEffort?: ModelThinkingLevel;
   tokenUsage?: {
     input: number;
     output: number;
@@ -194,26 +215,19 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   phase?: string;
   schema?: TSchemaDef;
   /**
-   * Run this agent on a specific model (`provider/modelId` or a bare `modelId`).
-   * The workflow author chooses per-agent models per the routing policy in the
-   * tool guidelines (e.g. a lighter model for exploration, the main model for
-   * analysis). When omitted, the session's main model is used.
+   * Temporary per-agent model override (`provider/modelId` or a unique bare
+   * model id). When omitted, the admitted Workflow Model is inherited.
    */
   model?: string;
-  /**
-   * Coarse model tier ("small" | "medium" | "big"), resolved from the user's
-   * model-tiers config (see /workflows-models). An explicit `model` takes
-   * precedence; a tier takes precedence over the phase model. When the tier has
-   * no configured entry it falls back to the session's main model.
-   */
-  tier?: string;
+  /** Temporary Pi-supported reasoning-effort override. */
+  effort?: ModelThinkingLevel;
   isolation?: "worktree";
   /**
    * Name of a registered subagent definition (`.pi/agents/<name>.md`, project >
-   * user). Binds that definition's tool allow/denylist, model, and body prompt
-   * to this agent. An explicit `model` overrides the definition's model; the
-   * definition's model overrides `tier`/phase. An unknown name logs a warning
-   * and falls back to default tools/model (with the name as a prose hint).
+   * user). Binds that definition's tool allow/denylist and body prompt to this
+   * agent. Workflow model selection remains controlled by `model`/`effort` and
+   * the admitted Workflow Model; the definition's optional model is ignored.
+   * An unknown name logs a warning and falls back to default tools.
    */
   agentType?: string;
   /** Override timeout for this specific agent. null means no hard timeout. */
@@ -305,12 +319,41 @@ export async function runWorkflow<T = unknown>(
 ): Promise<WorkflowRunResult<T>> {
   const started = Date.now();
   const { meta, body } = parseWorkflowScript(script);
-  // Per-phase model routing from meta.phases[].model, with meta.model as the default.
-  const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
   const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
   const agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
   const runId = options.runId ?? `run-${started.toString(36)}`;
   const baseCwd = options.cwd ?? process.cwd();
+  const sessionModel =
+    options.sessionModel ??
+    (options.session?.model as import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api> | undefined);
+  // A manager normally supplies workflowModel after admission. Direct callers
+  // resolve it here once, before the script can create an agent or nested run.
+  // The model-less branch exists for injected test runners that intentionally do
+  // not emulate a Pi session; production ExtensionContext always supplies one.
+  const admittedWorkflowModel: ResolvedWorkflowModel | undefined = options.workflowModel
+    ? resolveWorkflowModelSnapshot(options.workflowModel, {
+        sessionModel,
+        registry: options.modelRegistry,
+      })
+    : (() => {
+        const setting =
+          options.workflowModelSetting !== undefined
+            ? options.workflowModelSetting
+            : loadWorkflowSettings({ cwd: baseCwd }).workflowModel;
+        const canResolve =
+          setting !== undefined ||
+          sessionModel !== undefined ||
+          (options.mainModel !== undefined && options.modelRegistry !== undefined);
+        return canResolve
+          ? resolveWorkflowModel({
+              setting,
+              sessionModel,
+              sessionModelId: options.mainModel,
+              sessionEffort: options.currentThinkingLevel as ModelThinkingLevel | undefined,
+              registry: options.modelRegistry,
+            })
+          : undefined;
+      })();
   const structuredOutputEnabled = options.structuredOutputEnabled === true;
   const executionPolicy = normalizeExecutionPolicy(options);
   if (options.keelHost) validateKeelHostBridge(options.keelHost);
@@ -397,6 +440,13 @@ export async function runWorkflow<T = unknown>(
     if (perAgentTurnRetry && !options.hostRetryPolicy) {
       throw new Error("agent.agentTurnRetry requires a host retry policy snapshot");
     }
+    if (Object.hasOwn(agentOptions as object, "tier")) {
+      throw new WorkflowError(
+        "agent(..., { tier }) is retired. Use model and/or effort for a temporary override.",
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
     const retryAttempts = resolveAgentRunRetries(agentOptions.agentRunRetries, agentOptions.retries, {
       aliasName: "retries",
       fallback: executionPolicy.agentRunRetries ?? 0,
@@ -443,25 +493,32 @@ export async function runWorkflow<T = unknown>(
 
     const requestedLabel = agentOptions.label?.trim();
 
-    // Resolve a named agentType to its bound definition (tools/model/prompt).
+    // Resolve a named agentType to its bound definition (tools/prompt/isolation).
     const agentDef = resolveAgentType(agentOptions.agentType, agentRegistry);
     if (agentOptions.agentType && !agentDef) {
-      log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
+      log(`unknown agentType "${agentOptions.agentType}"; using default tools`);
     }
 
-    // Model precedence: explicit agentOptions.model > agentType.model > tier > phase model.
-    // The "explicit-level" model is opts.model, else the definition's model — either
-    // beats tier/phase. When only a tier is set, pass undefined here so the tier (not
-    // the phase model) decides inside WorkflowAgent.run().
-    const explicitModel = agentOptions.model ?? agentDef?.model;
-    const modelSpec =
-      explicitModel ?? (agentOptions.tier ? undefined : resolveModelForPhase(assignedPhase, routingConfig));
-    const tierThinkingLevel =
-      !explicitModel && agentOptions.tier ? resolveAgentTierThinkingLevel({ tier: agentOptions.tier }) : undefined;
-    // For display in /workflows: the model this agent runs on — its explicit/phase
-    // spec, else the session's main model. The real resolved id overrides this via
-    // onModelResolved once the subagent session is created.
-    let displayModel = modelSpec ?? options.mainModel;
+    // Every agent inherits the admitted pair unless it supplies an independent
+    // model and/or effort override. Agent-definition frontmatter never routes a
+    // Workflow call.
+    const modelSelection = admittedWorkflowModel
+      ? resolveAgentModelOverride(
+          admittedWorkflowModel,
+          { model: agentOptions.model, effort: agentOptions.effort },
+          options.modelRegistry,
+        )
+      : agentOptions.model !== undefined || agentOptions.effort !== undefined
+        ? (() => {
+            throw new WorkflowError(
+              "An agent model/effort override requires an admitted Pi Workflow Model.",
+              WorkflowErrorCode.MODEL_SELECTION_ERROR,
+              { recoverable: false, agentLabel: agentOptions.label },
+            );
+          })()
+        : undefined;
+    let displayModel = modelSelection?.model ?? options.mainModel;
+    let displayEffort = modelSelection?.effort;
 
     // Call-site isolation for resume hashing (requested value from options/def).
     // Worktree success/fallback is decided later and does not rewrite this hash.
@@ -520,7 +577,8 @@ export async function runWorkflow<T = unknown>(
 
     const callHash = hashAgentCall(
       agentPrompt,
-      modelSpec,
+      displayModel,
+      displayEffort,
       assignedPhase,
       effectiveAgentOptions,
       agentDefinitionKey(agentDef),
@@ -552,8 +610,22 @@ export async function runWorkflow<T = unknown>(
           status: "succeeded",
         });
       }
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
-      options.onAgentEnd?.({ label, phase: assignedPhase, result: cached.result, tokens: 0, model: displayModel });
+      if (displayModel) log(`${label}: ${displayModel} @ ${displayEffort ?? "session effort"}`);
+      options.onAgentStart?.({
+        label,
+        phase: assignedPhase,
+        prompt,
+        model: displayModel,
+        effort: displayEffort,
+      });
+      options.onAgentEnd?.({
+        label,
+        phase: assignedPhase,
+        result: cached.result,
+        tokens: 0,
+        model: displayModel,
+        effort: displayEffort,
+      });
       // Apply this agent's write delta so live agents later in the run see a
       // consistent store. Additive apply preserves parallel-agent writes that
       // came from higher-callIndex agents finishing before this one.
@@ -571,7 +643,14 @@ export async function runWorkflow<T = unknown>(
       if (options.keelHost && loadedKeel) {
         await observeKeelAgentStarted(options.keelHost, loadedKeel, keelSource, "live");
       }
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
+      if (displayModel) log(`${label}: ${displayModel} @ ${displayEffort ?? "session effort"}`);
+      options.onAgentStart?.({
+        label,
+        phase: assignedPhase,
+        prompt,
+        model: displayModel,
+        effort: displayEffort,
+      });
 
       // Optional per-agent worktree isolation (deterministic name -> stable resume keys).
       // Precedence: explicit call-site isolation > agentDef isolation.
@@ -639,9 +718,8 @@ export async function runWorkflow<T = unknown>(
                 ...(loadedContext
                   ? { skipContextLoading: true as const, ...(loadedEnv ? { env: loadedEnv } : {}) }
                   : {}),
-                model: modelSpec,
-                tier: agentOptions.tier,
-                thinkingLevel: tierThinkingLevel,
+                model: modelSelection?.model,
+                effort: modelSelection?.effort,
                 modelRegistry: options.modelRegistry,
                 agentTurnRetry: perAgentTurnRetry,
                 toolNames: agentDef?.tools,
@@ -659,9 +737,8 @@ export async function runWorkflow<T = unknown>(
                 onModelResolved: (id: string) => {
                   displayModel = id;
                 },
-                onModelFallback: (spec: string) => {
-                  // Make the silent degrade visible in /workflows, not just console.
-                  log(`${label}: model "${spec}" unavailable — using the session default`);
+                onEffortResolved: (effort: ModelThinkingLevel) => {
+                  displayEffort = effort;
                 },
                 onUsage: (u: AgentUsage) => {
                   usage = u;
@@ -701,6 +778,7 @@ export async function runWorkflow<T = unknown>(
               tokens,
               worktree: runCwd,
               model: displayModel,
+              effort: displayEffort,
             });
             return result;
           } catch (error) {
@@ -743,6 +821,7 @@ export async function runWorkflow<T = unknown>(
               tokens,
               worktree: runCwd,
               model: displayModel,
+              effort: displayEffort,
               error: workflowError.message,
               errorCode: workflowError.code,
               recoverable: workflowError.recoverable,
@@ -842,6 +921,12 @@ export async function runWorkflow<T = unknown>(
         // A nested run is its own script; never reuse the parent's resume journal.
         resumeJournal: undefined,
         resumeFromRunId: undefined,
+        // Nested/background work inherits the parent's admission snapshot and
+        // must not consult settings again.
+        workflowModel: admittedWorkflowModel
+          ? { model: admittedWorkflowModel.model, effort: admittedWorkflowModel.effort }
+          : undefined,
+        workflowModelSetting: undefined,
         runId: `${runId}-nested${shared.depth}`,
         persistLogs: false,
       });
@@ -1102,6 +1187,9 @@ export async function runWorkflow<T = unknown>(
       agentCount: shared.agentCount,
       durationMs: Date.now() - started,
       runId,
+      ...(admittedWorkflowModel
+        ? { defaultModel: admittedWorkflowModel.model, defaultEffort: admittedWorkflowModel.effort }
+        : {}),
       tokenUsage: shared.tokenUsage,
     };
   } finally {
@@ -1220,16 +1308,29 @@ function propertyKey(node: AnyNode, path: string): string {
 
 function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
   if (!meta || typeof meta !== "object") throw new Error("meta must be an object");
-  const value = meta as WorkflowMeta;
+  const value = meta as WorkflowMeta & Record<string, unknown>;
   if (typeof value.name !== "string" || !value.name.trim()) throw new Error("meta.name must be a non-empty string");
   if (typeof value.description !== "string" || !value.description.trim())
     throw new Error("meta.description must be a non-empty string");
-  if (value.model !== undefined && typeof value.model !== "string") throw new Error("meta.model must be a string");
+  if (Object.hasOwn(value, "model")) {
+    throw new WorkflowError(
+      "meta.model is retired. Workflow model selection is configured outside the script.",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      { recoverable: false },
+    );
+  }
   if (value.phases !== undefined) {
     if (!Array.isArray(value.phases)) throw new Error("meta.phases must be an array");
     for (const phase of value.phases) {
       if (!phase || typeof phase !== "object" || typeof (phase as WorkflowMetaPhase).title !== "string") {
         throw new Error("each meta phase must have a title string");
+      }
+      if (Object.hasOwn(phase, "model")) {
+        throw new WorkflowError(
+          "meta.phases[].model is retired. Workflow model selection is configured outside the script.",
+          WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+          { recoverable: false },
+        );
       }
     }
   }
@@ -1303,6 +1404,7 @@ function canonicalAgentCallContext(
 function hashAgentCall(
   prompt: string,
   model: string | undefined,
+  effort: ModelThinkingLevel | undefined,
   phase: string | undefined,
   options: AgentOptions,
   agentDefKey: string | null,
@@ -1312,7 +1414,7 @@ function hashAgentCall(
   const identity: {
     prompt: string;
     model: string | null;
-    tier: string | null;
+    effort: ModelThinkingLevel | null;
     phase: string | null;
     agentType: string | null;
     agentDef: string | null;
@@ -1322,7 +1424,7 @@ function hashAgentCall(
   } = {
     prompt,
     model: model ?? null,
-    tier: options.tier ?? null,
+    effort: effort ?? null,
     phase: phase ?? null,
     agentType: options.agentType ?? null,
     // Resolved definition (tools/model/prompt) so editing an agent .md invalidates
