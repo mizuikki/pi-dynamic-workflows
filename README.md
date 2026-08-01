@@ -339,7 +339,7 @@ At top-level admission, the extension resolves the effective model and Pi-suppor
 
 ## Optional Trellis adapter
 
-For a Trellis `1.0.1` project, pi-dynamic-workflows can optionally:
+For a Trellis `1.0.3` project, pi-dynamic-workflows can optionally:
 
 1. Inject **read-only Trellis task context** into workflow subagents (`agent()`), and
 2. Register a host-facing **`trellis_subagent`** tool (`single` / `parallel` / `chain`) when the **native** Trellis extension is **absent**.
@@ -362,12 +362,12 @@ Configured in `~/.pi/workflows/settings.json` (or a project override):
 
 | `enabled` | Behavior |
 | --- | --- |
-| `"auto"` (default) | Enable context injection only when `<cwd>/.trellis/` exists and `.trellis/.version` is `1.0.1` |
-| `"on"` | Attempt Trellis context resolution only for a `1.0.1` project |
+| `"auto"` (default) | Enable context injection only when `<cwd>/.trellis/` exists and `.trellis/.version` is `1.0.3` |
+| `"on"` | Attempt Trellis context resolution only for a `1.0.3` project |
 | `"off"` | Never inject Trellis context (tool also stays off) |
 
 At extension startup, any Trellis project whose `.trellis/.version` is not
-`1.0.1` disables the adapter, registers no fallback tool, and emits a warning.
+`1.0.3` disables the adapter, registers no fallback tool, and emits a warning.
 There is no compatibility renderer or fallback mode for another Trellis version.
 
 | `registerSubagentTool` | Behavior |
@@ -391,7 +391,7 @@ For `agent(prompt, { agentType: "trellis-implement" })` (or `trellis-check` / sh
 2. A bounded `## Trellis Task Context` block with `prd.md`, optional `design.md` / `implement.md`, and a read-on-demand index of curated `implement.jsonl` / `check.jsonl` entries; referenced files are never inlined
 3. A per-run `env.TRELLIS_CONTEXT_ID` applied to nested **bash** tool calls via a session-local `tool_call` interceptor (does **not** mutate parent `process.env` under parallel runs)
 
-The canonical payload follows the Trellis `1.0.1` native renderer byte-for-byte:
+The canonical payload follows the Trellis `1.0.3` native renderer byte-for-byte:
 the complete task-context prefix is capped at 128 KiB, each directly included
 task artifact at 64 KiB, the manifest index at 32 KiB, and manifest source reads
 at 256 KiB. Oversized content is marked with its source path so the subagent can
@@ -423,6 +423,7 @@ Semantics:
 - **single** — one `WorkflowAgent.run`
 - **parallel** — `Promise.all`, join outputs with `\n\n---\n\n`
 - **chain** — sequential; each step receives `Previous output:`; stop on first failure
+- **model/thinking** — input `thinking`, input model suffix, agent `thinking`, agent model suffix, then the invoking host session; suffixes are stripped before exact Pi model resolution
 - **implement/check** — forced **shared project cwd** (no worktree isolation)
 - Progress: `details.kind === "trellis-subagent-progress"` with `runs[]` + throttled `onUpdate`
 
@@ -468,7 +469,7 @@ trellis_subagent({
 
 ### Supported local pair
 
-The supported clean-slate pair is Trellis `1.0.1` plus workflow `2.14.0`.
+The supported clean-slate pair is Trellis `1.0.3` plus workflow `2.14.0`.
 This fork is maintained for local use: install it from a local checkout as
 shown in [Install](#install). `2.14.0` is a compatibility identifier, not a
 published Git tag or remote package reference.

@@ -393,7 +393,7 @@ test("registers trellis_subagent on model_select when native extension is absent
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
     const harness = makeExtensionHarness({ cwd });
     await withFakeHomeAsync(home, async () => {
       const originalCwd = process.cwd();
@@ -438,7 +438,7 @@ test("disables the Trellis adapter for an unsupported project version", async ()
       }
       await harness.handlers.get("model_select")?.({ type: "model_select" }, harness.ctx);
     });
-    assert.ok(warnings.includes("[trellis-adapter] disabled: requires Trellis project version 1.0.1"));
+    assert.ok(warnings.includes("[trellis-adapter] disabled: requires Trellis project version 1.0.3"));
     assert.equal(
       harness.registeredTools.some((tool) => tool.name === "trellis_subagent"),
       false,
@@ -456,7 +456,7 @@ test("trellis_subagent remains inactive after explicit deactivation", async () =
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
     const harness = makeExtensionHarness({ cwd });
     await withFakeHomeAsync(home, async () => {
       const originalCwd = process.cwd();
@@ -488,7 +488,7 @@ test("skips trellis_subagent registration when tool already registered", async (
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
     const harness = makeExtensionHarness({
       cwd,
       registeredTools: [{ name: "trellis_subagent" } as ToolDefinition],

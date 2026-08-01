@@ -199,13 +199,43 @@ function historyTail(history: AgentHistoryEntry[] | undefined, max = 400): strin
   return undefined;
 }
 
-function resolveThinking(
+const MODEL_THINKING_SUFFIX = /^(.*):(off|minimal|low|medium|high|xhigh|max)$/i;
+
+function normalizeThinking(value: string | undefined): ModelThinkingLevel | undefined {
+  const candidate = value?.trim().toLowerCase();
+  return candidate && isThinkingLevel(candidate) ? candidate : undefined;
+}
+
+function splitModelThinking(model: string | undefined): {
+  model: string | undefined;
+  thinking: ModelThinkingLevel | undefined;
+} {
+  const candidate = model?.trim() || undefined;
+  const match = candidate?.match(MODEL_THINKING_SUFFIX);
+  return {
+    model: (match?.[1] || candidate)?.trim() || undefined,
+    thinking: normalizeThinking(match?.[2]),
+  };
+}
+
+function resolveRunModelAndThinking(
+  inputModel: string | undefined,
   inputThinking: string | undefined,
+  agentModel: string | undefined,
+  agentThinking: string | undefined,
   hostThinking: string | undefined,
-): ModelThinkingLevel | undefined {
-  const candidate = inputThinking?.trim() || hostThinking?.trim();
-  if (!candidate) return undefined;
-  return isThinkingLevel(candidate) ? candidate : undefined;
+): { model: string | undefined; thinkingLevel: ModelThinkingLevel | undefined } {
+  const input = splitModelThinking(inputModel);
+  const agent = splitModelThinking(agentModel);
+  return {
+    model: input.model ?? agent.model,
+    thinkingLevel:
+      normalizeThinking(inputThinking) ??
+      input.thinking ??
+      normalizeThinking(agentThinking) ??
+      agent.thinking ??
+      normalizeThinking(hostThinking),
+  };
 }
 
 /**
@@ -279,8 +309,13 @@ export function createTrellisSubagentTool(
         agentName === "implement" ||
         agentName === "check";
 
-      const thinkingLevel = resolveThinking(params.thinking, options.getThinkingLevel?.());
-      const model = params.model?.trim() || agentDef?.model;
+      const { model, thinkingLevel } = resolveRunModelAndThinking(
+        params.model,
+        params.thinking,
+        agentDef?.model,
+        agentDef?.thinking,
+        options.getThinkingLevel?.(),
+      );
       // Host trust is consumed by the bound WorkflowAgent constructor (extension
       // wiring rebuilds the runner with projectTrusted). Keep the getter live so
       // custom hosts can observe it; prefer constructor inheritance over per-run.

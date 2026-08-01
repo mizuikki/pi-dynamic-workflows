@@ -18,6 +18,7 @@ export {
   parseActiveTaskLine,
   resolveActiveTaskPath,
   resolveTrellisContextKey,
+  SUPPORTED_TRELLIS_PROJECT_VERSION,
   shouldEnableTrellisAdapter,
   shouldRegisterTrellisSubagentTool,
   toRepoRelativePath,

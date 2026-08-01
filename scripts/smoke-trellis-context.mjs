@@ -53,7 +53,7 @@ try {
   mkdirSync(join(root, ".pi", "extensions", "trellis"), { recursive: true });
   mkdirSync(task, { recursive: true });
   writeFileSync(join(root, ".pi", "settings.json"), JSON.stringify({ extensions: ["./extensions/trellis/index.ts"] }));
-  writeFileSync(join(root, ".trellis", ".version"), "1.0.1\n");
+  writeFileSync(join(root, ".trellis", ".version"), "1.0.3\n");
   writeFileSync(join(root, ".pi", "extensions", "trellis", "index.ts"), "export default {};\n");
   writeFileSync(join(task, "prd.md"), "# Requirements\nShip the adapter.\n");
   writeFileSync(join(task, "design.md"), "# Technical Design\nKeep payload bytes stable.\n");

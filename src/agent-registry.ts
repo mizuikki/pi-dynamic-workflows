@@ -16,8 +16,9 @@
  * retained for non-Workflow consumers but ignored by Workflow execution.
  *
  * Bound today: `tools` (allowlist), `disallowedTools` (denylist), and the
- * markdown body (`prompt`). Parsed-but-ignored metadata includes `model`, `mcp`,
- * `skills`, and `background`.
+ * markdown body (`prompt`). Parsed-but-ignored metadata includes `model`,
+ * `thinking`, `mcp`, `skills`, and `background`; the optional Trellis fallback
+ * consumes model/thinking narrowly at its dispatch boundary.
  * Wired: `isolation` ("worktree") → createWorktree() in workflow.ts.
  */
 
@@ -38,6 +39,8 @@ export interface AgentDefinition {
   disallowedTools?: string[];
   /** Legacy model metadata; Workflow execution deliberately ignores it. */
   model?: string;
+  /** Legacy thinking metadata; ordinary Workflow execution deliberately ignores it. */
+  thinking?: string;
   /** Isolation mode. When "worktree", agents using this type run in a git worktree. */
   isolation?: "worktree";
   /** Markdown body, prepended to the subagent's task as role guidance. */
@@ -95,6 +98,7 @@ export function parseAgentDefinition(
     tools: toStringArray(fm.tools),
     disallowedTools: toStringArray(fm.disallowedTools),
     model: typeof fm.model === "string" ? fm.model.trim() || undefined : undefined,
+    thinking: typeof fm.thinking === "string" ? fm.thinking.trim() || undefined : undefined,
     isolation:
       typeof fm.isolation === "string" && fm.isolation.toLowerCase().trim() === "worktree" ? "worktree" : undefined,
     prompt,

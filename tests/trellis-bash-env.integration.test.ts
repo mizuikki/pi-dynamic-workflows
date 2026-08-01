@@ -68,7 +68,7 @@ test("loader returns env.TRELLIS_CONTEXT_ID from sessionId", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-env-loader-"));
   try {
     mkdirSync(join(cwd, ".trellis", "tasks", "t1"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
     writeFileSync(join(cwd, ".trellis", "tasks", "t1", "prd.md"), "p", "utf-8");
     const sessions = join(cwd, ".trellis", ".runtime", "sessions");
     mkdirSync(sessions, { recursive: true });

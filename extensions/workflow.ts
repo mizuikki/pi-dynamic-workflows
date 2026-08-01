@@ -23,6 +23,7 @@ import {
   registerWorkflowMainPromptCommand,
   registerWorkflowMainPromptFlag,
   registerWorkflowModelsCommand,
+  SUPPORTED_TRELLIS_PROJECT_VERSION,
   saveWorkflowSettingsForCwd,
   shouldEnableTrellisAdapter,
   shouldRegisterTrellisSubagentTool,
@@ -56,7 +57,7 @@ export default function extension(pi: ExtensionAPI) {
   // or phase management.
   const trellisCompatible = hasSupportedTrellisProject(cwd);
   if (hasTrellisProject(cwd) && !trellisCompatible) {
-    console.warn("[trellis-adapter] disabled: requires Trellis project version 1.0.1");
+    console.warn(`[trellis-adapter] disabled: requires Trellis project version ${SUPPORTED_TRELLIS_PROJECT_VERSION}`);
   }
   const trellisEnabled = trellisCompatible && shouldEnableTrellisAdapter(cwd, settings.trellisAdapter);
   const trellisContextLoader = trellisEnabled

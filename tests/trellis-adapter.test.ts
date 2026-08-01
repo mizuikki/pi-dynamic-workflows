@@ -12,6 +12,7 @@ import {
   MAX_TRELLIS_TASK_CONTEXT_BYTES,
   parseActiveTaskLine,
   resolveActiveTaskPath,
+  SUPPORTED_TRELLIS_PROJECT_VERSION,
   shouldEnableTrellisAdapter,
   shouldRegisterTrellisSubagentTool,
   trellisExtensionPathFilter,
@@ -19,13 +20,13 @@ import {
 import { runWorkflow } from "../src/workflow.js";
 import { loadWorkflowSettings, saveWorkflowSettings } from "../src/workflow-settings.js";
 import {
-  TRELLIS_1_0_1_LIMITS,
-  TRELLIS_1_0_1_NOTICES,
-  TRELLIS_1_0_1_TEMPLATE_SHA256,
+  TRELLIS_1_0_3_LIMITS,
+  TRELLIS_1_0_3_NOTICES,
+  TRELLIS_1_0_3_TEMPLATE_SHA256,
   trellisArtifactNotice,
-  V01_TRELLIS_1_0_1_PAYLOAD,
+  V01_TRELLIS_1_0_3_PAYLOAD,
   writeCanonicalTaskFixture,
-} from "./fixtures/trellis-1.0.1-context.js";
+} from "./fixtures/trellis-1.0.3-context.js";
 
 function makeProject(): string {
   return mkdtempSync(join(tmpdir(), "pi-dw-trellis-"));
@@ -34,18 +35,18 @@ function makeProject(): string {
 function writeTask(cwd: string, name = "04-17-demo"): string {
   const taskDir = join(cwd, ".trellis", "tasks", name);
   mkdirSync(taskDir, { recursive: true });
-  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
   writeFileSync(join(taskDir, "prd.md"), "# PRD\nImplement the adapter.", "utf-8");
   writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: name, status: "in_progress" }), "utf-8");
   return taskDir;
 }
 
-test("V01: canonical 1.0.1 fixture payload is byte-identical", () => {
+test("V01: canonical 1.0.3 fixture payload is byte-identical", () => {
   const cwd = makeProject();
   try {
     const taskDir = writeCanonicalTaskFixture(cwd);
-    assert.equal(buildTrellisTaskContext(cwd, taskDir, "trellis-research"), V01_TRELLIS_1_0_1_PAYLOAD);
-    assert.match(TRELLIS_1_0_1_TEMPLATE_SHA256, /^[a-f0-9]{64}$/);
+    assert.equal(buildTrellisTaskContext(cwd, taskDir, "trellis-research"), V01_TRELLIS_1_0_3_PAYLOAD);
+    assert.match(TRELLIS_1_0_3_TEMPLATE_SHA256, /^[a-f0-9]{64}$/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -72,7 +73,7 @@ test("V03: invalid UTF-8 stays within the rendered artifact ceiling", () => {
     writeFileSync(join(taskDir, "prd.md"), Buffer.alloc(30_000, 0xff));
     const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
     assert.ok(payload.includes(trellisArtifactNotice(".trellis/tasks/invalid-utf8/prd.md")));
-    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_1_LIMITS.taskContext);
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_3_LIMITS.taskContext);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -85,7 +86,7 @@ test("V04: a partial multi-byte boundary is bounded with the canonical notice", 
     writeFileSync(join(taskDir, "prd.md"), `${"a".repeat(65_535)}é`, "utf-8");
     const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
     assert.ok(payload.includes(trellisArtifactNotice(".trellis/tasks/multibyte/prd.md")));
-    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_1_LIMITS.taskContext);
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_3_LIMITS.taskContext);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -101,7 +102,7 @@ test("V05: a source-truncated manifest retains its on-demand notice", () => {
     );
     const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
     assert.match(payload, /implement\.jsonl candidate context index/);
-    assert.ok(payload.includes(TRELLIS_1_0_1_NOTICES.manifestSource));
+    assert.ok(payload.includes(TRELLIS_1_0_3_NOTICES.manifestSource));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -194,9 +195,9 @@ test("V10: manifest and aggregate ceilings retain canonical limit notices", () =
     }
     writeFileSync(join(taskDir, "implement.jsonl"), rows.join("\n"));
     const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
-    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_1_LIMITS.taskContext);
-    assert.ok(payload.includes(TRELLIS_1_0_1_NOTICES.manifestRendered));
-    assert.ok(payload.includes(TRELLIS_1_0_1_NOTICES.manifestEntry));
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_3_LIMITS.taskContext);
+    assert.ok(payload.includes(TRELLIS_1_0_3_NOTICES.manifestRendered));
+    assert.ok(payload.includes(TRELLIS_1_0_3_NOTICES.manifestEntry));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -251,17 +252,20 @@ test("T15b: every adapter entry point rejects a missing or incompatible Trellis 
   const cwd = makeProject();
   try {
     mkdirSync(join(cwd, ".trellis", "tasks", "unsupported"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "0.6.7\n", "utf-8");
-    assert.equal(hasSupportedTrellisProject(cwd), false);
-    assert.equal(shouldEnableTrellisAdapter(cwd, { enabled: "auto" }), false);
-    assert.equal(shouldEnableTrellisAdapter(cwd, { enabled: "on" }), false);
-    assert.equal(shouldRegisterTrellisSubagentTool(cwd, { enabled: "on", registerSubagentTool: "on" }), false);
     const loader = createTrellisContextLoader({ enabled: "on" });
-    assert.equal(
-      await loader({ cwd, prompt: "Active task: .trellis/tasks/unsupported\nwork", agentType: "trellis-implement" }),
-      undefined,
-    );
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+    for (const version of [undefined, "1.0.1", "0.6.7"]) {
+      if (version === undefined) rmSync(join(cwd, ".trellis", ".version"), { force: true });
+      else writeFileSync(join(cwd, ".trellis", ".version"), `${version}\n`, "utf-8");
+      assert.equal(hasSupportedTrellisProject(cwd), false, `version ${version ?? "missing"}`);
+      assert.equal(shouldEnableTrellisAdapter(cwd, { enabled: "auto" }), false);
+      assert.equal(shouldEnableTrellisAdapter(cwd, { enabled: "on" }), false);
+      assert.equal(shouldRegisterTrellisSubagentTool(cwd, { enabled: "on", registerSubagentTool: "on" }), false);
+      assert.equal(
+        await loader({ cwd, prompt: "Active task: .trellis/tasks/unsupported\nwork", agentType: "trellis-implement" }),
+        undefined,
+      );
+    }
+    writeFileSync(join(cwd, ".trellis", ".version"), `${SUPPORTED_TRELLIS_PROJECT_VERSION}\n`, "utf-8");
     assert.equal(hasSupportedTrellisProject(cwd), true);
     assert.equal(shouldEnableTrellisAdapter(cwd, { enabled: "on" }), true);
   } finally {
@@ -526,6 +530,8 @@ test("T24: workflow agentType tools reach runner for trellis-implement style all
         agent,
         persistLogs: false,
         contextLoader: createTrellisContextLoader({ enabled: "on" }),
+        sessionModel: { provider: "test", id: "session-model", name: "Session Model", reasoning: false } as any,
+        workflowModelSetting: null,
       },
     );
     assert.deepEqual(observed, ["read", "write", "edit", "bash", "find", "grep"]);
@@ -803,6 +809,8 @@ test("force shared cwd for trellis-implement even when def isolation is worktree
         agent,
         persistLogs: false,
         contextLoader: createTrellisContextLoader({ enabled: "on" }),
+        sessionModel: { provider: "test", id: "session-model", name: "Session Model", reasoning: false } as any,
+        workflowModelSetting: null,
       },
     );
     const implement = seen.find((entry) => entry.agentType === "trellis-implement");

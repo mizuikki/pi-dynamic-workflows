@@ -22,17 +22,29 @@ function makeProject(): string {
 function writeTask(cwd: string, name = "04-17-demo"): string {
   const taskDir = join(cwd, ".trellis", "tasks", name);
   mkdirSync(taskDir, { recursive: true });
-  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
   writeFileSync(join(taskDir, "prd.md"), "# PRD\nImplement the adapter.", "utf-8");
   writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: name, status: "in_progress" }), "utf-8");
   return taskDir;
 }
 
-function writeAgent(cwd: string, name = "trellis-implement"): void {
+function writeAgent(
+  cwd: string,
+  name = "trellis-implement",
+  options: { model?: string; thinking?: string } = {},
+): void {
   mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
   writeFileSync(
     join(cwd, ".pi", "agents", `${name}.md`),
-    ["---", `name: ${name}`, "tools: read, bash", "---", "You are a Trellis implement agent."].join("\n"),
+    [
+      "---",
+      `name: ${name}`,
+      "tools: read, bash",
+      ...(options.model ? [`model: ${options.model}`] : []),
+      ...(options.thinking ? [`thinking: ${options.thinking}`] : []),
+      "---",
+      "You are a Trellis implement agent.",
+    ].join("\n"),
     "utf-8",
   );
 }
@@ -71,7 +83,7 @@ test("D3: native trellis extension path → auto skips registration", () => {
   const cwd = makeProject();
   try {
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
     mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
     writeFileSync(join(cwd, ".pi", "extensions", "trellis.ts"), "export default () => {}", "utf-8");
     assert.equal(hasNativeTrellisExtension(cwd), true);
@@ -160,6 +172,86 @@ test("accepts the Pi max thinking level for trellis_subagent", async () => {
       {} as never,
     );
     assert.equal(thinkingLevel, "max");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("matches native model and thinking precedence while stripping model suffixes", async () => {
+  const cwd = makeProject();
+  try {
+    writeTask(cwd);
+    const cases = [
+      {
+        name: "explicit thinking",
+        input: { model: "provider/input-model:low", thinking: "max" as const },
+        agent: { model: "provider/agent-model:xhigh", thinking: "high" },
+        host: "medium",
+        expectedModel: "provider/input-model",
+        expectedThinking: "max",
+      },
+      {
+        name: "input model suffix",
+        input: { model: "provider/input-model:low" },
+        agent: { model: "provider/agent-model:xhigh", thinking: "high" },
+        host: "medium",
+        expectedModel: "provider/input-model",
+        expectedThinking: "low",
+      },
+      {
+        name: "agent thinking",
+        input: {},
+        agent: { model: "provider/agent-model:xhigh", thinking: "medium" },
+        host: "low",
+        expectedModel: "provider/agent-model",
+        expectedThinking: "medium",
+      },
+      {
+        name: "agent model suffix",
+        input: {},
+        agent: { model: "provider/agent-model:max" },
+        host: "low",
+        expectedModel: "provider/agent-model",
+        expectedThinking: "max",
+      },
+      {
+        name: "host inheritance",
+        input: {},
+        agent: {},
+        host: "xhigh",
+        expectedModel: undefined,
+        expectedThinking: "xhigh",
+      },
+    ];
+
+    for (const vector of cases) {
+      writeAgent(cwd, "trellis-implement", vector.agent);
+      let seen: Record<string, unknown> | undefined;
+      const tool = createTrellisSubagentTool({
+        cwd,
+        agent: {
+          async run(_prompt, options) {
+            seen = options as unknown as Record<string, unknown>;
+            return "child-ok";
+          },
+        },
+        getThinkingLevel: () => vector.host,
+      });
+      await tool.execute(
+        `tc-precedence-${vector.name}`,
+        {
+          agent: "trellis-implement",
+          mode: "single",
+          prompt: "Active task: .trellis/tasks/04-17-demo\nImplement now",
+          ...vector.input,
+        },
+        undefined,
+        undefined,
+        {} as never,
+      );
+      assert.equal(seen?.model, vector.expectedModel, `${vector.name} model`);
+      assert.equal(seen?.thinkingLevel, vector.expectedThinking, `${vector.name} thinking`);
+    }
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -419,7 +511,7 @@ test("auto + .trellis without native wants registration", () => {
   const cwd = makeProject();
   try {
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.1\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
     assert.equal(shouldRegisterTrellisSubagentTool(cwd, { enabled: "auto" }), true);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
