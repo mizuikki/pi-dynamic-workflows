@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { mock, test } from "node:test";
+import { saveWorkflowSettings } from "../src/workflow-settings.js";
 import { editWorkflowModel, registerWorkflowModelsCommand } from "../src/workflows-models-command.js";
+import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 function model(provider: string, id: string, reasoning = false) {
   return {
@@ -81,4 +86,31 @@ test("editWorkflowModel offers only Pi-supported dynamic efforts", async () => {
 test("editWorkflowModel can be cancelled before persistence", async () => {
   const ctx = context(async () => undefined);
   assert.equal(await editWorkflowModel(ctx, undefined), undefined);
+});
+
+test("openWorkflowModelEditor labels unset project settings separately from effective inheritance", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-workflow-model-command-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-workflow-model-command-cwd-"));
+  const titles: string[] = [];
+  const choicesSeen: string[] = [];
+  try {
+    await withFakeHomeAsync(home, async () => {
+      saveWorkflowSettings({ workflowModel: { model: "provider/global", effort: "high" } });
+      const ctx = {
+        ...context(async (title: string, choices: string[]) => {
+          titles.push(title);
+          choicesSeen.push(...choices);
+          return "Exit";
+        }),
+        cwd,
+      };
+      const { openWorkflowModelEditor } = await import("../src/workflows-models-command.js");
+      await openWorkflowModelEditor(ctx as never);
+    });
+    assert.match(titles[0] ?? "", /effective: provider\/global @ high/);
+    assert.ok(choicesSeen.includes("Edit project Workflow Model (unset)"));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

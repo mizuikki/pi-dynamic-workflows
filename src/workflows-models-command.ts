@@ -53,7 +53,7 @@ export async function openWorkflowModelEditor(ctx: ExtensionCommandContext): Pro
 
   while (true) {
     const choice = await ctx.ui.select(
-      `Workflow Model (effective: ${describeSetting(effective.workflowModel, ctx.model)})`,
+      `Workflow Model (effective: ${describeEffectiveSetting(effective.workflowModel, ctx.model)})`,
       choices,
     );
     if (!choice || choice === "Exit") return;
@@ -130,8 +130,19 @@ async function chooseEffort(
 }
 
 function describeSetting(setting: WorkflowModelSetting | undefined, sessionModel: Model<Api> | undefined): string {
-  if (setting === null || setting === undefined) {
+  if (setting === undefined) return "unset";
+  if (setting === null) {
     return sessionModel ? `session (${canonicalModelSpec(sessionModel)})` : "current Pi session";
   }
   return `${setting.model}${setting.effort ? ` @ ${setting.effort}` : " @ session effort"}`;
+}
+
+function describeEffectiveSetting(
+  setting: WorkflowModelSetting | undefined,
+  sessionModel: Model<Api> | undefined,
+): string {
+  if (setting === undefined) {
+    return sessionModel ? `session (${canonicalModelSpec(sessionModel)})` : "current Pi session";
+  }
+  return describeSetting(setting, sessionModel);
 }

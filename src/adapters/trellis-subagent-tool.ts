@@ -33,7 +33,7 @@ import {
 export const TRELLIS_SUBAGENT_TOOL_NAME = "trellis_subagent";
 export const MAX_TRELLIS_PARALLEL_PROMPTS = 6;
 
-const THINKING_ENUM = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const THINKING_ENUM = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 function isThinkingLevel(value: string): value is ModelThinkingLevel {
   return (THINKING_ENUM as readonly string[]).includes(value);

@@ -335,7 +335,7 @@ Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()
 
 ## Workflow Model admission
 
-At top-level admission, the extension resolves the effective model and Pi-supported effort once and persists that concrete pair with the run. Nested and background work inherit the same snapshot. Resume uses the original snapshot rather than current settings; if its registered model or effort is unavailable, the run fails with actionable model-selection diagnostics instead of substituting another model. Progress, navigator, task-panel, logs, and status output show each agent's resolved model and effort.
+At top-level admission, the extension resolves the effective model and Pi-supported effort once and persists that concrete pair with the run. Nested and background work inherit the same snapshot. Resume uses the original snapshot rather than current settings; if its registered model or effort is unavailable, the run fails with actionable model-selection diagnostics instead of substituting another model. Runs written before these snapshot fields existed are re-admitted using current settings, so their model or effort may differ from the values used when they originally started. Progress, navigator, task-panel, logs, and status output show each agent's resolved model and effort.
 
 ## Optional Trellis adapter
 

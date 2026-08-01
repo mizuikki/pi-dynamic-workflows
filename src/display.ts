@@ -221,7 +221,8 @@ export function renderWorkflowLines(
       const order = `[${agent.id}]`;
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
-      const model = agent.model ? theme.fg("dim", ` · ${agent.model}${agent.effort ? ` @ ${agent.effort}` : ""}`) : "";
+      const modelText = [agent.model, agent.effort].filter(Boolean).join(" @ ");
+      const model = modelText ? theme.fg("dim", ` · ${modelText}`) : "";
       lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${model}${result}`);
     }
     if (agents.length > visibleAgents.length)
@@ -234,7 +235,8 @@ export function renderWorkflowLines(
     for (const agent of unphased.slice(-maxAgents)) {
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
-      const model = agent.model ? theme.fg("dim", ` · ${agent.model}${agent.effort ? ` @ ${agent.effort}` : ""}`) : "";
+      const modelText = [agent.model, agent.effort].filter(Boolean).join(" @ ");
+      const model = modelText ? theme.fg("dim", ` · ${modelText}`) : "";
       lines.push(
         `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${model}${result}`,
       );

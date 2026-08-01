@@ -576,7 +576,7 @@ describe("renderPanelDetailed", () => {
           tokens: blueTokens,
           model: "anthropic/claude-haiku-4-5",
         },
-        { id: 2, label: "audit_auth", status: "running", phase: "Scan", tokens: 1800 },
+        { id: 2, label: "audit_auth", status: "running", phase: "Scan", tokens: 1800, effort: "high" },
         { id: 3, label: "scan_middleware", status: "queued", phase: "Scan" },
         { id: 4, label: "cross_check", status: "queued", phase: "Review" },
       ],
@@ -627,6 +627,10 @@ describe("renderPanelDetailed", () => {
     assert.ok(
       lines.some((l) => l.includes("[2] ● audit_auth") && /1\.8K tok/.test(l)),
       "running agent row",
+    );
+    assert.ok(
+      lines.some((l) => l.includes("[2] ● audit_auth") && / · high/.test(l)),
+      "effort-only agent row",
     );
     assert.ok(
       lines.some((l) => l.includes("[3] ○ scan_middleware")),
@@ -702,7 +706,7 @@ describe("renderPanelDetailed", () => {
   });
 
   it("uses the persisted token total for a paused run without a live snapshot", async () => {
-    const { createWorkflowPanelSnapshot, renderPanelDetailed, clearTokenSamples } = await import(
+    const { createWorkflowPanelSnapshot, renderPanel, renderPanelDetailed, clearTokenSamples } = await import(
       "../src/task-panel.js"
     );
     clearTokenSamples("paused-persisted");
@@ -721,14 +725,12 @@ describe("renderPanelDetailed", () => {
         },
       ],
       getRun: () => undefined,
+      loadRun: () => ({ defaultModel: "provider/paused-model", defaultEffort: "high" }),
     };
-    const lines = renderPanelDetailed(
-      createWorkflowPanelSnapshot(manager as never),
-      theme as never,
-      undefined,
-      8,
-      1000,
-    );
+    const panelSnapshot = createWorkflowPanelSnapshot(manager as never);
+    const compactLines = renderPanel(panelSnapshot, theme as never);
+    assert.ok(compactLines.some((line) => /default paused-model @ high/.test(line)));
+    const lines = renderPanelDetailed(panelSnapshot, theme as never, undefined, 8, 1000);
     assert.ok(
       lines.some((line) => /4\.2K tok/.test(line)),
       `expected persisted tokens: ${lines.join("\n")}`,
