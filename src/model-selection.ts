@@ -21,9 +21,13 @@ export interface WorkflowModelSnapshot {
   effort: ModelThinkingLevel;
 }
 
-export interface ModelRegistrySource {
-  getAll(): readonly Model<Api>[];
+/** Synchronous snapshot of models that Pi can use in the current session. */
+export interface AvailableModelSource {
+  getAvailable(): readonly Model<Api>[];
 }
+
+/** @deprecated Use AvailableModelSource. The source now exposes available models only. */
+export type ModelRegistrySource = AvailableModelSource;
 
 export interface ResolvedWorkflowModel extends WorkflowModelSnapshot {
   modelObject: Model<Api>;
@@ -33,14 +37,17 @@ export function canonicalModelSpec(model: Model<Api>): string {
   return `${model.provider}/${model.id}`;
 }
 
-export function listRegisteredModels(source: ModelRegistrySource | undefined): Model<Api>[] {
+export function listAvailableModels(source: AvailableModelSource | undefined): Model<Api>[] {
   if (!source) return [];
   try {
-    return [...source.getAll()];
+    return [...source.getAvailable()];
   } catch {
     return [];
   }
 }
+
+/** @deprecated Use listAvailableModels. */
+export const listRegisteredModels = listAvailableModels;
 
 function modelSelectionError(message: string, details?: unknown): WorkflowError {
   return new WorkflowError(message, WorkflowErrorCode.MODEL_SELECTION_ERROR, {
@@ -54,16 +61,16 @@ function modelListText(models: readonly Model<Api>[]): string {
 }
 
 /**
- * Resolve only a concrete model registered by Pi. Exact provider/model identity
- * wins; a bare id or display name is accepted only when it has one match.
+ * Resolve only a concrete model currently available to Pi. Exact provider/model
+ * identity wins; a bare id or display name is accepted only when it has one match.
  */
-export function resolveRegisteredModel(identifier: string, source: ModelRegistrySource | undefined): Model<Api> {
+export function resolveAvailableModel(identifier: string, source: AvailableModelSource | undefined): Model<Api> {
   const requested = typeof identifier === "string" ? identifier.trim() : "";
-  const available = listRegisteredModels(source);
-  if (!requested) throw modelSelectionError("Workflow Model requires a non-empty registered model identifier.");
+  const available = listAvailableModels(source);
+  if (!requested) throw modelSelectionError("Workflow Model requires a non-empty available model identifier.");
   if (!available.length) {
     throw modelSelectionError(
-      `Workflow model "${requested}" is unavailable because Pi reported no registered models. ` +
+      `Workflow model "${requested}" is unavailable because Pi reported no available models. ` +
         "Choose a model available in the current Pi session.",
     );
   }
@@ -73,7 +80,7 @@ export function resolveRegisteredModel(identifier: string, source: ModelRegistry
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) {
     throw modelSelectionError(
-      `Workflow model "${requested}" is ambiguous in Pi's registry: ${modelListText(exact)}. ` +
+      `Workflow model "${requested}" is ambiguous among Pi's available models: ${modelListText(exact)}. ` +
         "Use the exact provider/modelId.",
       { requested, matches: exact.map(canonicalModelSpec) },
     );
@@ -81,8 +88,7 @@ export function resolveRegisteredModel(identifier: string, source: ModelRegistry
 
   if (requested.includes("/")) {
     throw modelSelectionError(
-      `Workflow model "${requested}" is not registered in Pi's model registry. ` +
-        "Choose an available registered provider/modelId.",
+      `Workflow model "${requested}" is not currently available in Pi. Choose an available provider/modelId.`,
       { requested, available: available.map(canonicalModelSpec) },
     );
   }
@@ -95,18 +101,20 @@ export function resolveRegisteredModel(identifier: string, source: ModelRegistry
   if (unique.size > 1) {
     const matches = [...unique.values()];
     throw modelSelectionError(
-      `Bare workflow model name "${requested}" is ambiguous. Matching registered models: ${modelListText(matches)}. ` +
+      `Bare workflow model name "${requested}" is ambiguous. Matching available models: ${modelListText(matches)}. ` +
         "Use the exact provider/modelId.",
       { requested, matches: matches.map(canonicalModelSpec) },
     );
   }
 
   throw modelSelectionError(
-    `Workflow model "${requested}" is not registered in Pi's model registry. ` +
-      "Choose an available registered provider/modelId.",
+    `Workflow model "${requested}" is not currently available in Pi. Choose an available provider/modelId.`,
     { requested, available: available.map(canonicalModelSpec) },
   );
 }
+
+/** @deprecated Use resolveAvailableModel. Resolution is available-only. */
+export const resolveRegisteredModel = resolveAvailableModel;
 
 export function supportedModelEfforts(model: Model<Api>): ModelThinkingLevel[] {
   return [...getSupportedThinkingLevels(model)];
@@ -133,7 +141,7 @@ export function defaultModelEffort(model: Model<Api>, inherited?: ModelThinkingL
   if (!supported.length) {
     throw modelSelectionError(
       `Pi reported no supported reasoning effort for model "${canonicalModelSpec(model)}". ` +
-        "Choose another registered model.",
+        "Choose another available model.",
     );
   }
   if (inherited !== undefined) return clampThinkingLevel(model, inherited);
@@ -145,7 +153,7 @@ export interface ResolveWorkflowModelOptions {
   sessionModel?: Model<Api>;
   sessionModelId?: string;
   sessionEffort?: ModelThinkingLevel;
-  registry?: ModelRegistrySource;
+  registry?: AvailableModelSource;
 }
 
 /** Resolve and snapshot a run-owned default pair at admission. */
@@ -153,21 +161,21 @@ export function resolveWorkflowModel(options: ResolveWorkflowModelOptions): Reso
   const setting = options.setting;
   let model: Model<Api>;
   if (setting?.model) {
-    model = resolveRegisteredModel(setting.model, options.registry);
+    model = resolveAvailableModel(setting.model, options.registry);
   } else if (setting === null || setting === undefined) {
     if (options.sessionModel) {
       model = options.sessionModel;
     } else if (options.sessionModelId) {
-      model = resolveRegisteredModel(options.sessionModelId, options.registry);
+      model = resolveAvailableModel(options.sessionModelId, options.registry);
     } else {
       throw modelSelectionError(
         "Workflow could not determine the current Pi session model. " +
-          "Select a registered Workflow Model or start the run from a model-backed Pi session.",
+          "Select an available Workflow Model or start the run from a model-backed Pi session.",
       );
     }
   } else {
     throw modelSelectionError(
-      "Workflow Model setting is invalid. Choose a registered provider/modelId or session inheritance.",
+      "Workflow Model setting is invalid. Choose an available provider/modelId or session inheritance.",
     );
   }
 
@@ -188,7 +196,7 @@ export function resolveWorkflowModelSnapshot(
   const model =
     sessionMatches && options.sessionModel
       ? options.sessionModel
-      : resolveRegisteredModel(snapshot.model, options.registry);
+      : resolveAvailableModel(snapshot.model, options.registry);
   const effort = validateModelEffort(model, snapshot.effort, "Persisted Workflow effort");
   return { modelObject: model, model: canonicalModelSpec(model), effort };
 }
@@ -197,9 +205,9 @@ export function resolveWorkflowModelSnapshot(
 export function resolveAgentModelOverride(
   base: ResolvedWorkflowModel,
   override: { model?: string; effort?: ModelThinkingLevel },
-  registry: ModelRegistrySource | undefined,
+  registry: AvailableModelSource | undefined,
 ): ResolvedWorkflowModel {
-  const model = override.model === undefined ? base.modelObject : resolveRegisteredModel(override.model, registry);
+  const model = override.model === undefined ? base.modelObject : resolveAvailableModel(override.model, registry);
   const effort =
     override.effort !== undefined
       ? validateModelEffort(model, override.effort, "Requested agent effort")

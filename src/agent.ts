@@ -33,7 +33,7 @@ import {
 import {
   canonicalModelSpec,
   type ModelThinkingLevel,
-  resolveRegisteredModel,
+  resolveAvailableModel,
   validateModelEffort,
 } from "./model-selection.js";
 import {
@@ -409,7 +409,7 @@ export interface WorkflowAgentOptions {
   /** The session's main model (`provider/modelId`) for display and host fallback. */
   mainModel?: string;
   /**
-   * Host extension ModelRegistry facade. Used for model selection and as
+   * Host extension ModelRegistry facade. Used for available-model selection and as
    * the source of registered dynamic provider configs to copy into the plugin
    * ModelRuntime. Not passed to createAgentSession.
    */
@@ -548,7 +548,7 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * usage is never lost. `total === 0` means the provider reported no usage.
    */
   onUsage?: (usage: AgentUsage) => void;
-  /** Registered `provider/modelId` or unique bare model id for this subagent. */
+  /** Available `provider/modelId` or unique bare model id for this subagent. */
   model?: string;
   /** Pi-owned reasoning effort for this subagent. */
   effort?: ModelThinkingLevel;
@@ -694,7 +694,7 @@ export class WorkflowAgent {
 
   /**
    * Resolution list source after providers have been copied into the runtime.
-   * Prefer the host registry (routing/catalog surface); fall back to the plugin runtime.
+   * Prefer the host availability snapshot; otherwise use the plugin runtime snapshot.
    */
   private getResolutionSource(runtime: ModelRuntime, hostRegistry?: ModelRegistry): ModelListSource {
     if (hostRegistry) return modelListFromRegistry(hostRegistry);
@@ -788,7 +788,7 @@ export class WorkflowAgent {
     let resolvedModel: Model<any> | undefined;
     let resolvedThinkingLevel: CreateAgentSessionOptions["thinkingLevel"] | undefined;
     if (modelSpec) {
-      resolvedModel = resolveRegisteredModel(modelSpec, resolutionSource);
+      resolvedModel = resolveAvailableModel(modelSpec, resolutionSource);
       options.onModelResolved?.(canonicalModelSpec(resolvedModel));
     }
 

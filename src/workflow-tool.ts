@@ -44,9 +44,9 @@ export function workflowModelGuideline(
     ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
     : "Use models the user has configured.";
   return [
-    "For workflow, /workflows-models configures one default Workflow Model as a concrete registered provider/modelId plus optional Pi reasoning effort. Every agent inherits that admitted model/effort, including nested and background work.",
+    "For workflow, /workflows-models configures one default Workflow Model as a concrete currently available provider/modelId plus optional Pi reasoning effort. Every agent inherits that admitted model/effort, including nested and background work.",
     "Use opts.model and/or opts.effort only for a temporary per-agent override requested by the user; model and effort are independent partial overrides.",
-    "opts.model must be an exact registered provider/modelId, or a bare model id only when it matches one registered model. Do not invent provider/model ids or append an effort suffix to the model string.",
+    "opts.model must be an exact currently available provider/modelId, or a bare model id only when it matches one available model. Do not invent provider/model ids or append an effort suffix to the model string.",
     "opts.effort must be one of the Pi-supported reasoning efforts for the selected model. If only opts.model changes, the inherited effort is clamped through Pi for that model.",
     "Do not route by role automatically and do not use retired tier names. If no override is needed, omit both opts.model and opts.effort.",
     list,
@@ -159,7 +159,7 @@ export interface WorkflowToolOptions {
   defaultAgentTimeoutMs?: number | null;
   /** Default max concurrent agents when no tool-level concurrency is passed. */
   defaultConcurrency?: number;
-  /** Current session model registry, used to list explicit Models in prompt guidance. */
+  /** Current session model registry, used to list available models in prompt guidance. */
   modelRegistry?: AvailableModelsSource;
   /** Auth-verified available model specs for prompt guidance. */
   availableModelSpecs?: readonly string[];

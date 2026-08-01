@@ -4,7 +4,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
   resolveAgentModelOverride,
-  resolveRegisteredModel,
+  resolveAvailableModel,
   resolveWorkflowModel,
   supportedModelEfforts,
   validateModelEffort,
@@ -24,20 +24,31 @@ function model(
   } as Model<Api>;
 }
 
-function registry(models: Model<Api>[]) {
-  return { getAll: () => models };
+function registry(available: Model<Api>[], all: Model<Api>[] = available) {
+  return { getAvailable: () => available, getAll: () => all };
 }
 
-test("resolves exact and unique bare registered model ids", () => {
+test("resolves exact and unique bare available model ids", () => {
   const first = model("provider-a", "shared");
   const second = model("provider-b", "other");
   const source = registry([first, second]);
-  assert.equal(resolveRegisteredModel("provider-a/shared", source), first);
-  assert.equal(resolveRegisteredModel("other", source), second);
-  assert.throws(() => resolveRegisteredModel("shared", registry([first, model("provider-b", "shared")])), {
+  assert.equal(resolveAvailableModel("provider-a/shared", source), first);
+  assert.equal(resolveAvailableModel("other", source), second);
+  assert.throws(() => resolveAvailableModel("shared", registry([first, model("provider-b", "shared")])), {
     code: "MODEL_SELECTION_ERROR",
   });
-  assert.throws(() => resolveRegisteredModel("provider-a/missing", source), { code: "MODEL_SELECTION_ERROR" });
+  assert.throws(() => resolveAvailableModel("provider-a/missing", source), { code: "MODEL_SELECTION_ERROR" });
+});
+
+test("never resolves a model that is absent from Pi's available snapshot", () => {
+  const available = model("provider", "available");
+  const registeredOnly = model("provider", "registered-only");
+  const source = registry([available], [available, registeredOnly]);
+
+  assert.equal(resolveAvailableModel("provider/available", source), available);
+  assert.throws(() => resolveAvailableModel("provider/registered-only", source), {
+    code: "MODEL_SELECTION_ERROR",
+  });
 });
 
 test("uses Pi-supported effort values and rejects arbitrary values", () => {

@@ -9,12 +9,11 @@ import { saveWorkflowSettings } from "../src/workflow-settings.js";
 import { backgroundStartedText, createWorkflowTool, workflowModelGuideline } from "../src/workflow-tool.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
-/** Minimal fake ModelRegistry, matching the shape the PR's existing tests use. */
+/** Minimal fake ModelRegistry for the available-model prompt surface. */
 function fakeRegistry(models: Array<{ provider: string; id: string }>) {
   return {
     getAvailable: () => models,
     find: () => undefined,
-    getAll: () => models,
   } as any;
 }
 
@@ -165,7 +164,7 @@ test("workflowModelGuideline describes one default and independent overrides", (
 
 test("workflowModelGuideline rejects invented ids and model suffixes", () => {
   const text = workflowModelGuideline();
-  assert.match(text, /exact registered provider\/modelId/i);
+  assert.match(text, /exact currently available provider\/modelId/i);
   assert.match(text, /Do not invent/i);
   assert.match(text, /effort suffix/i);
 });

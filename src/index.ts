@@ -144,6 +144,7 @@ export {
   type WorkflowMainPromptState,
 } from "./main-agent-prompt.js";
 export type {
+  AvailableModelSource,
   ModelRegistrySource,
   ModelThinkingLevel,
   ResolvedWorkflowModel,
@@ -153,8 +154,10 @@ export type {
 export {
   canonicalModelSpec,
   defaultModelEffort,
+  listAvailableModels,
   listRegisteredModels,
   resolveAgentModelOverride,
+  resolveAvailableModel,
   resolveRegisteredModel,
   resolveWorkflowModel,
   resolveWorkflowModelSnapshot,

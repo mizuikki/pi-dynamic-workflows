@@ -10,7 +10,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   canonicalModelSpec,
-  listRegisteredModels,
+  listAvailableModels,
   type ModelThinkingLevel,
   supportedModelEfforts,
   type WorkflowModelSetting,
@@ -88,14 +88,19 @@ export async function openWorkflowModelEditor(ctx: ExtensionCommandContext): Pro
   }
 }
 
-/** Pick a registered model, then choose only efforts Pi reports for that model. */
+/** Refresh Pi's availability snapshot, then pick a model and its supported effort. */
 export async function editWorkflowModel(
   ctx: ExtensionCommandContext,
   current?: WorkflowModelSetting,
 ): Promise<WorkflowModelSetting | undefined> {
-  const models = listRegisteredModels(ctx.modelRegistry);
+  try {
+    await ctx.modelRegistry.refresh();
+  } catch {
+    // Keep the last availability snapshot when refresh cannot complete.
+  }
+  const models = listAvailableModels(ctx.modelRegistry);
   if (!models.length) {
-    ctx.ui.notify("No registered Pi models are available. Authenticate or select a model first.", "warning");
+    ctx.ui.notify("No Pi models are currently available. Authenticate or select a model first.", "warning");
     return undefined;
   }
 

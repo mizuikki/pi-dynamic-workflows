@@ -7,7 +7,7 @@ PI_FORK_REF=${PI_FORK_REF:-HEAD}
 TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/pi-local-package.XXXXXX")
 trap 'rm -rf "$TEMP_ROOT"' EXIT
 
-if [[ ! -d "$PI_FORK_DIR/.git" ]]; then
+if [[ ! -e "$PI_FORK_DIR/.git" ]]; then
   printf 'PI_FORK_DIR is not a git checkout: %s\n' "$PI_FORK_DIR" >&2
   exit 2
 fi

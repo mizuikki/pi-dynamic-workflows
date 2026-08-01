@@ -29,11 +29,19 @@ function model(provider: string, id: string, reasoning = false) {
   } as any;
 }
 
-function context(select: (...args: any[]) => Promise<string | undefined>, models = [model("provider", "plain")]) {
+function context(
+  select: (...args: any[]) => Promise<string | undefined>,
+  available = [model("provider", "plain")],
+  registered = available,
+) {
   return {
     cwd: "/tmp/workflow-model-command",
-    model: models[0],
-    modelRegistry: { getAll: () => models },
+    model: available[0],
+    modelRegistry: {
+      getAvailable: () => available,
+      getAll: () => registered,
+      refresh: mock.fn(async () => undefined),
+    },
     ui: { select: mock.fn(select), notify: mock.fn() },
   } as any;
 }
@@ -50,12 +58,33 @@ test("registerWorkflowModelsCommand registers a single Workflow Model command", 
   assert.doesNotMatch(description, /small|medium|big|tier/i);
 });
 
-test("editWorkflowModel reports an empty Pi registry", async () => {
+test("editWorkflowModel reports an empty Pi availability snapshot", async () => {
   const ctx = context(async () => undefined, []);
   const result = await editWorkflowModel(ctx, null);
   assert.equal(result, undefined);
   assert.equal(ctx.ui.notify.mock.callCount(), 1);
-  assert.match(String(ctx.ui.notify.mock.calls[0]?.arguments[0]), /No registered Pi models/);
+  assert.match(String(ctx.ui.notify.mock.calls[0]?.arguments[0]), /No Pi models are currently available/);
+});
+
+test("editWorkflowModel exposes available models, not the larger built-in catalog", async () => {
+  const available = model("provider", "available");
+  const registeredOnly = model("provider", "registered-only");
+  let modelChoices: string[] = [];
+  const ctx = context(
+    async (_title: string, choices: string[]) => {
+      if (choices.some((choice) => choice === "provider/available")) {
+        modelChoices = choices;
+        return "provider/available";
+      }
+      return "Inherit current Pi session effort";
+    },
+    [available],
+    [available, registeredOnly],
+  );
+
+  assert.deepEqual(await editWorkflowModel(ctx, undefined), { model: "provider/available" });
+  assert.deepEqual(modelChoices, ["provider/available"]);
+  assert.equal(ctx.modelRegistry.refresh.mock.callCount(), 1);
 });
 
 test("editWorkflowModel returns a model with inherited effort", async () => {

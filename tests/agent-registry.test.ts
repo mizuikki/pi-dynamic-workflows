@@ -396,7 +396,7 @@ return r`;
   it("explicit opts.model is independently selected", async () => {
     const { seen, runner } = capturingAgent();
     const model = { provider: "explicit", id: "model", name: "model", reasoning: false } as any;
-    const modelRegistry = { getAll: () => [model] } as any;
+    const modelRegistry = { getAvailable: () => [model] } as any;
     const script = `export const meta = { name: 'at', description: 'agentType' }
 await agent('audit', { label: 'a', agentType: 'security-auditor', model: 'explicit/model' })
 return {}`;

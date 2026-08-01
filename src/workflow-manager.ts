@@ -917,7 +917,7 @@ export class WorkflowManager extends EventEmitter {
         if (persistedModel === undefined || persistedEffort === undefined) {
           throw new WorkflowError(
             "This run has an incomplete persisted Workflow Model snapshot and cannot be resumed safely. " +
-              "Start a new run with a registered Pi model.",
+              "Start a new run with an available Pi model.",
             WorkflowErrorCode.MODEL_SELECTION_ERROR,
             { recoverable: false },
           );

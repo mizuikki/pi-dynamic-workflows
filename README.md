@@ -97,7 +97,7 @@ return await agent('Synthesize and double-check these findings:\n' + findings.jo
 ## Highlights
 
 - **Fan-out orchestration** — `agent()`, `parallel()`, `pipeline()`, `phase()` in a sandboxed script. Up to 16 concurrent / 1000 total subagents; intermediate results stay in variables, not the chat.
-- **One default Workflow Model** — `/workflows-models` selects one registered model and optional Pi-supported reasoning effort. An individual `agent()` call may explicitly override either axis for that call only.
+- **One default Workflow Model** — `/workflows-models` selects one currently available model and optional Pi-supported reasoning effort. An individual `agent()` call may explicitly override either axis for that call only.
 - **Journaled resume** — an interrupted run replays finished agents from a journal (no re-run, no tokens) and runs only what's left or what you changed.
 - **Git worktree isolation** — `isolation: "worktree"` gives an agent its own branch, so parallel agents can edit the same files without clobbering each other.
 - **Real token & cost accounting** — read from each subagent's session, not estimated. Runs have no default token cap; `tokenBudget`, phase budgets, and `budget` let you add explicit gates when you want them.
@@ -119,7 +119,7 @@ The same model — on Pi, plus the production pieces a real run needs:
 | Structured outputs | Optional JSON-Schema `schema` → a validated object, with bounded repair if the model misses; off by default |
 | Background runs | Non-blocking by default, a live task panel, and auto-continue delivery |
 | Resume | **Journaled + replayable** — survives restarts and replays the unchanged prefix |
-| Model selection | **One admitted Workflow Model plus explicit per-agent overrides** across any provider Pi has registered |
+| Model selection | **One admitted Workflow Model plus explicit per-agent overrides** across any model Pi currently makes available |
 | Ultracode (standing maximal-effort opt-in) | **`/ultracode`** (or `/effort ultra`) — auto-arms an exhaustive workflow for every substantive message |
 | — | **Git worktree isolation**, **real cost accounting**, **`/deep-research`**, and a **quality-pattern stdlib** |
 
@@ -234,7 +234,7 @@ The merged global/project settings may contain one default Workflow Model:
 
 An absent setting supplies no scope override. `null` explicitly inherits the current Pi session model and effort; a project-level `null` therefore blocks a fixed global model. A project object or `null` takes precedence over the global setting. `/workflows-models` exposes these choices and fills the effort picker from the selected model's live Pi metadata.
 
-Workflow model identifiers should use an exact registered `provider/modelId`. A bare model ID or name is accepted only when it matches one registered Pi model. Unknown and ambiguous values fail closed; the extension never silently falls back to the session model. Explicit effort must be supported by the selected model. When an agent changes only its model, the inherited effort is clamped through Pi and the concrete pair is shown in status and progress output. The legacy `~/.pi/workflows/model-tiers.json`, if present from an older installation, remains untouched.
+Workflow model identifiers should use an exact currently available `provider/modelId`. A bare model ID or name is accepted only when it matches one available Pi model. Unknown, unavailable, and ambiguous values fail closed; the extension never silently falls back to the session model. Explicit effort must be supported by the selected model. When an agent changes only its model, the inherited effort is clamped through Pi and the concrete pair is shown in status and progress output. The legacy `~/.pi/workflows/model-tiers.json`, if present from an older installation, remains untouched.
 
 To avoid accidental keyword triggers, configure a custom trigger word in `~/.pi/workflows/settings.json`:
 
@@ -310,7 +310,7 @@ The full guide — every global, agent option, `agentType` definitions, structur
 
 | Agent option | Description |
 | --- | --- |
-| `model` | Temporary exact registered `provider/modelId` or unique bare model ID/name override for this call. |
+| `model` | Temporary exact available `provider/modelId` or unique bare model ID/name override for this call. |
 | `effort` | Temporary Pi-supported reasoning effort override for the selected model. |
 | `agentType` | A named definition (`.pi/agents/<name>.md` project-level, or `~/.pi/agent/agents/<name>.md` user-level — `~/.pi/agents/<name>.md` still works as a deprecated fallback) binding tools + role prompt. Its model metadata does not route Workflow agents. |
 | `isolation: "worktree"` | Run in a throwaway git worktree for conflict-free parallel edits. |
@@ -335,7 +335,7 @@ Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()
 
 ## Workflow Model admission
 
-At top-level admission, the extension resolves the effective model and Pi-supported effort once and persists that concrete pair with the run. Nested and background work inherit the same snapshot. Resume uses the original snapshot rather than current settings; if its registered model or effort is unavailable, the run fails with actionable model-selection diagnostics instead of substituting another model. Runs written before these snapshot fields existed are re-admitted using current settings, so their model or effort may differ from the values used when they originally started. Progress, navigator, task-panel, logs, and status output show each agent's resolved model and effort.
+At top-level admission, the extension resolves the effective model and Pi-supported effort once and persists that concrete pair with the run. Nested and background work inherit the same snapshot. Resume uses the original snapshot rather than current settings; if its model is no longer available or its effort is unsupported, the run fails with actionable model-selection diagnostics instead of substituting another model. Runs written before these snapshot fields existed are re-admitted using current settings, so their model or effort may differ from the values used when they originally started. Progress, navigator, task-panel, logs, and status output show each agent's resolved model and effort.
 
 ## Optional Trellis adapter
 

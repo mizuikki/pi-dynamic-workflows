@@ -345,7 +345,7 @@ test("runWorkflow admits one default pair and supports four independent override
     reasoning: true,
     thinkingLevelMap: { off: null, low: "low", medium: "medium", high: "high" },
   } as any;
-  const registry = { getAll: () => [sessionModel, alternateModel] } as any;
+  const registry = { getAvailable: () => [sessionModel, alternateModel] } as any;
   const calls: Array<{ model?: string; effort?: string }> = [];
   const runner = {
     async run(_prompt: string, options: { model?: string; effort?: string }) {
@@ -379,6 +379,48 @@ return 1`;
   assert.equal(result.defaultEffort, "high");
 });
 
+test("runWorkflow rejects unavailable fixed and per-agent models before invoking the runner", async () => {
+  const availableModel = {
+    provider: "provider",
+    id: "available",
+    name: "available",
+    reasoning: false,
+  } as any;
+  const registry = { getAvailable: () => [availableModel] } as any;
+  const fixedCalls = countingAgent();
+  const script = `export const meta = { name: 'unavailable_model', description: 'reject unavailable model' }
+return await agent('work', { label: 'work' })`;
+
+  await assert.rejects(
+    runWorkflow(script, {
+      agent: fixedCalls.runner,
+      modelRegistry: registry,
+      session: { model: availableModel },
+      workflowModelSetting: { model: "provider/registered-only" },
+      persistLogs: false,
+    }),
+    (error: unknown) => error instanceof WorkflowError && error.code === WorkflowErrorCode.MODEL_SELECTION_ERROR,
+  );
+  assert.equal(fixedCalls.state.calls, 0, "fixed model admission must fail before the runner");
+
+  const overrideCalls = countingAgent();
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'unavailable_override', description: 'reject unavailable override' }
+return await agent('work', { label: 'work', model: 'provider/registered-only' })`,
+      {
+        agent: overrideCalls.runner,
+        modelRegistry: registry,
+        session: { model: availableModel },
+        workflowModelSetting: null,
+        persistLogs: false,
+      },
+    ),
+    (error: unknown) => error instanceof WorkflowError && error.code === WorkflowErrorCode.MODEL_SELECTION_ERROR,
+  );
+  assert.equal(overrideCalls.state.calls, 0, "unavailable override admission must fail before the runner");
+});
+
 test("journal identity includes the admitted model and effort", async () => {
   const modelOne = {
     provider: "provider",
@@ -394,7 +436,7 @@ test("journal identity includes the admitted model and effort", async () => {
     reasoning: true,
     thinkingLevelMap: { off: null, low: "low", high: "high" },
   } as any;
-  const registry = { getAll: () => [modelOne, modelTwo] } as any;
+  const registry = { getAvailable: () => [modelOne, modelTwo] } as any;
   const script = `export const meta = { name: 'journal_identity', description: 'model and effort identity' }
 return await agent('same prompt')`;
 
