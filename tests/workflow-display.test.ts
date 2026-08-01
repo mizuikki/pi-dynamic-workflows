@@ -180,6 +180,9 @@ describe("renderWorkflowText", () => {
       agent(1, "effort-only", "running", "Research", { effort: "high" }),
       agent(2, "model-and-effort", "queued", undefined, { model: "provider/model", effort: "low" }),
     ] as never[];
+    snap.agentCount = 2;
+    snap.runningCount = 1;
+    snap.doneCount = 0;
     const text = renderWorkflowLines(snap).join("\n");
     assert.match(text, /effort-only.* · high/);
     assert.match(text, /model-and-effort.*provider\/model @ low/);

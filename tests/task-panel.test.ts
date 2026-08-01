@@ -731,6 +731,7 @@ describe("renderPanelDetailed", () => {
     const compactLines = renderPanel(panelSnapshot, theme as never);
     assert.ok(compactLines.some((line) => /default paused-model @ high/.test(line)));
     const lines = renderPanelDetailed(panelSnapshot, theme as never, undefined, 8, 1000);
+    assert.ok(lines.some((line) => /default paused-model @ high/.test(line)));
     assert.ok(
       lines.some((line) => /4\.2K tok/.test(line)),
       `expected persisted tokens: ${lines.join("\n")}`,
