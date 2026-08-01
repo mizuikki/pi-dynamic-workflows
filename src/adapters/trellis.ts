@@ -52,6 +52,8 @@ const TRELLIS_AGENT_JSONL: Record<string, string> = {
 
 const ACTIVE_TASK_LINE = /^Active task:\s*(.+?)\s*$/m;
 
+export const SUPPORTED_TRELLIS_PROJECT_VERSION = "1.0.3";
+
 /** Hard ceiling for the complete Trellis prefix sent on the first agent turn. */
 export const MAX_TRELLIS_TASK_CONTEXT_BYTES = 128 * 1024;
 /** Hard ceiling for any single task artifact included in the prefix. */
@@ -80,7 +82,7 @@ export function trellisProjectVersion(cwd: string): string | undefined {
 }
 
 export function hasSupportedTrellisProject(cwd: string): boolean {
-  return hasTrellisProject(cwd) && trellisProjectVersion(cwd) === "1.0.1";
+  return hasTrellisProject(cwd) && trellisProjectVersion(cwd) === SUPPORTED_TRELLIS_PROJECT_VERSION;
 }
 
 export function hasNativeTrellisExtension(cwd: string): boolean {
@@ -98,8 +100,8 @@ export function hasNativeTrellisExtension(cwd: string): boolean {
 export function shouldEnableTrellisAdapter(cwd: string, settings?: TrellisAdapterSettings): boolean {
   const enabled = settings?.enabled ?? "auto";
   if (enabled === "off") return false;
-  // The adapter mirrors the frozen 1.0.1 renderer. An explicit opt-in may
-  // enable it within that support matrix, but cannot inject 1.0.1 semantics
+  // The adapter mirrors the frozen supported renderer. An explicit opt-in may
+  // enable it within that support matrix, but cannot inject those semantics
   // into a missing or incompatible Trellis project.
   return hasSupportedTrellisProject(cwd);
 }

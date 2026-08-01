@@ -20,12 +20,13 @@ import { runWorkflow } from "../src/workflow.js";
 // ── parseAgentDefinition ───────────────────────────────────────────────────
 
 describe("parseAgentDefinition", () => {
-  it("parses frontmatter (name/description/model/tools/disallowedTools) + body", () => {
+  it("parses frontmatter (name/description/model/thinking/tools/disallowedTools) + body", () => {
     const md = [
       "---",
       "name: security-auditor",
       "description: Reviews code for vulnerabilities",
       "model: openai/gpt-4.1",
+      "thinking: max",
       "tools: [read, grep]",
       "disallowedTools:",
       "  - write",
@@ -38,6 +39,7 @@ describe("parseAgentDefinition", () => {
     assert.equal(def.name, "security-auditor");
     assert.equal(def.description, "Reviews code for vulnerabilities");
     assert.equal(def.model, "openai/gpt-4.1");
+    assert.equal(def.thinking, "max");
     assert.deepEqual(def.tools, ["read", "grep"]);
     assert.deepEqual(def.disallowedTools, ["write", "bash"]);
     assert.equal(def.prompt, "You are a security auditor. Be thorough.");
@@ -378,16 +380,19 @@ const registry: AgentRegistry = new Map([
   ],
 ]);
 
+const sessionModel = { provider: "test", id: "session-model", name: "Session Model", reasoning: false } as any;
+const admittedSession = { sessionModel, workflowModelSetting: null } as const;
+
 describe("agentType binding through runWorkflow", () => {
   it("binds tools and the body prompt while ignoring definition model metadata", async () => {
     const { seen, runner } = capturingAgent();
     const script = `export const meta = { name: 'at', description: 'agentType' }
 const r = await agent('audit', { label: 'a', agentType: 'security-auditor' })
 return r`;
-    await runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry });
+    await runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry, ...admittedSession });
 
     assert.equal(seen.length, 1);
-    assert.equal(seen[0].model, undefined, "agentType model metadata is ignored");
+    assert.equal(seen[0].model, "test/session-model", "agentType model metadata is ignored in favor of admission");
     assert.deepEqual(seen[0].toolNames, ["read", "grep"], "allowlist forwarded");
     assert.deepEqual(seen[0].disallowedToolNames, ["write", "bash"], "denylist forwarded");
     assert.ok(seen[0].instructions?.includes("You are a security auditor."), "body prompt injected");
@@ -416,9 +421,10 @@ return {}`;
     const script = `export const meta = { name: 'at', description: 'agentType' }
 await agent('audit', { label: 'a', agentType: 'security-auditor', tier: 'small' })
 return {}`;
-    await assert.rejects(() => runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry }), {
-      code: "SCRIPT_VALIDATION_ERROR",
-    });
+    await assert.rejects(
+      () => runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry, ...admittedSession }),
+      { code: "SCRIPT_VALIDATION_ERROR" },
+    );
     assert.equal(seen.length, 0);
   });
 
@@ -455,6 +461,7 @@ return {}`;
         agent: runner,
         persistLogs: false,
         agentRegistry: isolatedRegistry,
+        ...admittedSession,
       });
 
       assert.equal(seen.length, 1);
@@ -494,6 +501,7 @@ return {}`;
         persistLogs: false,
         agentRegistry: isolatedRegistry,
         onLog: (message) => logs.push(message),
+        ...admittedSession,
       });
 
       assert.equal(seen.length, 1);
@@ -519,8 +527,9 @@ return {}`;
       persistLogs: false,
       agentRegistry: registry,
       onLog: (m) => logs.push(m),
+      ...admittedSession,
     });
-    assert.equal(seen[0].model, undefined, "no model bound");
+    assert.equal(seen[0].model, "test/session-model", "unknown agentType still inherits the admitted model");
     assert.equal(seen[0].toolNames, undefined, "no tool allowlist bound");
     assert.ok(seen[0].instructions?.includes("nope"), "falls back to the prose hint");
     assert.ok(
@@ -541,14 +550,15 @@ return r`;
       persistLogs: false,
       agentRegistry: registry,
       onAgentJournal: (e) => journal.push(e),
+      ...admittedSession,
     });
     assert.equal(first.seen.length, 1);
 
-    // Editing ignored model metadata does not change Workflow behavior or the hash.
+    // Editing ignored model/thinking metadata does not change Workflow behavior or the hash.
     const securityAuditor = registry.get("security-auditor");
     assert.ok(securityAuditor, "security-auditor definition should be loaded");
     const editedRegistry: AgentRegistry = new Map([
-      ["security-auditor", { ...securityAuditor, model: "vendor/changed-model" }],
+      ["security-auditor", { ...securityAuditor, model: "vendor/changed-model", thinking: "max" }],
     ]);
     const second = capturingAgent();
     await runWorkflow(script, {
@@ -556,8 +566,9 @@ return r`;
       persistLogs: false,
       agentRegistry: editedRegistry,
       resumeJournal: new Map(journal.map((e) => [e.index, e])),
+      ...admittedSession,
     });
-    assert.equal(second.seen.length, 0, "ignored definition model metadata must not bust the cache");
+    assert.equal(second.seen.length, 0, "ignored definition model/thinking metadata must not bust the cache");
   });
 
   it("resume cache HITS when the definition is unchanged", async () => {
@@ -571,6 +582,7 @@ return r`;
       persistLogs: false,
       agentRegistry: registry,
       onAgentJournal: (e) => journal.push(e),
+      ...admittedSession,
     });
     const second = capturingAgent();
     await runWorkflow(script, {
@@ -578,6 +590,7 @@ return r`;
       persistLogs: false,
       agentRegistry: registry,
       resumeJournal: new Map(journal.map((e) => [e.index, e])),
+      ...admittedSession,
     });
     assert.equal(second.seen.length, 0, "unchanged definition → cache hit → no live run");
   });

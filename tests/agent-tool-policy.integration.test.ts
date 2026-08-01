@@ -16,6 +16,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createTrellisSubagentTool } from "../src/adapters/trellis-subagent-tool.js";
 import {
   filterShadowingBuiltinCustomTools,
   resolveSessionToolAllowlist,
@@ -30,6 +31,9 @@ import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/fau
 function sortUnique(names: string[]): string[] {
   return [...new Set(names)].sort();
 }
+
+const workflowSessionModel = { provider: "test", id: "session-model", name: "Session Model", reasoning: false } as any;
+const admittedWorkflowSession = { sessionModel: workflowSessionModel, workflowModelSetting: null } as const;
 
 async function withAgentSession(
   fn: (ctx: {
@@ -141,6 +145,41 @@ test("T2: no tools allowlist defaults include bash", async () => {
     } finally {
       session.dispose();
     }
+  });
+});
+
+test("Trellis fallback strips a max suffix before real Pi model resolution", async () => {
+  await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime, registry }) => {
+    mkdirSync(join(cwd, ".trellis", "tasks", "model-routing"), { recursive: true });
+    mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n");
+    writeFileSync(join(cwd, ".trellis", "tasks", "model-routing", "prd.md"), "# Model routing\n");
+    writeFileSync(join(cwd, ".pi", "agents", "trellis-implement.md"), "---\nname: trellis-implement\n---\nImplement.");
+    faux.setResponses([fauxAssistantMessage("suffix route ok")]);
+    const agent = new WorkflowAgent({
+      cwd,
+      modelRuntime,
+      modelRegistry: registry,
+      session: {
+        model: faux.model,
+        sessionManager: SessionManager.inMemory(),
+        settingsManager: SettingsManager.create(cwd, agentDir),
+      },
+    });
+    const tool = createTrellisSubagentTool({ cwd, agent });
+    const result = await tool.execute(
+      "trellis-real-model-route",
+      {
+        agent: "trellis-implement",
+        prompt: "Active task: .trellis/tasks/model-routing\nRun the model route.",
+        model: `${faux.model.provider}/${faux.model.id}:max`,
+      },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    assert.equal(result.isError, false);
+    assert.match((result.content[0] as { text: string }).text, /suffix route ok/);
   });
 });
 
@@ -606,6 +645,7 @@ test("T11: resume hash differs when call-site isolation is worktree vs absent", 
     agent,
     persistLogs: false,
     onAgentJournal: (e) => journalA.push(e),
+    ...admittedWorkflowSession,
   });
   await runWorkflow(
     `export const meta = { name: 'h2', description: 'h' }; return await agent('p', { isolation: 'worktree' });`,
@@ -613,6 +653,7 @@ test("T11: resume hash differs when call-site isolation is worktree vs absent", 
       agent,
       persistLogs: false,
       onAgentJournal: (e) => journalB.push(e),
+      ...admittedWorkflowSession,
     },
   );
   assert.notEqual(journalA[0]?.hash, journalB[0]?.hash);
@@ -633,6 +674,7 @@ test("T12: old journal shape without isolation still replays", async () => {
     agent,
     persistLogs: false,
     onAgentJournal: (e) => journal.push(e),
+    ...admittedWorkflowSession,
   });
   assert.equal(counting.n, 1);
   counting.n = 0;
@@ -640,6 +682,7 @@ test("T12: old journal shape without isolation still replays", async () => {
     agent,
     persistLogs: false,
     resumeJournal: new Map(journal.map((e) => [e.index, e])),
+    ...admittedWorkflowSession,
   });
   assert.equal(counting.n, 0, "unchanged non-isolation call should still cache-hit");
 });
@@ -656,6 +699,7 @@ test("T13/T14: context loader no-op by default; prefix changes prompt and resume
   await runWorkflow(`export const meta = { name: 'ctx0', description: 'c' }; return await agent('TASK');`, {
     agent,
     persistLogs: false,
+    ...admittedWorkflowSession,
   });
   assert.equal(seen[0], "TASK");
 
@@ -666,6 +710,7 @@ test("T13/T14: context loader no-op by default; prefix changes prompt and resume
     persistLogs: false,
     contextLoader: async () => ({ promptPrefix: "## PREFIX\ncontext" }),
     onAgentJournal: (e) => journal.push(e),
+    ...admittedWorkflowSession,
   });
   assert.ok(seen[0]?.includes("## PREFIX"));
   assert.ok(seen[0]?.includes("TASK"));
@@ -679,6 +724,7 @@ test("T13/T14: context loader no-op by default; prefix changes prompt and resume
     },
     persistLogs: false,
     onAgentJournal: (e) => journal2.push(e),
+    ...admittedWorkflowSession,
   });
   assert.notEqual(journal[0]?.hash, journal2[0]?.hash, "prefix must change resume hash");
 });
@@ -693,6 +739,7 @@ test("resume hash includes canonical context instructions and environment", asyn
       persistLogs: false,
       contextLoader: async () => ({ instructions, env }),
       onAgentJournal: (entry) => journal.push(entry),
+      ...admittedWorkflowSession,
     });
     return journal[0]?.hash;
   };

@@ -21,11 +21,11 @@
   ],
   "scripts": {
     "test": "npm run check && npm run build && npm run test:unit",
-    "test:unit": "tsx --test tests/**/*.test.ts",
+    "test:unit": "node scripts/run-unit-tests.mjs",
     "test:pi-fork": "node scripts/test-pi-fork.mjs",
     "test:package-smoke": "bash scripts/test-package-smoke.sh",
     "smoke:trellis-context": "node scripts/smoke-trellis-context.mjs",
-    "verify:trellis-oracle": "node scripts/verify-trellis-1.0.1-oracle.mjs",
+    "verify:trellis-oracle": "node scripts/verify-trellis-1.0.3-oracle.mjs ../Trellis/packages/cli/src/templates/pi/extensions/trellis/index.ts.txt",
     "check": "biome check .",
     "format": "biome format --write .",
     "lint": "biome lint .",
