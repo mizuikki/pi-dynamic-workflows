@@ -301,12 +301,32 @@ The full guide — every global, agent option, `agentType` definitions, structur
 | --- | --- |
 | `agent(prompt, opts)` | Spawn an isolated subagent. By default it returns final text; with the explicit structured-output opt-in, `opts.schema` returns a validated object. Recoverable failures return `null` with diagnostics in `/workflows`. |
 | `parallel(thunks)` | Run `() => agent(...)` thunks concurrently; results in input order. |
+| `parallelSettled(thunks)` | Run independent branches to completion and preserve ordered `fulfilled` / structured `rejected` outcomes. |
 | `pipeline(items, ...stages)` | Fan items through sequential stages `(prev, original, index)`. |
 | `phase(title, { budget? })` | Group agents in the live view; optional per-phase token sub-budget. |
 | `verify` / `judgePanel` / `loopUntilDry` / `completenessCheck` | Built-in quality patterns; the schema-dependent helpers refuse with `STRUCTURED_OUTPUT_DISABLED` until opt-in, while `loopUntilDry` remains available. |
 | `workflow(name, args)` | Run a saved workflow inline (shares the global caps). |
 | `checkpoint(prompt, opts)` | A journaled, replayable human approval gate. |
 | `budget` | `{ total, spent(), remaining() }` real-token tracker. |
+
+Use `parallel()` when every branch is required. Its first fatal failure cancels and drains
+the sibling group before the root error is rethrown. For independent research,
+use `parallelSettled()` and enforce the coverage threshold in the workflow:
+
+```js
+const outcomes = await parallelSettled(
+  topics.map((topic) => () => agent(topic, { label: topic })),
+);
+const findings = outcomes
+  .filter((outcome) => outcome.status === "fulfilled" && outcome.value !== null)
+  .map((outcome) => outcome.value);
+if (findings.length < 3) throw new Error("research quorum not met");
+```
+
+An exhausted recoverable `agent()` is a fulfilled `null` outcome. A thrown
+`WorkflowError` is a rejected outcome with bounded `code`, `message`,
+`recoverable`, and optional `agentLabel` fields. Provider timeout classification
+remains owned by Pi and the selected provider integration.
 
 | Agent option | Description |
 | --- | --- |

@@ -17,6 +17,8 @@ export interface WorkflowAgentSnapshot {
   errorCode?: WorkflowErrorCode;
   recoverable?: boolean;
   history?: AgentHistoryEntry[];
+  startedAt?: string;
+  endedAt?: string;
   /** Tokens used by this agent. */
   tokens?: number;
   /** The model this agent ran on (provider/id), when known. */

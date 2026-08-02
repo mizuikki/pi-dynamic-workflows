@@ -147,6 +147,74 @@ return await agent('answer', { label: 'visible schema', schema: { type: 'object'
 );
 
 test(
+  "persisted agent timestamps follow actual lifecycle events",
+  withTempCwd(async (cwd) => {
+    const deferred = deferredAgent();
+    const manager = new WorkflowManager({ cwd, agent: deferred.runner });
+    const { runId, promise } = manager.startInBackground(oneAgentScript);
+
+    let running = manager.loadRun(runId)?.agents[0];
+    for (let attempt = 0; attempt < 200 && !running; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running = manager.loadRun(runId)?.agents[0];
+    }
+    assert.equal(running?.status, "running");
+    assert.ok(running?.startedAt);
+    assert.equal(running?.endedAt, undefined);
+
+    deferred.resolve("done");
+    await promise;
+
+    const terminal = manager.loadRun(runId)?.agents[0];
+    assert.equal(terminal?.status, "done");
+    assert.ok(terminal?.startedAt);
+    assert.ok(terminal?.endedAt);
+    assert.ok(Date.parse(terminal?.endedAt ?? "") >= Date.parse(terminal?.startedAt ?? ""));
+  }),
+);
+
+test(
+  "concurrent agent starts share one persistence checkpoint",
+  withTempCwd(async (cwd) => {
+    const persistence = createRunPersistence(cwd);
+    const deferred = deferredAgent();
+    let saves = 0;
+    let starts = 0;
+    const manager = new WorkflowManager({
+      cwd,
+      agent: deferred.runner,
+      persistenceFactory: () => ({
+        ...persistence,
+        save(state, lease) {
+          saves++;
+          persistence.save(state, lease);
+        },
+      }),
+    });
+    manager.on("agentStart", () => {
+      starts++;
+    });
+    const script = `export const meta = { name: 'coalesced_starts', description: 'coalesced starts' }
+return await parallel([
+  () => agent('one', { label: 'one' }),
+  () => agent('two', { label: 'two' }),
+  () => agent('three', { label: 'three' }),
+])`;
+
+    const { promise } = manager.startInBackground(script);
+    for (let attempt = 0; attempt < 200 && starts < 3; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(starts, 3);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(saves, 2, "the initial state and one coalesced start checkpoint should be saved");
+
+    deferred.resolve("done");
+    await promise;
+  }),
+);
+
+test(
   "manager defaultAgentTimeoutMs applies when run options omit agentTimeoutMs",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });
@@ -708,6 +776,11 @@ return { a, b }`;
     // Verify the run is aborted
     const persisted = manager.listRuns().find((r) => r.runId === runId);
     assert.equal(persisted?.status, "aborted", "run should be aborted after stop");
+
+    const agents = manager.loadRun(runId)?.agents;
+    assert.equal(agents?.find((agent) => agent.label === "first")?.status, "done");
+    assert.equal(agents?.find((agent) => agent.label === "second")?.status, "skipped");
+    assert.ok(agents?.find((agent) => agent.label === "second")?.endedAt);
 
     // Verify the error is a WorkflowError
     const managedRun = manager.getRun(runId);

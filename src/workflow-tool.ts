@@ -75,8 +75,9 @@ const workflowToolSchema = Type.Object({
     description: [
       "Required raw JavaScript workflow script, with no Markdown fences.",
       "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description', phases: [{ title: 'Phase' }] }",
-      "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. The workflow must call agent() at least once.",
-      "parallel() requires functions, not promises: await parallel(items.map(item => () => agent(...))).",
+      "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), parallelSettled(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. The workflow must call agent() at least once.",
+      "parallel() and parallelSettled() require functions, not promises: await parallel(items.map(item => () => agent(...))) or await parallelSettled(items.map(item => () => agent(...))).",
+      "Use parallelSettled() for independent research, then count non-null fulfilled values and enforce an explicit workflow-owned quorum.",
     ].join(" "),
   }),
   args: Type.Optional(
@@ -196,7 +197,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         "For workflow, always pass one raw JavaScript string in the required script parameter; do not include Markdown fences or prose around the script.",
         "For workflow, the script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty human description', phases: [{ title: 'Phase name' }] }`; meta.name and meta.description are required non-empty strings.",
         "For workflow, write plain JavaScript after the meta export. Do not use TypeScript syntax, imports, require(), fs, Date.now(), Math.random(), or new Date().",
-        "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
+        "For workflow, available globals are agent(prompt, opts), parallel(thunks), parallelSettled(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
         structuredOutputEnabled
           ? "For workflow, structured output is enabled. Prefer the built-in quality helpers when they fit (each is built on agent()/parallel() and returns plain data): verify(item, {reviewers, threshold, lens}) for adversarial fact-checking; judgePanel(attempts, {judges, rubric}) to score N candidates and return the best; loopUntilDry({round, key, consecutiveEmpty}) to keep finding until rounds stop yielding new items; completenessCheck(args, results) as a final 'what's missing' critic."
           : "For workflow, structured output is disabled by default. Use text-safe synthesis and the ungated loopUntilDry(), retry(), and gate() helpers; verify(), judgePanel(), and completenessCheck() refuse before spawning child agents while disabled.",
@@ -204,12 +205,13 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         "For workflow, do not set tokenBudget or agentTimeoutMs unless the user explicitly asks to cap spend or time; the defaults are unbounded.",
         "For workflow, to bound spend: pass tokenBudget for a hard run-wide cap; carve a per-phase ceiling with phase('Name', {budget: N}) (that phase throws at its sub-budget without touching the run total — wrap its work in try/catch so later phases proceed); use retry(thunk, {attempts, until}) for bounded retry, and gate(thunk, validator, {attempts}) when a validator's feedback should steer the next attempt. To degrade gracefully, branch on budget.remaining() to skip optional rounds.",
         "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
-        "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))`, never `await parallel(items.map(item => agent(...)))`. Results are returned in input order.",
+        "For workflow, parallel() and parallelSettled() take functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))` or `await parallelSettled(items.map(item => () => agent('...', { label: '...' })))`, never map directly to agent promises. Results are returned in input order.",
+        "For workflow, parallel() is fail-fast for fatal branches and cancels then drains its sibling group before rethrowing the root error. Use parallelSettled() for independent research so successful evidence remains available; explicitly count non-null fulfilled outcomes and fail with a clear message when the workflow's own quorum is not met.",
         "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
         "For workflow, every agent() call should include a unique short label option, 2-5 words, such as { label: 'repo inventory' } or { label: 'source modules' }; unique labels make live status and error reporting readable.",
         "For workflow, agentTurnRetry partially overrides Pi's inherited in-session agent-turn retry policy for this run. Use it only when the user explicitly asks to change turn retry behavior; it does not retry an entire agent() call.",
         "For workflow, provider instability is handled by Pi's in-session retry policy. agentRunRetries recreates the whole child session, defaults to 0, and has at-least-once side effects with no rollback; use it only when explicitly appropriate and check null after exhaustion.",
-        "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted. Check for nulls before synthesizing conclusions.",
+        "For workflow, an agent() that exhausts recoverable attempts returns null. parallel() preserves that null but rethrows fatal failures after sibling cleanup; pipeline() returns null for recoverable stage failures. parallelSettled() returns ordered fulfilled or structured rejected outcomes. Check coverage before synthesizing conclusions.",
         "For workflow, include a final synthesis/assertion agent when combining multiple subagent results; return a compact JSON-serializable value with ok/verdict plus the important outputs.",
         structuredOutputEnabled
           ? "For workflow, the default quality shape for fan-out work is finder -> verify -> merge: run one agent per angle or work-unit (in parallel), pass each candidate finding through verify() and drop the unconfirmed, then a single synthesis agent that de-duplicates, ranks by confidence/severity, and caps the output. If nothing survives verification, return an empty result and say so rather than padding."
