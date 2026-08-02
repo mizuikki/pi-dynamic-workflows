@@ -220,6 +220,8 @@ export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-t
 export type {
   AgentOptions,
   JournalEntry,
+  SettledWorkflowError,
+  SettledWorkflowResult,
   SharedRuntime,
   WorkflowMeta,
   WorkflowMetaPhase,

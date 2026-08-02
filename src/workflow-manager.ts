@@ -636,10 +636,12 @@ export class WorkflowManager extends EventEmitter {
             phase: event.phase,
             prompt: event.prompt,
             status: "running",
+            startedAt: new Date().toISOString(),
             model: event.model,
             effort: event.effort,
           });
           this.emit("agentStart", { runId: managed.runId, ...event });
+          this.persistRun(managed);
           progress();
         },
         onAgentEnd: (event) => {
@@ -647,7 +649,8 @@ export class WorkflowManager extends EventEmitter {
             .reverse()
             .find((a) => a.label === event.label && a.status === "running");
           if (agent) {
-            agent.status = event.result === null ? "error" : "done";
+            agent.status = event.cancelled ? "skipped" : event.result === null ? "error" : "done";
+            agent.endedAt = new Date().toISOString();
             agent.resultPreview = preview(event.result);
             agent.error = event.error;
             agent.errorCode = event.errorCode;
@@ -657,6 +660,7 @@ export class WorkflowManager extends EventEmitter {
             if (event.effort) agent.effort = event.effort;
           }
           this.emit("agentEnd", { runId: managed.runId, ...event });
+          this.persistRun(managed);
           progress();
         },
         onAgentHistory: (event) => {
@@ -802,8 +806,6 @@ export class WorkflowManager extends EventEmitter {
       currentPhase: managed.snapshot.currentPhase,
       agents: managed.snapshot.agents.map((a) => ({
         ...a,
-        startedAt: managed.startedAt.toISOString(),
-        endedAt: new Date().toISOString(),
       })),
       logs: managed.snapshot.logs,
       result: managed.result?.result,

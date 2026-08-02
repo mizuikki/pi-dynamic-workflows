@@ -80,6 +80,155 @@ return xs`;
   assert.equal(result.agentCount, 4);
 });
 
+test("parallelSettled preserves ordered success, recoverable null, and structured rejection", async () => {
+  const result = await runWorkflow(
+    `export const meta = { name: 'settled', description: 'settled outcomes' }
+return await parallelSettled([
+  () => agent('ok', { label: 'ok' }),
+  () => agent('empty', { label: 'empty' }),
+  () => agent('over-limit', { label: 'over-limit' }),
+])`,
+    {
+      agent: {
+        async run(prompt: string) {
+          return prompt === "empty" ? "" : `value:${prompt}`;
+        },
+      },
+      maxAgents: 2,
+      persistLogs: false,
+    },
+  );
+
+  assert.deepEqual(result.result, [
+    { status: "fulfilled", value: "value:ok" },
+    { status: "fulfilled", value: null },
+    {
+      status: "rejected",
+      error: {
+        code: WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
+        message: "Agent limit exceeded (2). Use maxAgents option to increase the limit.",
+        recoverable: false,
+      },
+    },
+  ]);
+});
+
+test("parallelSettled leaves quorum policy to the workflow", async () => {
+  const result = await runWorkflow(
+    `export const meta = { name: 'quorum', description: 'explicit research quorum' }
+const outcomes = await parallelSettled(['a', 'b', 'missing', 'd'].map((item) =>
+  () => agent(item, { label: item })
+))
+const usable = outcomes
+  .filter((outcome) => outcome.status === 'fulfilled' && outcome.value !== null)
+  .map((outcome) => outcome.value)
+if (usable.length < 3) throw new Error('research quorum not met')
+return { usable, outcomes }`,
+    {
+      agent: {
+        async run(prompt: string) {
+          return prompt === "missing" ? "" : `finding:${prompt}`;
+        },
+      },
+      persistLogs: false,
+    },
+  );
+
+  assert.deepEqual((result.result as { usable: string[] }).usable, ["finding:a", "finding:b", "finding:d"]);
+  assert.deepEqual(
+    (result.result as { outcomes: Array<{ status: string; value?: unknown }> }).outcomes.map(
+      (outcome) => outcome.status,
+    ),
+    ["fulfilled", "fulfilled", "fulfilled", "fulfilled"],
+  );
+});
+
+test("parallelSettled drains branches and rethrows user cancellation", async () => {
+  const controller = new AbortController();
+  let started = 0;
+  const ended: Array<{ cancelled?: boolean }> = [];
+  const result = runWorkflow(
+    `export const meta = { name: 'settled_abort', description: 'settled cancellation' }
+return await parallelSettled([
+  () => agent('left', { label: 'left' }),
+  () => agent('right', { label: 'right' }),
+])`,
+    {
+      concurrency: 2,
+      signal: controller.signal,
+      agent: {
+        async run(_prompt: string, options: { signal?: AbortSignal }) {
+          started++;
+          await new Promise<never>((_resolve, reject) => {
+            options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+        },
+      },
+      persistLogs: false,
+      onAgentEnd: (event) => ended.push({ cancelled: event.cancelled }),
+    },
+  );
+
+  while (started < 2) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+
+  await assert.rejects(
+    result,
+    (error: unknown) => error instanceof WorkflowError && error.code === WorkflowErrorCode.WORKFLOW_ABORTED,
+  );
+  assert.equal(ended.length, 2);
+  assert.ok(ended.every((event) => event.cancelled === true));
+});
+
+test("parallel cancels and drains siblings before rethrowing the first fatal error", async () => {
+  let slowStarted = false;
+  let slowCancelled = false;
+  const ended: Array<{ label: string; cancelled?: boolean }> = [];
+  const result = runWorkflow(
+    `export const meta = { name: 'fail_fast_cleanup', description: 'group cleanup' }
+return await parallel([
+  () => agent('fatal', { label: 'fatal' }),
+  () => parallel([() => agent('slow', { label: 'slow' })]),
+])`,
+    {
+      concurrency: 2,
+      agent: {
+        async run(prompt: string, options: { signal?: AbortSignal }) {
+          if (prompt === "slow") {
+            slowStarted = true;
+            await new Promise<never>((_resolve, reject) => {
+              options.signal?.addEventListener(
+                "abort",
+                () => {
+                  slowCancelled = true;
+                  reject(new Error("aborted"));
+                },
+                { once: true },
+              );
+            });
+          }
+          while (!slowStarted) await new Promise((resolve) => setImmediate(resolve));
+          throw new WorkflowError("root failure", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+            recoverable: false,
+          });
+        },
+      },
+      persistLogs: false,
+      onAgentEnd: (event) => ended.push({ label: event.label, cancelled: event.cancelled }),
+    },
+  );
+
+  await assert.rejects(
+    result,
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      error.message === "root failure",
+  );
+  assert.equal(slowCancelled, true);
+  assert.ok(ended.some((event) => event.label === "slow" && event.cancelled === true));
+});
+
 test("runWorkflow retries recoverable empty output then succeeds", async () => {
   let calls = 0;
   const journal: JournalEntry[] = [];

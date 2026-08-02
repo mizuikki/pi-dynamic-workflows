@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import vm from "node:vm";
 import type { Node } from "acorn";
@@ -84,6 +85,17 @@ export interface SharedRuntime {
   depth: number;
 }
 
+export interface SettledWorkflowError {
+  code: WorkflowErrorCode;
+  message: string;
+  recoverable: boolean;
+  agentLabel?: string;
+}
+
+export type SettledWorkflowResult<T> =
+  | { status: "fulfilled"; value: T | null }
+  | { status: "rejected"; error: SettledWorkflowError };
+
 export interface WorkflowRunOptions extends WorkflowAgentOptions {
   /** Sampled workflow structured-output capability for this execution. */
   structuredOutputEnabled?: boolean;
@@ -167,6 +179,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     error?: string;
     errorCode?: WorkflowErrorCode;
     recoverable?: boolean;
+    cancelled?: boolean;
   }) => void;
   onAgentHistory?: (event: { label: string; phase?: string; history: AgentHistoryEntry[] }) => void;
   onTokenUsage?: (usage: {
@@ -403,6 +416,8 @@ export async function runWorkflow<T = unknown>(
   // One store instance per run; nested workflow() calls inherit the parent's store
   // so all agents across nesting levels share the same key-value space.
   const store: SharedStore = options.sharedStore ?? new SharedStore();
+  const signalScope = new AsyncLocalStorage<AbortSignal>();
+  const currentExecutionSignal = () => signalScope.getStore() ?? options.signal;
 
   const log = (message: string) => {
     const text = String(message);
@@ -429,12 +444,13 @@ export async function runWorkflow<T = unknown>(
   });
 
   const throwIfAborted = () => {
-    if (options.signal?.aborted) {
+    if (currentExecutionSignal()?.aborted) {
       throw new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
     }
   };
 
   const agent = async (prompt: string, agentOptions: AgentOptions = {}) => {
+    const executionSignal = currentExecutionSignal();
     throwIfAborted();
     const perAgentTurnRetry = normalizeAgentTurnRetryOverride(agentOptions.agentTurnRetry, "agent.agentTurnRetry");
     if (perAgentTurnRetry && !options.hostRetryPolicy) {
@@ -709,7 +725,7 @@ export async function runWorkflow<T = unknown>(
                 sessionName: `workflow:${runId} ${label}`,
                 schema: effectiveAgentOptions.schema,
                 structuredOutputEnabled,
-                signal: options.signal,
+                signal: executionSignal,
                 instructions: mergedInstructions,
                 agentType: agentOptions.agentType,
                 // Only skip when this run pre-applied context for the resume hash.
@@ -783,14 +799,34 @@ export async function runWorkflow<T = unknown>(
             return result;
           } catch (error) {
             store.commitDelta(deltaKey);
-            if (options.signal?.aborted) {
+            if (executionSignal?.aborted) {
+              const runAborted = options.signal?.aborted === true;
               if (options.keelHost && loadedKeel) {
                 await observeKeelAgentTerminal(options.keelHost, loadedKeel, keelSource, "live", {
                   status: "cancelled",
-                  reason: "workflow aborted",
+                  reason: runAborted ? "workflow aborted" : "parallel group cancelled",
                 });
               }
-              throw error;
+              const cancellationError = runAborted
+                ? wrapError(error, { agentLabel: label })
+                : new WorkflowError(
+                    "parallel branch cancelled after a sibling failed",
+                    WorkflowErrorCode.WORKFLOW_ABORTED,
+                    { recoverable: true, agentLabel: label },
+                  );
+              options.onAgentEnd?.({
+                label,
+                phase: assignedPhase,
+                result: null,
+                worktree: runCwd,
+                model: displayModel,
+                effort: displayEffort,
+                error: cancellationError.message,
+                errorCode: cancellationError.code,
+                recoverable: cancellationError.recoverable,
+                cancelled: true,
+              });
+              throw cancellationError;
             }
 
             const workflowError = wrapError(error, { agentLabel: label });
@@ -850,12 +886,15 @@ export async function runWorkflow<T = unknown>(
     if (thunks.some((thunk) => typeof thunk !== "function")) {
       throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
     }
-    return Promise.all(
-      thunks.map(async (thunk, index) => {
+    const parentSignal = currentExecutionSignal();
+    const groupController = new AbortController();
+    const groupSignal = parentSignal ? AbortSignal.any([parentSignal, groupController.signal]) : groupController.signal;
+    const pending = thunks.map(async (thunk, index) =>
+      signalScope.run(groupSignal, async () => {
         try {
           return await thunk();
         } catch (error) {
-          if (options.signal?.aborted) throw error;
+          if (parentSignal?.aborted) throw error;
           const workflowError = wrapError(error);
           // Non-recoverable failures (token budget / agent limit exhausted) must
           // halt the whole run, exactly like a directly-awaited agent() — not be
@@ -866,6 +905,48 @@ export async function runWorkflow<T = unknown>(
         }
       }),
     );
+    try {
+      return await Promise.all(pending);
+    } catch (error) {
+      groupController.abort();
+      await Promise.allSettled(pending);
+      throw error;
+    }
+  };
+
+  const parallelSettled = async <T>(thunks: Array<() => Promise<T | null>>): Promise<SettledWorkflowResult<T>[]> => {
+    throwIfAborted();
+    if (!Array.isArray(thunks)) throw new TypeError("parallelSettled() expects an array of functions");
+    if (thunks.some((thunk) => typeof thunk !== "function")) {
+      throw new TypeError(
+        "parallelSettled() expects an array of functions, not promises. Wrap each call: () => agent(...)",
+      );
+    }
+    const parentSignal = currentExecutionSignal();
+    const outcomes = await Promise.all(
+      thunks.map(async (thunk, index) => {
+        try {
+          const value = await (parentSignal ? signalScope.run(parentSignal, thunk) : thunk());
+          return { status: "fulfilled", value: value as T | null } as const;
+        } catch (error) {
+          if (parentSignal?.aborted) return { aborted: error } as const;
+          const workflowError = wrapError(error);
+          log(`parallelSettled[${index}] rejected: ${workflowError.message}`);
+          return {
+            status: "rejected",
+            error: {
+              code: workflowError.code,
+              message: workflowError.message,
+              recoverable: workflowError.recoverable,
+              ...(workflowError.agentLabel ? { agentLabel: workflowError.agentLabel } : {}),
+            },
+          } as const;
+        }
+      }),
+    );
+    const aborted = outcomes.find((outcome): outcome is { aborted: unknown } => "aborted" in outcome);
+    if (aborted) throw aborted.aborted;
+    return outcomes.filter((outcome): outcome is SettledWorkflowResult<T> => !("aborted" in outcome));
   };
 
   const pipeline = async (
@@ -1139,6 +1220,7 @@ export async function runWorkflow<T = unknown>(
   const context = vm.createContext({
     agent,
     parallel,
+    parallelSettled,
     pipeline,
     workflow: workflowFn,
     verify,
