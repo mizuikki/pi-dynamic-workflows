@@ -71,6 +71,17 @@ test("createWorkflowTool has promptGuidelines array", () => {
   assert.ok(tool.promptGuidelines.length > 5, "should have several guidelines");
 });
 
+test("createWorkflowTool requires thunks for both parallel helpers", () => {
+  const tool = createWorkflowTool();
+  const parameters = tool.parameters as { properties?: { script?: { description?: string } } };
+
+  assert.match(
+    parameters.properties?.script?.description ?? "",
+    /parallel\(\) and parallelSettled\(\) require functions/i,
+  );
+  assert.match(tool.promptGuidelines.join(" "), /parallel\(\) and parallelSettled\(\) take functions/i);
+});
+
 test("createWorkflowTool promptGuidelines mention model routing", () => {
   const tool = createWorkflowTool();
   const all = tool.promptGuidelines.join(" ");

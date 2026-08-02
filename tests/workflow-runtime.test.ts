@@ -227,6 +227,7 @@ return await parallel([
   );
   assert.equal(slowCancelled, true);
   assert.ok(ended.some((event) => event.label === "slow" && event.cancelled === true));
+  assert.ok(ended.some((event) => event.label === "fatal" && event.cancelled !== true));
 });
 
 test("runWorkflow retries recoverable empty output then succeeds", async () => {

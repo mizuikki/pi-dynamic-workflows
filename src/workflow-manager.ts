@@ -43,6 +43,8 @@ import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunRe
 import { WorkflowPersistenceError } from "./workflow-database.js";
 import { loadWorkflowSettings } from "./workflow-settings.js";
 
+const AGENT_START_PERSIST_DEBOUNCE_MS = 10;
+
 export interface ManagedRun {
   runId: string;
   sessionId?: string;
@@ -157,6 +159,7 @@ export interface WorkflowManagerOptions {
 
 export class WorkflowManager extends EventEmitter {
   private runs = new Map<string, ManagedRun>();
+  private pendingPersistenceTimers = new Map<string, NodeJS.Timeout>();
   private persistence?: RunPersistence;
   private persistenceFactory: (cwd: string) => RunPersistence;
   private persistedSummaries = new Map<string, WorkflowRunSummary>();
@@ -641,7 +644,7 @@ export class WorkflowManager extends EventEmitter {
             effort: event.effort,
           });
           this.emit("agentStart", { runId: managed.runId, ...event });
-          this.persistRun(managed);
+          this.scheduleRunPersistence(managed);
           progress();
         },
         onAgentEnd: (event) => {
@@ -827,6 +830,7 @@ export class WorkflowManager extends EventEmitter {
   }
 
   private persistRun(managed: ManagedRun, required = false): boolean {
+    this.cancelScheduledPersistence(managed.runId);
     if (!managed.lease || managed.leaseLost) return false;
     const state = this.persistedState(managed);
     try {
@@ -842,6 +846,22 @@ export class WorkflowManager extends EventEmitter {
       console.warn("[workflow-manager] Workflow checkpoint failed.");
       return false;
     }
+  }
+
+  private scheduleRunPersistence(managed: ManagedRun): void {
+    if (!managed.lease || managed.leaseLost || this.pendingPersistenceTimers.has(managed.runId)) return;
+    const timer = setTimeout(() => {
+      this.pendingPersistenceTimers.delete(managed.runId);
+      this.persistRun(managed);
+    }, AGENT_START_PERSIST_DEBOUNCE_MS);
+    timer.unref?.();
+    this.pendingPersistenceTimers.set(managed.runId, timer);
+  }
+
+  private cancelScheduledPersistence(runId: string): void {
+    const timer = this.pendingPersistenceTimers.get(runId);
+    if (timer) clearTimeout(timer);
+    this.pendingPersistenceTimers.delete(runId);
   }
 
   /**
