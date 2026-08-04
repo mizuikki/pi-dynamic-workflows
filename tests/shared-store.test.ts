@@ -76,6 +76,32 @@ test("SharedStore.dispose clears map and agent deltas", () => {
   assert.deepEqual(store.commitDelta("run-1:1"), {});
 });
 
+test("SharedStore.discardDelta restores the value from before an attempt", () => {
+  const store = new SharedStore();
+  store.put("k", "before");
+  store.trackPut("k", "first", "run:0");
+  store.trackPut("k", "second", "run:0");
+  store.trackPut("new", true, "run:0");
+
+  store.discardDelta("run:0");
+
+  assert.equal(store.get("k"), "before");
+  assert.equal(store.has("new"), false);
+  assert.deepEqual(store.commitDelta("run:0"), {});
+});
+
+test("SharedStore.discardDelta preserves a later sibling write to the same key", () => {
+  const store = new SharedStore();
+  store.put("k", "before");
+  store.trackPut("k", "failed-attempt", "run:0");
+  store.trackPut("k", "sibling", "run:1");
+
+  store.discardDelta("run:0");
+
+  assert.equal(store.get("k"), "sibling");
+  assert.deepEqual(store.commitDelta("run:1"), { k: "sibling" });
+});
+
 // ─── Delta-key collision regression (defect: nested workflow() shares a store
 // but restarts callSeq at 0) ───────────────────────────────────────────────────
 
@@ -260,6 +286,55 @@ test("nested workflow() concurrent with its parent does not collide on shared-st
   const allDeltaKeys = nonEmptyDeltas.flatMap((e) => Object.keys(e.storeDelta ?? {}));
   assert.ok(allDeltaKeys.includes("parentKey"), "journal must contain a delta for parentKey");
   assert.ok(allDeltaKeys.includes("nestedKey"), "journal must contain a delta for nestedKey");
+});
+
+test("nested journals are run-namespaced and invalidate after a parent prefix miss", async () => {
+  const child = `export const meta = { name: 'child', description: 'child' }
+return await agent('child-work', { label: 'child' })`;
+  const parent = (prompt: string) => `export const meta = { name: 'parent', description: 'parent' }
+await agent('${prompt}', { label: 'parent' })
+return await workflow('child')`;
+  const journal: Array<import("../src/workflow.js").JournalEntry> = [];
+  let calls = 0;
+  const runner = {
+    async run(prompt: string) {
+      calls++;
+      return `ran:${prompt}`;
+    },
+  };
+
+  await runWorkflow(parent("parent-work"), {
+    runId: "journal-run",
+    agent: runner,
+    loadSavedWorkflow: () => child,
+    persistLogs: false,
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+  assert.deepEqual(
+    journal.map((entry) => entry.runId),
+    ["journal-run", "journal-run-nested1"],
+  );
+  const resumeJournal = new Map(journal.map((entry) => [`${entry.runId}:${entry.index}`, entry] as const));
+
+  calls = 0;
+  await runWorkflow(parent("parent-work"), {
+    runId: "journal-run",
+    agent: runner,
+    loadSavedWorkflow: () => child,
+    persistLogs: false,
+    resumeJournal,
+  });
+  assert.equal(calls, 0, "unchanged parent and child frames replay independently");
+
+  calls = 0;
+  await runWorkflow(parent("parent-edited"), {
+    runId: "journal-run",
+    agent: runner,
+    loadSavedWorkflow: () => child,
+    persistLogs: false,
+    resumeJournal,
+  });
+  assert.equal(calls, 2, "a parent prefix miss forces the nested suffix to run live");
 });
 
 // ─── Resume under fan-out (integration) ──────────────────────────────────────

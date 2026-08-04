@@ -11,7 +11,7 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { WorkflowAgent, WorkflowAgentOptions } from "./agent.js";
-import { preview, type WorkflowSnapshot } from "./display.js";
+import { preview, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import type { KeelHostBridgeV1 } from "./keel-host-contract.js";
 import {
@@ -77,6 +77,12 @@ export interface ManagedRun {
   lastLeaseRenewalAt?: number;
   leaseLost?: boolean;
   finalizationIntent?: "release" | "delete";
+  /** Stable runtime invocation id to live snapshot entry. */
+  agentsById: Map<string, WorkflowAgentSnapshot>;
+  tokenBudget?: number | null;
+  maxAgents?: number;
+  agentTimeoutMs: number | null;
+  concurrency: number;
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
@@ -84,7 +90,7 @@ export interface ExecOptions {
   /** Sampled workflow structured-output capability for this execution. */
   structuredOutputEnabled?: boolean;
   /** Replay these journaled agent results for the unchanged prefix (resume). */
-  resumeJournal?: Map<number, JournalEntry>;
+  resumeJournal?: Map<number | string, JournalEntry>;
   /** Cap on total agents for this run. */
   maxAgents?: number;
   /** Per-agent timeout in milliseconds. null/omitted means no hard timeout. */
@@ -155,10 +161,17 @@ export interface WorkflowManagerOptions {
   /** Internal timing seams for deterministic lease-heartbeat tests. */
   leaseHeartbeatIntervalMs?: number;
   leaseStaleAfterMs?: number;
+  /** Number of terminal runs whose heavy live snapshots remain in memory. */
+  maxTerminalRunsInMemory?: number;
 }
+
+const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "aborted"]);
+const DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY = 20;
 
 export class WorkflowManager extends EventEmitter {
   private runs = new Map<string, ManagedRun>();
+  private terminalRunQueue: string[] = [];
+  private maxTerminalRunsInMemory: number;
   private pendingPersistenceTimers = new Map<string, NodeJS.Timeout>();
   private persistence?: RunPersistence;
   private persistenceFactory: (cwd: string) => RunPersistence;
@@ -228,6 +241,11 @@ export class WorkflowManager extends EventEmitter {
     this.persistenceFactory = options.persistenceFactory ?? createRunPersistence;
     this.leaseHeartbeatIntervalMs = options.leaseHeartbeatIntervalMs ?? RUN_LEASE_HEARTBEAT_INTERVAL_MS;
     this.leaseStaleAfterMs = options.leaseStaleAfterMs ?? RUN_LEASE_STALE_AFTER_MS;
+    const terminalLimit = options.maxTerminalRunsInMemory ?? DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY;
+    if (!Number.isSafeInteger(terminalLimit) || terminalLimit < 0) {
+      throw new Error("maxTerminalRunsInMemory must be a non-negative safe integer.");
+    }
+    this.maxTerminalRunsInMemory = terminalLimit;
   }
 
   initialize(): void {
@@ -418,6 +436,11 @@ export class WorkflowManager extends EventEmitter {
       journal: [],
       ...(Object.keys(executionPolicy).length ? { executionPolicy } : {}),
       background: true,
+      agentsById: new Map(),
+      tokenBudget: exec.tokenBudget,
+      maxAgents: exec.maxAgents,
+      agentTimeoutMs: exec.agentTimeoutMs !== undefined ? exec.agentTimeoutMs : this.defaultAgentTimeoutMs,
+      concurrency: exec.concurrency ?? this.concurrency,
       lease,
     };
 
@@ -441,6 +464,10 @@ export class WorkflowManager extends EventEmitter {
         startedAt: managed.startedAt.toISOString(),
         updatedAt: managed.startedAt.toISOString(),
         ...(managed.executionPolicy ? { executionPolicy: managed.executionPolicy } : {}),
+        tokenBudget: managed.tokenBudget,
+        maxAgents: managed.maxAgents,
+        agentTimeoutMs: managed.agentTimeoutMs,
+        concurrency: managed.concurrency,
       };
       persistence.save(initialState, lease);
       this.persistedSummaries.set(runId, summarizePersistedRun(lease.projectId, initialState));
@@ -469,7 +496,7 @@ export class WorkflowManager extends EventEmitter {
    */
   async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
     const persistence = this.repository();
-    const managed = this.createManaged(script, args);
+    const managed = this.createManaged(script, args, exec);
     const executionPolicy = normalizeExecutionPolicy(exec);
     if (Object.keys(executionPolicy).length) managed.executionPolicy = executionPolicy;
     const lease = persistence.acquireRunLease(managed.runId, "new");
@@ -503,7 +530,7 @@ export class WorkflowManager extends EventEmitter {
   }
 
   /** Build a fresh managed run with an empty snapshot. */
-  private createManaged(script: string, args?: unknown): ManagedRun {
+  private createManaged(script: string, args: unknown, exec: ExecOptions): ManagedRun {
     const parsed = parseWorkflowScript(script);
     const admittedWorkflowModel = this.admitWorkflowModel();
     const slug = parsed.meta.name
@@ -541,6 +568,11 @@ export class WorkflowManager extends EventEmitter {
       args,
       journal: [],
       background: false,
+      agentsById: new Map(),
+      tokenBudget: exec.tokenBudget,
+      maxAgents: exec.maxAgents,
+      agentTimeoutMs: exec.agentTimeoutMs !== undefined ? exec.agentTimeoutMs : this.defaultAgentTimeoutMs,
+      concurrency: exec.concurrency ?? this.concurrency,
     };
   }
 
@@ -552,12 +584,8 @@ export class WorkflowManager extends EventEmitter {
   ): Promise<WorkflowRunResult> {
     const {
       resumeJournal,
-      maxAgents,
-      agentTimeoutMs,
       externalSignal,
       onProgress,
-      tokenBudget,
-      concurrency,
       hostRetryPolicy,
       structuredOutputEnabled,
       confirm,
@@ -565,8 +593,8 @@ export class WorkflowManager extends EventEmitter {
       onPhase,
     } = exec;
     const runTools = tools ?? managed.tools;
-    const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
-    const resolvedConcurrency = concurrency ?? this.concurrency;
+    const resolvedAgentTimeoutMs = managed.agentTimeoutMs;
+    const resolvedConcurrency = managed.concurrency;
     const progress = () => onProgress?.(managed.snapshot);
     // Let a host abort (e.g. Esc during a blocking tool call) cancel this run.
     if (externalSignal) {
@@ -576,6 +604,7 @@ export class WorkflowManager extends EventEmitter {
     try {
       const result = await runWorkflow(script, {
         cwd: this.cwd,
+        runId: managed.runId,
         persistLogs: false,
         args,
         agent: this.agent,
@@ -605,16 +634,32 @@ export class WorkflowManager extends EventEmitter {
         signal: managed.controller.signal,
         concurrency: resolvedConcurrency,
         agentRunRetries: managed.executionPolicy?.agentRunRetries,
-        maxAgents,
+        maxAgents: managed.maxAgents,
         agentTimeoutMs: resolvedAgentTimeoutMs,
-        tokenBudget,
+        tokenBudget: managed.tokenBudget,
+        initialTokenUsage: exec.resumeJournal
+          ? {
+              input: managed.snapshot.tokenUsage?.input ?? 0,
+              output: managed.snapshot.tokenUsage?.output ?? 0,
+              total: managed.snapshot.tokenUsage?.total ?? 0,
+              cost: managed.snapshot.tokenUsage?.cost ?? 0,
+              cacheRead: managed.snapshot.tokenUsage?.cacheRead ?? 0,
+              cacheWrite: managed.snapshot.tokenUsage?.cacheWrite ?? 0,
+            }
+          : undefined,
+        onTokenUsageProgress: (usage) => {
+          managed.snapshot.tokenUsage = usage;
+          this.persistRun(managed);
+        },
         confirm,
         loadSavedWorkflow: this.loadSavedWorkflow,
         resumeJournal,
         resumeFromRunId: resumeJournal ? managed.runId : undefined,
         onAgentJournal: (entry) => {
           // Append (crash-safe-ish): keep the latest entry per index, then persist.
-          managed.journal = managed.journal.filter((e) => e.index !== entry.index);
+          managed.journal = managed.journal.filter(
+            (existing) => existing.index !== entry.index || existing.runId !== entry.runId,
+          );
           managed.journal.push(entry);
           this.persistRun(managed);
         },
@@ -633,7 +678,7 @@ export class WorkflowManager extends EventEmitter {
           onPhase?.(title);
         },
         onAgentStart: (event) => {
-          managed.snapshot.agents.push({
+          const agentSnapshot: WorkflowAgentSnapshot = {
             id: managed.snapshot.agents.length + 1,
             label: event.label,
             phase: event.phase,
@@ -642,15 +687,15 @@ export class WorkflowManager extends EventEmitter {
             startedAt: new Date().toISOString(),
             model: event.model,
             effort: event.effort,
-          });
+          };
+          managed.snapshot.agents.push(agentSnapshot);
+          managed.agentsById.set(event.id, agentSnapshot);
           this.emit("agentStart", { runId: managed.runId, ...event });
           this.scheduleRunPersistence(managed);
           progress();
         },
         onAgentEnd: (event) => {
-          const agent = [...managed.snapshot.agents]
-            .reverse()
-            .find((a) => a.label === event.label && a.status === "running");
+          const agent = managed.agentsById.get(event.id);
           if (agent) {
             agent.status = event.cancelled ? "skipped" : event.result === null ? "error" : "done";
             agent.endedAt = new Date().toISOString();
@@ -667,9 +712,7 @@ export class WorkflowManager extends EventEmitter {
           progress();
         },
         onAgentHistory: (event) => {
-          const agent = [...managed.snapshot.agents]
-            .reverse()
-            .find((a) => a.label === event.label && a.status === "running");
+          const agent = managed.agentsById.get(event.id);
           if (agent) {
             agent.history = event.history;
           }
@@ -688,6 +731,7 @@ export class WorkflowManager extends EventEmitter {
       this.persistRun(managed);
       if (!managed.leaseLost) this.emit("complete", { runId: managed.runId, result });
       this.finalizeRunLease(managed);
+      this.recordTerminalRun(managed.runId);
 
       return result;
     } catch (error) {
@@ -734,6 +778,7 @@ export class WorkflowManager extends EventEmitter {
       }
 
       this.finalizeRunLease(managed);
+      if (TERMINAL_RUN_STATUSES.has(managed.status)) this.recordTerminalRun(managed.runId);
 
       throw workflowError;
     }
@@ -751,6 +796,16 @@ export class WorkflowManager extends EventEmitter {
 
   private finalizeRunLease(managed: ManagedRun): void {
     if (managed.finalizationIntent !== "delete") this.releaseRunLease(managed);
+  }
+
+  private recordTerminalRun(runId: string): void {
+    this.terminalRunQueue.push(runId);
+    while (this.terminalRunQueue.length > this.maxTerminalRunsInMemory) {
+      const oldest = this.terminalRunQueue.shift();
+      if (oldest === undefined) break;
+      const current = this.runs.get(oldest);
+      if (current && TERMINAL_RUN_STATUSES.has(current.status)) this.runs.delete(oldest);
+    }
   }
 
   private startLeaseHeartbeat(managed: ManagedRun): void {
@@ -796,6 +851,10 @@ export class WorkflowManager extends EventEmitter {
       sessionId: managed.sessionId,
       journal: managed.journal,
       ...(managed.executionPolicy ? { executionPolicy: managed.executionPolicy } : {}),
+      tokenBudget: managed.tokenBudget,
+      maxAgents: managed.maxAgents,
+      agentTimeoutMs: managed.agentTimeoutMs,
+      concurrency: managed.concurrency,
       status: managed.status,
       pauseReason:
         managed.status === "paused" && managed.error?.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT
@@ -975,6 +1034,16 @@ export class WorkflowManager extends EventEmitter {
         runningCount: 0,
         doneCount: 0,
         errorCount: 0,
+        tokenUsage: persisted.tokenUsage
+          ? {
+              input: persisted.tokenUsage.input,
+              output: persisted.tokenUsage.output,
+              total: persisted.tokenUsage.total,
+              cost: persisted.tokenUsage.cost ?? 0,
+              cacheRead: persisted.tokenUsage.cacheRead ?? 0,
+              cacheWrite: persisted.tokenUsage.cacheWrite ?? 0,
+            }
+          : undefined,
       },
       controller,
       startedAt: new Date(),
@@ -984,6 +1053,11 @@ export class WorkflowManager extends EventEmitter {
       journal: persisted.journal ?? [],
       executionPolicy: persisted.executionPolicy,
       background: true,
+      agentsById: new Map(),
+      tokenBudget: persisted.tokenBudget,
+      maxAgents: persisted.maxAgents,
+      agentTimeoutMs: persisted.agentTimeoutMs !== undefined ? persisted.agentTimeoutMs : this.defaultAgentTimeoutMs,
+      concurrency: persisted.concurrency ?? this.concurrency,
       lease,
     };
     this.runs.set(runId, managed);
@@ -997,10 +1071,19 @@ export class WorkflowManager extends EventEmitter {
       throw error;
     }
 
-    const resumeJournal = new Map((persisted.journal ?? []).map((e) => [e.index, e] as const));
+    const resumeJournal = new Map(
+      (persisted.journal ?? []).map((entry) => [`${entry.runId ?? persisted.runId}:${entry.index}`, entry] as const),
+    );
     this.emit("resumed", { runId });
     // Run in the background; executeRun records status/errors on the managed run.
-    void this.beginExecution(managed, persisted.script, persisted.args, { ...exec, resumeJournal }).catch(() => {});
+    void this.beginExecution(managed, persisted.script, persisted.args, {
+      ...exec,
+      tokenBudget: managed.tokenBudget,
+      maxAgents: managed.maxAgents,
+      agentTimeoutMs: managed.agentTimeoutMs,
+      concurrency: managed.concurrency,
+      resumeJournal,
+    }).catch(() => {});
     return true;
   }
 
@@ -1011,10 +1094,12 @@ export class WorkflowManager extends EventEmitter {
     const managed = this.getRun(runId);
     if (!managed || (managed.status !== "running" && managed.status !== "paused")) return false;
 
+    const wasPaused = managed.status === "paused";
     managed.controller.abort();
     managed.status = "aborted";
     this.persistRun(managed);
     this.emit("stopped", { runId });
+    if (wasPaused) this.recordTerminalRun(runId);
     return true;
   }
 

@@ -46,6 +46,10 @@ function state(runId = "run-1", sessionId: string | undefined = "session-1"): Pe
     logs: ["private log"],
     journal: [{ index: 0, hash: "abc", result: "private result" }],
     tokenUsage: { input: 1, output: 2, total: 3, cost: 0.01, cacheRead: 4, cacheWrite: 5 },
+    tokenBudget: 100,
+    maxAgents: 7,
+    agentTimeoutMs: 2500,
+    concurrency: 3,
     startedAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   };

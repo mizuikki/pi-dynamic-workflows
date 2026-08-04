@@ -32,6 +32,7 @@ export class SharedStore {
   // `${runId}:${callIndex}` string (see class doc) so nested workflow() runs
   // sharing this store can't collide on a bare callIndex.
   private readonly agentDeltas = new Map<string, Record<string, unknown>>();
+  private readonly priorValues = new Map<string, Map<string, { existed: boolean; value: unknown }>>();
 
   /** Store a value under `key`. Overwrites any existing value. */
   put(key: string, value: unknown): void {
@@ -45,6 +46,17 @@ export class SharedStore {
    * writes can be journaled and replayed independently.
    */
   trackPut(key: string, value: unknown, deltaKey: string): void {
+    let priors = this.priorValues.get(deltaKey);
+    if (!priors) {
+      priors = new Map();
+      this.priorValues.set(deltaKey, priors);
+    }
+    if (!priors.has(key)) {
+      priors.set(
+        key,
+        this.map.has(key) ? { existed: true, value: this.map.get(key) } : { existed: false, value: undefined },
+      );
+    }
     this.map.set(key, value);
     let delta = this.agentDeltas.get(deltaKey);
     if (!delta) {
@@ -76,7 +88,23 @@ export class SharedStore {
   commitDelta(deltaKey: string): Record<string, unknown> {
     const delta = this.agentDeltas.get(deltaKey) ?? {};
     this.agentDeltas.delete(deltaKey);
+    this.priorValues.delete(deltaKey);
     return delta;
+  }
+
+  /** Roll back one failed attempt without overwriting a newer sibling write. */
+  discardDelta(deltaKey: string): void {
+    const delta = this.agentDeltas.get(deltaKey);
+    if (!delta) return;
+    const priors = this.priorValues.get(deltaKey);
+    for (const [key, attemptedValue] of Object.entries(delta)) {
+      if (!Object.is(this.map.get(key), attemptedValue)) continue;
+      const prior = priors?.get(key);
+      if (prior?.existed) this.map.set(key, prior.value);
+      else this.map.delete(key);
+    }
+    this.agentDeltas.delete(deltaKey);
+    this.priorValues.delete(deltaKey);
   }
 
   /**
@@ -105,6 +133,7 @@ export class SharedStore {
   dispose(): void {
     this.map.clear();
     this.agentDeltas.clear();
+    this.priorValues.clear();
   }
 }
 
