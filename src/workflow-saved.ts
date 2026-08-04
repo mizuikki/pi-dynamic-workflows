@@ -162,7 +162,7 @@ export function createWorkflowStorage(cwd: string, fsOverride: Partial<WorkflowS
     const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
     try {
       fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), { encoding: "utf-8", mode: 0o600 });
-      const file = fs.openSync(temporaryPath, "r");
+      const file = fs.openSync(temporaryPath, "r+");
       try {
         fs.fsyncSync(file);
       } finally {
@@ -178,6 +178,18 @@ export function createWorkflowStorage(cwd: string, fsOverride: Partial<WorkflowS
       }
       throw error;
     }
+  };
+
+  const deleteArtifacts = (path: string): boolean => {
+    let deleted = false;
+    // Remove the fallback first so a failed primary unlink cannot resurrect a
+    // workflow through loadFromFile()'s backup recovery path.
+    for (const candidate of [`${path}.bak`, path]) {
+      if (!fs.existsSync(candidate)) continue;
+      fs.unlinkSync(candidate);
+      deleted = true;
+    }
+    return deleted;
   };
 
   return {
@@ -255,18 +267,10 @@ export function createWorkflowStorage(cwd: string, fsOverride: Partial<WorkflowS
 
       for (const loc of locations) {
         const path = workflowPath(name, loc);
-        if (fs.existsSync(path)) {
-          fs.unlinkSync(path);
-          deleted = true;
-        }
-        if (fs.existsSync(`${path}.bak`)) fs.unlinkSync(`${path}.bak`);
+        deleted = deleteArtifacts(path) || deleted;
         if (loc === "project") {
           const legacyPath = legacyProjectWorkflowPath(name);
-          if (fs.existsSync(legacyPath)) {
-            fs.unlinkSync(legacyPath);
-            deleted = true;
-          }
-          if (fs.existsSync(`${legacyPath}.bak`)) fs.unlinkSync(`${legacyPath}.bak`);
+          deleted = deleteArtifacts(legacyPath) || deleted;
         }
       }
 

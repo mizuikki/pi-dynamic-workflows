@@ -102,6 +102,18 @@ test("SharedStore.discardDelta preserves a later sibling write to the same key",
   assert.deepEqual(store.commitDelta("run:1"), { k: "sibling" });
 });
 
+test("SharedStore.discardDelta preserves a later equal-valued sibling write", () => {
+  const store = new SharedStore();
+  store.put("k", "before");
+  store.trackPut("k", "same-value", "run:0");
+  store.trackPut("k", "same-value", "run:1");
+
+  store.discardDelta("run:0");
+
+  assert.equal(store.get("k"), "same-value");
+  assert.deepEqual(store.commitDelta("run:1"), { k: "same-value" });
+});
+
 // ─── Delta-key collision regression (defect: nested workflow() shares a store
 // but restarts callSeq at 0) ───────────────────────────────────────────────────
 

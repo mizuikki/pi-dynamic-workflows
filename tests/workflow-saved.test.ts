@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
@@ -184,6 +184,37 @@ test(
 );
 
 test(
+  "createWorkflowStorage delete removes a backup-only workflow",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd);
+    storage.save({ name: "backup-only", description: "d", script: "d" });
+    const path = join(workflowProjectPaths(cwd).savedDir, "backup-only.json");
+    unlinkSync(path);
+
+    assert.ok(storage.load("backup-only"), "the backup remains loadable");
+    assert.equal(storage.delete("backup-only"), true);
+    assert.equal(storage.load("backup-only"), null);
+  }),
+);
+
+test(
+  "createWorkflowStorage keeps the primary when backup deletion fails",
+  withIsolatedHome(async (cwd) => {
+    const good = createWorkflowStorage(cwd);
+    good.save({ name: "delete-failure", description: "d", script: "d" });
+    const failing = createWorkflowStorage(cwd, {
+      unlinkSync: (path) => {
+        if (String(path).endsWith(".bak")) throw new Error("simulated backup unlink failure");
+        unlinkSync(path);
+      },
+    });
+
+    assert.throws(() => failing.delete("delete-failure"), /simulated backup unlink failure/);
+    assert.ok(good.load("delete-failure"), "the primary remains loadable after the failed delete");
+  }),
+);
+
+test(
   "createWorkflowStorage delete returns false for nonexistent",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
@@ -311,6 +342,22 @@ test(
     const recovered = storage.load("recoverable");
     assert.equal(recovered?.description, "good");
     assert.equal(recovered?.script, "good script");
+  }),
+);
+
+test(
+  "createWorkflowStorage opens the temporary file read-write before fsync",
+  withIsolatedHome(async (cwd) => {
+    let flags: string | number | undefined;
+    const storage = createWorkflowStorage(cwd, {
+      openSync: (path, requestedFlags) => {
+        flags = requestedFlags;
+        return openSync(path, requestedFlags);
+      },
+    });
+
+    storage.save({ name: "fsync-mode", description: "d", script: "d" });
+    assert.equal(flags, "r+");
   }),
 );
 

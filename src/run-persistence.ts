@@ -284,6 +284,7 @@ function validateState(state: PersistedRunState): void {
     for (const entry of state.journal) {
       if (!entry || typeof entry !== "object") fail("INVALID_RUN_STATE", "Run journal is invalid.");
       validInteger(entry.index, "journal index");
+      validOptionalString(entry.runId, "journal run id");
       validString(entry.hash, "journal hash");
     }
   }

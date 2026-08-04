@@ -799,6 +799,7 @@ export class WorkflowManager extends EventEmitter {
   }
 
   private recordTerminalRun(runId: string): void {
+    this.terminalRunQueue = this.terminalRunQueue.filter((queuedRunId) => queuedRunId !== runId);
     this.terminalRunQueue.push(runId);
     while (this.terminalRunQueue.length > this.maxTerminalRunsInMemory) {
       const oldest = this.terminalRunQueue.shift();

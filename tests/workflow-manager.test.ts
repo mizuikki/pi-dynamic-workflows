@@ -77,6 +77,20 @@ function seedRun(cwd: string, state: PersistedRunState) {
   repository.close();
 }
 
+async function waitForRunStatus(
+  manager: WorkflowManager,
+  runId: string,
+  expected: PersistedRunState["status"],
+): Promise<PersistedRunState> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const persisted = manager.loadRun(runId);
+    if (persisted?.status === expected) return persisted;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`Run ${runId} did not reach ${expected} before the timeout.`);
+}
+
 /** Run each manager test with isolated cwd and HOME so workflow state is isolated. */
 function withTempCwd(fn: (cwd: string) => Promise<void>) {
   return async () => {
@@ -1319,16 +1333,14 @@ test(
     manager.on("error", () => {});
 
     assert.equal(await manager.resume(runId), true);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    const persisted = await waitForRunStatus(manager, runId, "failed");
 
     assert.equal(calls, 0);
-    const persisted = manager.loadRun(runId);
-    assert.equal(persisted?.status, "failed");
-    assert.equal(persisted?.tokenBudget, 10);
-    assert.equal(persisted?.maxAgents, 1);
-    assert.equal(persisted?.agentTimeoutMs, 25);
-    assert.equal(persisted?.concurrency, 1);
-    assert.deepEqual(persisted?.executionPolicy, { agentRunRetries: 1 });
+    assert.equal(persisted.tokenBudget, 10);
+    assert.equal(persisted.maxAgents, 1);
+    assert.equal(persisted.agentTimeoutMs, 25);
+    assert.equal(persisted.concurrency, 1);
+    assert.deepEqual(persisted.executionPolicy, { agentRunRetries: 1 });
   }),
 );
 
@@ -2336,5 +2348,36 @@ test(
     assert.equal(await manager.deleteRun(unique[0] as string), "deleted");
     assert.equal(manager.loadRun(unique[0] as string), null);
     assert.equal(manager.listRuns().length, 3);
+  }),
+);
+
+test(
+  "terminal run retention keeps a resumed run only once in the eviction queue",
+  withTempCwd(async (cwd) => {
+    let shouldFail = true;
+    const manager = new WorkflowManager({
+      cwd,
+      maxTerminalRunsInMemory: 2,
+      agent: {
+        async run() {
+          if (shouldFail) {
+            throw new WorkflowError("first attempt failed", WorkflowErrorCode.UNKNOWN, { recoverable: false });
+          }
+          return "ok";
+        },
+      },
+    });
+    manager.on("error", () => {});
+
+    await assert.rejects(() => manager.runSync(oneAgentScript), /first attempt failed/);
+    const failedRunId = manager.listRuns().find((run) => run.status === "failed")?.runId;
+    assert.ok(failedRunId);
+
+    shouldFail = false;
+    await manager.runSync(oneAgentScript);
+    assert.equal(await manager.resume(failedRunId), true);
+    await waitForRunStatus(manager, failedRunId, "completed");
+
+    assert.ok(manager.getRun(failedRunId), "the resumed terminal run remains in the bounded live set");
   }),
 );

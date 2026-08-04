@@ -313,6 +313,21 @@ test("payload v1 rejects non-canonical or invalid execution policy", async () =>
   });
 });
 
+test("payload v1 rejects a non-string journal run ID", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    const lease = repository.acquireRunLease("invalid-journal-owner", "new");
+    assert.ok(lease);
+    const invalid = state("invalid-journal-owner");
+    invalid.journal = [{ index: 0, runId: 42 as never, hash: "abc", result: "result" }];
+
+    assert.throws(() => repository.save(invalid, lease), /journal run id/);
+    assert.equal(repository.getSummary("invalid-journal-owner"), null);
+    repository.releaseRunLease(lease);
+    repository.close();
+  });
+});
+
 test("two projects share one database without crossing payloads", async () => {
   await isolated((_home, cwd, path) => {
     const otherCwd = mkdtempSync(join(tmpdir(), "pi-dw-other-"));
