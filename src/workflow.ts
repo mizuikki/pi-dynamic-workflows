@@ -60,6 +60,8 @@ export interface WorkflowMeta {
 /** One cached agent() result, keyed by its deterministic call index. */
 export interface JournalEntry {
   index: number;
+  /** Workflow frame that owns this index; absent only on legacy payloads. */
+  runId?: string;
   /** sha256 of the call's identity (prompt + model + effort + phase + agentType + schema). */
   hash: string;
   result: unknown;
@@ -83,6 +85,9 @@ export interface SharedRuntime {
   spent: number;
   tokenUsage: { input: number; output: number; total: number; cost: number; cacheRead: number; cacheWrite: number };
   depth: number;
+  nestedCallSeq: number;
+  runFatalController: AbortController;
+  inFlight: Set<Promise<unknown>>;
 }
 
 export interface SettledWorkflowError {
@@ -128,6 +133,15 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   /** Run-level partial override for Pi child agent-turn retry. */
   agentTurnRetry?: AgentTurnRetryOverride;
   tokenBudget?: number | null;
+  /** Cumulative usage already spent before a resumed execution starts. */
+  initialTokenUsage?: {
+    input: number;
+    output: number;
+    total: number;
+    cost: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
   signal?: AbortSignal;
   /** Maximum number of agents allowed in this run. Default: 1000 */
   maxAgents?: number;
@@ -138,7 +152,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   /** Run ID for persistence. Auto-generated if not provided. */
   runId?: string;
   /** Resume: cached agent results keyed by deterministic call index. */
-  resumeJournal?: Map<number, JournalEntry>;
+  resumeJournal?: Map<number | string, JournalEntry>;
   /** Resume: the run being resumed (informational; enables resume mode). */
   resumeFromRunId?: string;
   /** Called after each live agent completes so the caller can persist the journal. */
@@ -162,6 +176,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: {
+    id: string;
     label: string;
     phase?: string;
     prompt: string;
@@ -169,6 +184,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     effort?: ModelThinkingLevel;
   }) => void;
   onAgentEnd?: (event: {
+    id: string;
     label: string;
     phase?: string;
     result: unknown;
@@ -181,7 +197,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     recoverable?: boolean;
     cancelled?: boolean;
   }) => void;
-  onAgentHistory?: (event: { label: string; phase?: string; history: AgentHistoryEntry[] }) => void;
+  onAgentHistory?: (event: { id: string; label: string; phase?: string; history: AgentHistoryEntry[] }) => void;
   onTokenUsage?: (usage: {
     input: number;
     output: number;
@@ -190,6 +206,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     cacheRead?: number;
     cacheWrite?: number;
   }) => void;
+  /** Progressive cumulative usage, including failed retry attempts. */
+  onTokenUsageProgress?: (usage: SharedRuntime["tokenUsage"]) => void;
 }
 
 export interface WorkflowRunResult<T = unknown> {
@@ -407,11 +425,17 @@ export async function runWorkflow<T = unknown>(
   const shared: SharedRuntime = options.sharedRuntime ?? {
     limiter: createLimiter(concurrency),
     agentCount: 0,
-    spent: 0,
-    tokenUsage: { input: 0, output: 0, total: 0, cost: 0, cacheRead: 0, cacheWrite: 0 },
+    spent: options.initialTokenUsage?.total ?? 0,
+    tokenUsage: options.initialTokenUsage
+      ? { ...options.initialTokenUsage }
+      : { input: 0, output: 0, total: 0, cost: 0, cacheRead: 0, cacheWrite: 0 },
     depth: 0,
+    nestedCallSeq: 0,
+    runFatalController: new AbortController(),
+    inFlight: new Set(),
   };
   const limiter = shared.limiter;
+  const isTopLevelRun = options.sharedRuntime === undefined;
 
   // One store instance per run; nested workflow() calls inherit the parent's store
   // so all agents across nesting levels share the same key-value space.
@@ -444,12 +468,12 @@ export async function runWorkflow<T = unknown>(
   });
 
   const throwIfAborted = () => {
-    if (currentExecutionSignal()?.aborted) {
+    if (currentExecutionSignal()?.aborted || shared.runFatalController.signal.aborted) {
       throw new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
     }
   };
 
-  const agent = async (prompt: string, agentOptions: AgentOptions = {}) => {
+  const agentImpl = async (prompt: string, agentOptions: AgentOptions = {}) => {
     const executionSignal = currentExecutionSignal();
     throwIfAborted();
     const perAgentTurnRetry = normalizeAgentTurnRetryOverride(agentOptions.agentTurnRetry, "agent.agentTurnRetry");
@@ -551,6 +575,13 @@ export async function runWorkflow<T = unknown>(
     const effectiveSchema = structuredOutputEnabled ? requestedSchema : undefined;
     const effectiveAgentOptions =
       effectiveSchema === requestedSchema ? agentOptions : { ...agentOptions, schema: undefined };
+    if (effectiveSchema && (effectiveSchema as { type?: unknown }).type !== "object") {
+      throw new WorkflowError(
+        `agent() opts.schema must be a top-level JSON object schema (type: "object") - got type: ${(effectiveSchema as { type?: unknown }).type ?? "undefined"}`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false, agentLabel: label },
+      );
+    }
     if (requestedSchema !== undefined && !structuredOutputEnabled) {
       log(`${label}: opts.schema ignored because workflow structured output is disabled; using text output`);
     }
@@ -616,7 +647,8 @@ export async function runWorkflow<T = unknown>(
     // call. Once any call misses, it AND everything after it run live (matching
     // Claude Code's contract), so an edited upstream call never leaves stale
     // downstream results served from the journal.
-    const cached = options.resumeJournal?.get(callIndex);
+    const cached =
+      options.resumeJournal?.get(deltaKey) ?? (isTopLevelRun ? options.resumeJournal?.get(callIndex) : undefined);
     const hashMatches = cached != null && cached.hash === callHash;
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, effectiveAgentOptions.schema);
     if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
@@ -628,6 +660,7 @@ export async function runWorkflow<T = unknown>(
       }
       if (displayModel) log(`${label}: ${displayModel} @ ${displayEffort ?? "session effort"}`);
       options.onAgentStart?.({
+        id: deltaKey,
         label,
         phase: assignedPhase,
         prompt,
@@ -635,6 +668,7 @@ export async function runWorkflow<T = unknown>(
         effort: displayEffort,
       });
       options.onAgentEnd?.({
+        id: deltaKey,
         label,
         phase: assignedPhase,
         result: cached.result,
@@ -661,6 +695,7 @@ export async function runWorkflow<T = unknown>(
       }
       if (displayModel) log(`${label}: ${displayModel} @ ${displayEffort ?? "session effort"}`);
       options.onAgentStart?.({
+        id: deltaKey,
         label,
         phase: assignedPhase,
         prompt,
@@ -699,12 +734,22 @@ export async function runWorkflow<T = unknown>(
         }
         shared.tokenUsage.total += tokens;
         shared.spent += tokens;
+        options.onTokenUsageProgress?.({ ...shared.tokenUsage });
         return tokens;
       };
 
       try {
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           usage = undefined;
+          const agentController = new AbortController();
+          const onExecutionAbort = () => agentController.abort();
+          const onRunFatal = () => agentController.abort();
+          if (executionSignal?.aborted || shared.runFatalController.signal.aborted) {
+            agentController.abort();
+          } else {
+            executionSignal?.addEventListener("abort", onExecutionAbort, { once: true });
+            shared.runFatalController.signal.addEventListener("abort", onRunFatal, { once: true });
+          }
           try {
             throwIfAborted();
 
@@ -718,54 +763,59 @@ export async function runWorkflow<T = unknown>(
             );
             const mergedInstructions =
               [baseInstructions, contextInstructions].filter(Boolean).join("\n\n") || undefined;
-            const result = await withTimeout(
-              agentRunner.run(agentPrompt, {
-                label,
-                // Identifiable name for persisted sessions (persistAgentSessions).
-                sessionName: `workflow:${runId} ${label}`,
-                schema: effectiveAgentOptions.schema,
-                structuredOutputEnabled,
-                signal: executionSignal,
-                instructions: mergedInstructions,
-                agentType: agentOptions.agentType,
-                // Only skip when this run pre-applied context for the resume hash.
-                // Keeps constructor-level loaders working for custom agent runners.
-                // Pass env separately so nested bash still gets TRELLIS_CONTEXT_ID.
-                ...(loadedContext
-                  ? { skipContextLoading: true as const, ...(loadedEnv ? { env: loadedEnv } : {}) }
-                  : {}),
-                model: modelSelection?.model,
-                effort: modelSelection?.effort,
-                modelRegistry: options.modelRegistry,
-                agentTurnRetry: perAgentTurnRetry,
-                toolNames: agentDef?.tools,
-                disallowedToolNames: agentDef?.disallowedTools,
-                // Per-agent store tools track this agent's writes by the
-                // run-unique deltaKey so the delta can be journaled and replayed
-                // correctly on resume, even when a nested workflow() run shares
-                // this store concurrently with the parent run.
-                systemTools: [
-                  ...createAgentStoreTools(store, deltaKey),
-                  ...(loadedKeel?.contextTools?.map((binding) => binding.tool) ?? []),
-                ],
-                ...(loadedKeel ? { keelInvocation: loadedKeel.invocation } : {}),
-                cwd: runCwd,
-                onModelResolved: (id: string) => {
-                  displayModel = id;
-                },
-                onEffortResolved: (effort: ModelThinkingLevel) => {
-                  displayEffort = effort;
-                },
-                onUsage: (u: AgentUsage) => {
-                  usage = u;
-                },
-                onHistory: (history: AgentHistoryEntry[]) => {
-                  options.onAgentHistory?.({ label, phase: assignedPhase, history });
-                },
-              }),
-              timeout,
+            const runPromise = agentRunner.run(agentPrompt, {
               label,
-            );
+              // Identifiable name for persisted sessions (persistAgentSessions).
+              sessionName: `workflow:${runId} ${label}`,
+              schema: effectiveAgentOptions.schema,
+              structuredOutputEnabled,
+              signal: agentController.signal,
+              instructions: mergedInstructions,
+              agentType: agentOptions.agentType,
+              // Only skip when this run pre-applied context for the resume hash.
+              // Keeps constructor-level loaders working for custom agent runners.
+              // Pass env separately so nested bash still gets TRELLIS_CONTEXT_ID.
+              ...(loadedContext ? { skipContextLoading: true as const, ...(loadedEnv ? { env: loadedEnv } : {}) } : {}),
+              model: modelSelection?.model,
+              effort: modelSelection?.effort,
+              modelRegistry: options.modelRegistry,
+              agentTurnRetry: perAgentTurnRetry,
+              toolNames: agentDef?.tools,
+              disallowedToolNames: agentDef?.disallowedTools,
+              // Per-agent store tools track this agent's writes by the
+              // run-unique deltaKey so the delta can be journaled and replayed
+              // correctly on resume, even when a nested workflow() run shares
+              // this store concurrently with the parent run.
+              systemTools: [
+                ...createAgentStoreTools(store, deltaKey),
+                ...(loadedKeel?.contextTools?.map((binding) => binding.tool) ?? []),
+              ],
+              ...(loadedKeel ? { keelInvocation: loadedKeel.invocation } : {}),
+              cwd: runCwd,
+              onModelResolved: (id: string) => {
+                displayModel = id;
+              },
+              onEffortResolved: (effort: ModelThinkingLevel) => {
+                displayEffort = effort;
+              },
+              onUsage: (u: AgentUsage) => {
+                usage = u;
+              },
+              onHistory: (history: AgentHistoryEntry[]) => {
+                options.onAgentHistory?.({ id: deltaKey, label, phase: assignedPhase, history });
+              },
+            });
+            shared.inFlight.add(runPromise);
+            void runPromise.catch(() => {}).finally(() => shared.inFlight.delete(runPromise));
+            let result: unknown;
+            try {
+              result = await withTimeout(runPromise, timeout, label, () => agentController.abort());
+            } catch (error) {
+              if (error instanceof WorkflowError && error.code === WorkflowErrorCode.AGENT_TIMEOUT) {
+                await runPromise.catch(() => undefined);
+              }
+              throw error;
+            }
 
             throwIfAborted();
             if (isEmptyTextAgentResult(result, effectiveAgentOptions.schema)) {
@@ -778,6 +828,7 @@ export async function runWorkflow<T = unknown>(
             const tokens = recordTokens(result);
             options.onAgentJournal?.({
               index: callIndex,
+              runId,
               hash: callHash,
               result,
               storeDelta: store.commitDelta(deltaKey),
@@ -788,6 +839,7 @@ export async function runWorkflow<T = unknown>(
               });
             }
             options.onAgentEnd?.({
+              id: deltaKey,
               label,
               phase: assignedPhase,
               result,
@@ -798,8 +850,8 @@ export async function runWorkflow<T = unknown>(
             });
             return result;
           } catch (error) {
-            store.commitDelta(deltaKey);
-            if (executionSignal?.aborted) {
+            store.discardDelta(deltaKey);
+            if (executionSignal?.aborted || shared.runFatalController.signal.aborted) {
               const runAborted = options.signal?.aborted === true;
               if (options.keelHost && loadedKeel) {
                 await observeKeelAgentTerminal(options.keelHost, loadedKeel, keelSource, "live", {
@@ -815,6 +867,7 @@ export async function runWorkflow<T = unknown>(
                     { recoverable: true, agentLabel: label },
                   );
               options.onAgentEnd?.({
+                id: deltaKey,
                 label,
                 phase: assignedPhase,
                 result: null,
@@ -851,6 +904,7 @@ export async function runWorkflow<T = unknown>(
             }
 
             options.onAgentEnd?.({
+              id: deltaKey,
               label,
               phase: assignedPhase,
               result: null,
@@ -870,6 +924,9 @@ export async function runWorkflow<T = unknown>(
               return null;
             }
             throw workflowError;
+          } finally {
+            executionSignal?.removeEventListener("abort", onExecutionAbort);
+            shared.runFatalController.signal.removeEventListener("abort", onRunFatal);
           }
         }
         return null;
@@ -878,6 +935,13 @@ export async function runWorkflow<T = unknown>(
         if (worktree?.isolated) await removeWorktree(worktree);
       }
     });
+  };
+
+  const agent = (prompt: string, agentOptions: AgentOptions = {}): Promise<unknown> => {
+    const call = agentImpl(prompt, agentOptions);
+    shared.inFlight.add(call);
+    void call.catch(() => {}).finally(() => shared.inFlight.delete(call));
+    return call;
   };
 
   const parallel = async (thunks: Array<() => Promise<unknown>>) => {
@@ -999,8 +1063,8 @@ export async function runWorkflow<T = unknown>(
         sharedRuntime: shared,
         // Propagate the parent's store so nested agents share the same key-value space.
         sharedStore: store,
-        // A nested run is its own script; never reuse the parent's resume journal.
-        resumeJournal: undefined,
+        // A child may replay only while the parent's unchanged prefix is intact.
+        resumeJournal: state.firstMiss === Number.POSITIVE_INFINITY ? options.resumeJournal : undefined,
         resumeFromRunId: undefined,
         // Nested/background work inherits the parent's admission snapshot and
         // must not consult settings again.
@@ -1008,7 +1072,7 @@ export async function runWorkflow<T = unknown>(
           ? { model: admittedWorkflowModel.model, effort: admittedWorkflowModel.effort }
           : undefined,
         workflowModelSetting: undefined,
-        runId: `${runId}-nested${shared.depth}`,
+        runId: `${runId}-nested${++shared.nestedCallSeq}`,
         persistLogs: false,
       });
       return child.result;
@@ -1192,7 +1256,9 @@ export async function runWorkflow<T = unknown>(
     }
     const callIndex = state.callSeq++;
     const callHash = hashCheckpoint(promptText, checkpointOptions);
-    const cached = options.resumeJournal?.get(callIndex);
+    const journalKey = `${runId}:${callIndex}`;
+    const cached =
+      options.resumeJournal?.get(journalKey) ?? (isTopLevelRun ? options.resumeJournal?.get(callIndex) : undefined);
     if (cached != null && cached.hash === callHash && callIndex < state.firstMiss) {
       shared.agentCount++;
       return cached.result; // replay the journaled human reply
@@ -1213,7 +1279,7 @@ export async function runWorkflow<T = unknown>(
       reply = checkpointOptions.default ?? true;
     }
     throwIfAborted();
-    options.onAgentJournal?.({ index: callIndex, hash: callHash, result: reply });
+    options.onAgentJournal?.({ index: callIndex, runId, hash: callHash, result: reply });
     return reply;
   };
 
@@ -1274,10 +1340,16 @@ export async function runWorkflow<T = unknown>(
         : {}),
       tokenUsage: shared.tokenUsage,
     };
+  } catch (error) {
+    if (isTopLevelRun) shared.runFatalController.abort();
+    throw error;
   } finally {
-    // Dispose the store only when this run created it; nested runs inherit the
-    // parent's store and must not tear it down while the parent is still running.
-    if (!options.sharedStore) store.dispose();
+    if (isTopLevelRun) {
+      while (shared.inFlight.size > 0) {
+        await Promise.allSettled([...shared.inFlight]);
+      }
+      store.dispose();
+    }
   }
 }
 
@@ -1561,13 +1633,23 @@ function normalizeConcurrency(value: unknown): number {
 /**
  * Run a promise with a timeout.
  */
-async function withTimeout<T>(promise: Promise<T>, ms: number | null, label: string): Promise<T> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number | null,
+  label: string,
+  onTimeout?: () => void,
+): Promise<T> {
   if (ms === null) return promise;
 
   let timeoutId: NodeJS.Timeout | undefined;
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
+      try {
+        onTimeout?.();
+      } catch {
+        // Cleanup is best-effort; timeout remains the primary error.
+      }
       reject(
         new WorkflowError(
           `Agent "${label}" timed out after ${ms}ms; raise or omit timeoutMs/agentTimeoutMs to allow longer runs`,

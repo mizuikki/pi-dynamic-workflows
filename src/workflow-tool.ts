@@ -81,7 +81,10 @@ const workflowToolSchema = Type.Object({
     ].join(" "),
   }),
   args: Type.Optional(
-    Type.Any({ description: "Optional JSON value exposed to the workflow script as global `args`." }),
+    Type.Unsafe<Record<string, unknown>>({
+      type: "object",
+      description: "Optional JSON object exposed to the workflow script as global `args`.",
+    }),
   ),
   background: Type.Optional(
     Type.Boolean({
@@ -137,7 +140,7 @@ const workflowToolSchema = Type.Object({
 
 export type WorkflowToolInput = {
   script: string;
-  args?: unknown;
+  args?: Record<string, unknown>;
   background?: boolean;
   maxAgents?: number;
   concurrency?: number;

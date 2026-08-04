@@ -2,8 +2,21 @@
  * Save and load reusable workflow commands.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, join } from "node:path";
 import { workflowProjectPaths, workflowUserSavedDir } from "./workflow-paths.js";
 
 export interface SavedWorkflow {
@@ -34,6 +47,34 @@ export interface WorkflowStorage {
   delete(name: string, location?: "project" | "user"): boolean;
 }
 
+export interface WorkflowStorageFs {
+  existsSync: typeof existsSync;
+  mkdirSync: typeof mkdirSync;
+  readdirSync: typeof readdirSync;
+  readFileSync: typeof readFileSync;
+  writeFileSync: typeof writeFileSync;
+  renameSync: typeof renameSync;
+  copyFileSync: typeof copyFileSync;
+  unlinkSync: typeof unlinkSync;
+  openSync: typeof openSync;
+  fsyncSync: typeof fsyncSync;
+  closeSync: typeof closeSync;
+}
+
+const defaultFs: WorkflowStorageFs = {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  copyFileSync,
+  unlinkSync,
+  openSync,
+  fsyncSync,
+  closeSync,
+};
+
 export function isSafeSavedWorkflowName(name: string): boolean {
   return (
     name.length > 0 &&
@@ -51,15 +92,32 @@ export function assertSafeSavedWorkflowName(name: string): void {
   }
 }
 
-export function createWorkflowStorage(cwd: string): WorkflowStorage {
+function isSavedWorkflowParameters(value: unknown): value is SavedWorkflow["parameters"] {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.values(value).every(
+    (parameter) =>
+      parameter !== null &&
+      typeof parameter === "object" &&
+      !Array.isArray(parameter) &&
+      typeof (parameter as { type?: unknown }).type === "string" &&
+      ((parameter as { description?: unknown }).description === undefined ||
+        typeof (parameter as { description?: unknown }).description === "string") &&
+      ((parameter as { required?: unknown }).required === undefined ||
+        typeof (parameter as { required?: unknown }).required === "boolean"),
+  );
+}
+
+export function createWorkflowStorage(cwd: string, fsOverride: Partial<WorkflowStorageFs> = {}): WorkflowStorage {
+  const fs = { ...defaultFs, ...fsOverride };
   const paths = workflowProjectPaths(cwd);
   const projectDir = paths.savedDir;
   const legacyProjectDir = paths.legacySavedDir;
   const userDir = workflowUserSavedDir();
 
   const ensureDir = (dir: string) => {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
   };
 
@@ -74,25 +132,76 @@ export function createWorkflowStorage(cwd: string): WorkflowStorage {
   };
 
   const loadFromFile = (path: string, location: "project" | "user"): SavedWorkflow | null => {
-    try {
-      if (!existsSync(path)) return null;
-      const data = JSON.parse(readFileSync(path, "utf-8"));
-      if (!data || typeof data !== "object" || !isSafeSavedWorkflowName((data as { name?: string }).name ?? "")) {
+    const read = (candidate: string): Omit<SavedWorkflow, "location" | "path"> | null => {
+      try {
+        if (!fs.existsSync(candidate)) return null;
+        const data = JSON.parse(fs.readFileSync(candidate, "utf-8")) as Record<string, unknown>;
+        if (
+          !data ||
+          typeof data !== "object" ||
+          !isSafeSavedWorkflowName(typeof data.name === "string" ? data.name : "") ||
+          data.name !== basename(path, ".json") ||
+          typeof data.description !== "string" ||
+          typeof data.script !== "string" ||
+          typeof data.savedAt !== "string" ||
+          !Number.isFinite(Date.parse(data.savedAt)) ||
+          !isSavedWorkflowParameters(data.parameters)
+        ) {
+          return null;
+        }
+        return data as unknown as Omit<SavedWorkflow, "location" | "path">;
+      } catch {
         return null;
       }
-      return {
-        ...data,
-        location,
-        path,
-      };
-    } catch {
-      return null;
+    };
+    const data = read(path) ?? read(`${path}.bak`);
+    return data ? { ...data, location, path } : null;
+  };
+
+  const writeAtomic = (path: string, value: unknown): void => {
+    const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
+    try {
+      fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), { encoding: "utf-8", mode: 0o600 });
+      const file = fs.openSync(temporaryPath, "r+");
+      try {
+        fs.fsyncSync(file);
+      } finally {
+        fs.closeSync(file);
+      }
+      fs.renameSync(temporaryPath, path);
+      fs.copyFileSync(path, `${path}.bak`);
+    } catch (error) {
+      try {
+        if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+      } catch {
+        // Preserve the primary write error.
+      }
+      throw error;
     }
+  };
+
+  const deleteArtifacts = (path: string): boolean => {
+    let deleted = false;
+    // Remove the fallback first so a failed primary unlink cannot resurrect a
+    // workflow through loadFromFile()'s backup recovery path.
+    for (const candidate of [`${path}.bak`, path]) {
+      if (!fs.existsSync(candidate)) continue;
+      fs.unlinkSync(candidate);
+      deleted = true;
+    }
+    return deleted;
   };
 
   return {
     save(workflow, location = "project") {
       assertSafeSavedWorkflowName(workflow.name);
+      if (
+        typeof workflow.description !== "string" ||
+        typeof workflow.script !== "string" ||
+        !isSavedWorkflowParameters(workflow.parameters)
+      ) {
+        throw new Error("Saved workflow description, script, or parameters are invalid.");
+      }
       const dir = location === "project" ? projectDir : userDir;
       ensureDir(dir);
 
@@ -104,7 +213,7 @@ export function createWorkflowStorage(cwd: string): WorkflowStorage {
         savedAt: new Date().toISOString(),
       };
 
-      writeFileSync(path, JSON.stringify(saved, null, 2));
+      writeAtomic(path, saved);
       return saved;
     },
 
@@ -127,8 +236,14 @@ export function createWorkflowStorage(cwd: string): WorkflowStorage {
 
       const seen = new Set<string>();
       const addDir = (dir: string, location: "project" | "user") => {
-        if (!existsSync(dir)) return;
-        for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+        if (!fs.existsSync(dir)) return;
+        let files: string[];
+        try {
+          files = fs.readdirSync(dir).filter((file) => file.endsWith(".json"));
+        } catch {
+          return;
+        }
+        for (const file of files) {
           const wf = loadFromFile(join(dir, file), location);
           if (wf && !seen.has(wf.name)) {
             seen.add(wf.name);
@@ -152,16 +267,10 @@ export function createWorkflowStorage(cwd: string): WorkflowStorage {
 
       for (const loc of locations) {
         const path = workflowPath(name, loc);
-        if (existsSync(path)) {
-          unlinkSync(path);
-          deleted = true;
-        }
+        deleted = deleteArtifacts(path) || deleted;
         if (loc === "project") {
           const legacyPath = legacyProjectWorkflowPath(name);
-          if (existsSync(legacyPath)) {
-            unlinkSync(legacyPath);
-            deleted = true;
-          }
+          deleted = deleteArtifacts(legacyPath) || deleted;
         }
       }
 

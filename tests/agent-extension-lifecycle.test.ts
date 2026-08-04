@@ -100,6 +100,69 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
   }
 });
 
+test("WorkflowAgent real child active tools exclude recursive orchestration tools", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-deny-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-deny-cwd-"));
+  const agentDir = join(home, ".pi", "agent");
+  const faux = createExplicitFauxModels({
+    provider: "deny-fixture",
+    models: [{ id: "deny-model", name: "Deny Model" }],
+  });
+  const activeTools: string[][] = [];
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const settingsManager = SettingsManager.create(cwd, agentDir);
+      const tool = (name: string) => ({
+        name,
+        label: name,
+        description: name,
+        parameters: Type.Object({}),
+        async execute() {
+          return { content: [{ type: "text" as const, text: name }], details: {} };
+        },
+      });
+      const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        extensionFactories: [
+          (pi: ExtensionAPI) => pi.registerTool(tool("workflow")),
+          (pi: ExtensionAPI) => {
+            pi.registerTool(tool("custom_orchestrator"));
+            pi.registerTool(tool("kept_tool"));
+            pi.on("session_start", () => activeTools.push(pi.getActiveTools()));
+          },
+        ],
+      });
+      await resourceLoader.reload();
+      faux.setResponses([fauxAssistantMessage("done")]);
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+      const agent = new WorkflowAgent({
+        cwd,
+        modelRegistry,
+        modelRuntime,
+        excludeTools: ["custom_orchestrator"],
+        session: {
+          model: faux.model,
+          resourceLoader,
+          sessionManager: SessionManager.inMemory(),
+          settingsManager,
+        },
+      });
+
+      assert.equal(await agent.run("inspect tools"), "done");
+      assert.equal(activeTools.length, 1);
+      assert.equal(activeTools[0]?.includes("workflow"), false);
+      assert.equal(activeTools[0]?.includes("custom_orchestrator"), false);
+      assert.equal(activeTools[0]?.includes("kept_tool"), true);
+    });
+  } finally {
+    faux.dispose();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("WorkflowAgent preserves adaptor-owned tools required by a restricted child profile", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-profile-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-profile-cwd-"));

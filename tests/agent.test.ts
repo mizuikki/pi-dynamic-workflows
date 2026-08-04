@@ -3,11 +3,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { Type } from "typebox";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
 import {
   awaitAbortableSubagentPrompt,
+  DEFAULT_EXCLUDED_SUBAGENT_TOOLS,
   listAvailableModelSpecs,
   resolveAgentModelSpec,
+  subagentExcludedTools,
   WorkflowAgent,
 } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
@@ -19,8 +22,72 @@ import { withFakeHome } from "./helpers/fake-home.js";
 type WorkflowAgentPrivates = {
   buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string;
   lastAssistantText(messages: unknown[]): string;
+  finalAssistantText(messages: unknown[]): string;
   createSessionManager(): { isPersisted(): boolean; getCwd(): string };
 };
+
+test("subagent orchestration denylist always keeps workflow and caller additions", () => {
+  assert.deepEqual(DEFAULT_EXCLUDED_SUBAGENT_TOOLS, ["workflow"]);
+  assert.deepEqual(subagentExcludedTools(["custom_orchestrator"], ["session_tool"], ["call_tool"]), [
+    "workflow",
+    "session_tool",
+    "custom_orchestrator",
+    "call_tool",
+  ]);
+});
+
+test("finalAssistantText rejects progress text before a terminal tool result", () => {
+  const agent = new WorkflowAgent({ cwd: "/tmp" });
+  const messages = [
+    { role: "assistant", content: [{ type: "text", text: "working" }] },
+    { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: {} }] },
+    { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "output" }] },
+  ];
+  const privates = agent as unknown as WorkflowAgentPrivates;
+  assert.equal(privates.finalAssistantText(messages), "");
+  assert.equal(privates.lastAssistantText(messages), "working");
+});
+
+test("finalAssistantText accepts assistant text after the last tool result", () => {
+  const agent = new WorkflowAgent({ cwd: "/tmp" });
+  const messages = [
+    { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "output" }] },
+    { role: "assistant", content: [{ type: "text", text: "final" }] },
+  ];
+  assert.equal((agent as unknown as WorkflowAgentPrivates).finalAssistantText(messages), "final");
+});
+
+test("enabled structured output rejects a non-object schema before child setup", async () => {
+  const agent = new WorkflowAgent({ cwd: "/tmp", structuredOutputEnabled: true });
+  await assert.rejects(
+    agent.run("task", { schema: Type.Array(Type.String()), structuredOutputEnabled: true }),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      /top-level JSON object schema/.test(error.message),
+  );
+});
+
+test("disabled structured output continues to degrade a non-object schema to text", async () => {
+  let childCalled = false;
+  const result = await runWorkflow(
+    `export const meta = { name: 'schema_text', description: 'disabled schema degrades' }
+return await agent('task', { schema: { type: 'array', items: { type: 'string' } } })`,
+    {
+      structuredOutputEnabled: false,
+      agent: {
+        async run(_prompt: string, options: { schema?: unknown }) {
+          childCalled = true;
+          assert.equal(options.schema, undefined);
+          return "text";
+        },
+      },
+      persistLogs: false,
+    },
+  );
+  assert.equal(childCalled, true);
+  assert.equal(result.result, "text");
+});
 
 test("awaitAbortableSubagentPrompt waits for child session cancellation before rejecting", async () => {
   const controller = new AbortController();

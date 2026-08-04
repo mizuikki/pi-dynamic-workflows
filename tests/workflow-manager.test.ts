@@ -77,6 +77,20 @@ function seedRun(cwd: string, state: PersistedRunState) {
   repository.close();
 }
 
+async function waitForRunStatus(
+  manager: WorkflowManager,
+  runId: string,
+  expected: PersistedRunState["status"],
+): Promise<PersistedRunState> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const persisted = manager.loadRun(runId);
+    if (persisted?.status === expected) return persisted;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`Run ${runId} did not reach ${expected} before the timeout.`);
+}
+
 /** Run each manager test with isolated cwd and HOME so workflow state is isolated. */
 function withTempCwd(fn: (cwd: string) => Promise<void>) {
   return async () => {
@@ -1284,6 +1298,53 @@ test(
 );
 
 test(
+  "cold-start resume enforces cumulative token spend and persisted run limits",
+  withTempCwd(async (cwd) => {
+    let calls = 0;
+    const runId = "cold-start-cumulative-budget";
+    seedRun(cwd, {
+      runId,
+      workflowName: "cumulative_budget",
+      script: oneAgentScript,
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      tokenUsage: { input: 6, output: 4, total: 10, cost: 0, cacheRead: 0, cacheWrite: 0 },
+      tokenBudget: 10,
+      maxAgents: 1,
+      agentTimeoutMs: 25,
+      concurrency: 1,
+      executionPolicy: { agentRunRetries: 1 },
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const manager = new WorkflowManager({
+      cwd,
+      concurrency: 8,
+      defaultAgentTimeoutMs: null,
+      agent: {
+        async run() {
+          calls++;
+          return "unexpected";
+        },
+      },
+    });
+    manager.on("error", () => {});
+
+    assert.equal(await manager.resume(runId), true);
+    const persisted = await waitForRunStatus(manager, runId, "failed");
+
+    assert.equal(calls, 0);
+    assert.equal(persisted.tokenBudget, 10);
+    assert.equal(persisted.maxAgents, 1);
+    assert.equal(persisted.agentTimeoutMs, 25);
+    assert.equal(persisted.concurrency, 1);
+    assert.deepEqual(persisted.executionPolicy, { agentRunRetries: 1 });
+  }),
+);
+
+test(
   "cold-start resume: completed run cannot be resumed",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd });
@@ -2228,6 +2289,95 @@ test(
     assert.equal(result.agentCount, 1);
     assert.equal(seen.length, 1);
     assert.equal(seen[0].label, "a");
-    assert.match(seen[0].sessionName ?? "", /^workflow:run-[a-z0-9]+ a$/);
+    assert.match(seen[0].sessionName ?? "", /^workflow:tracked-demo-[a-z0-9]+-[a-z0-9]+ a$/);
+  }),
+);
+
+test(
+  "same-label concurrent agents keep result and history on the correct invocation",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(
+          prompt: string,
+          options?: { onHistory?: (history: Array<{ role: "assistant"; text: string }>) => void },
+        ) {
+          const delay = prompt === "A" ? 5 : 20;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          options?.onHistory?.([{ role: "assistant", text: `history-${prompt}` }]);
+          return `result-${prompt}`;
+        },
+      },
+    });
+    const script = `export const meta = { name: 'same_label', description: 'stable invocation ids' }
+return await parallel([
+  () => agent('A', { label: 'same' }),
+  () => agent('B', { label: 'same' }),
+])`;
+
+    const result = await manager.runSync(script, undefined, { concurrency: 2 });
+    assert.deepEqual(result.result, ["result-A", "result-B"]);
+    const managedRunId = manager.listRuns()[0]?.runId as string;
+    const agents = manager.getSnapshot(managedRunId)?.agents ?? [];
+    assert.equal(agents.length, 2);
+    assert.equal(agents[0]?.prompt, "A");
+    assert.equal(agents[1]?.prompt, "B");
+    assert.equal(agents[0]?.resultPreview, "result-A");
+    assert.equal(agents[1]?.resultPreview, "result-B");
+    assert.equal(agents[0]?.history?.[0]?.text, "history-A");
+    assert.equal(agents[1]?.history?.[0]?.text, "history-B");
+  }),
+);
+
+test(
+  "terminal run retention evicts heavy live state but preserves SQLite load and delete",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, agent: fakeAgent(), maxTerminalRunsInMemory: 2 });
+    const runIds: string[] = [];
+    for (let index = 0; index < 4; index++) {
+      await manager.runSync(oneAgentScript);
+      runIds.push(manager.listRuns()[0]?.runId as string);
+    }
+    const unique = [...new Set(runIds)];
+    assert.equal(unique.length, 4);
+    assert.equal(manager.getRun(unique[0] as string), undefined);
+    assert.equal(manager.getRun(unique[1] as string), undefined);
+    assert.ok(manager.loadRun(unique[0] as string));
+    assert.equal(manager.listRuns().length, 4);
+    assert.equal(await manager.deleteRun(unique[0] as string), "deleted");
+    assert.equal(manager.loadRun(unique[0] as string), null);
+    assert.equal(manager.listRuns().length, 3);
+  }),
+);
+
+test(
+  "terminal run retention keeps a resumed run only once in the eviction queue",
+  withTempCwd(async (cwd) => {
+    let shouldFail = true;
+    const manager = new WorkflowManager({
+      cwd,
+      maxTerminalRunsInMemory: 2,
+      agent: {
+        async run() {
+          if (shouldFail) {
+            throw new WorkflowError("first attempt failed", WorkflowErrorCode.UNKNOWN, { recoverable: false });
+          }
+          return "ok";
+        },
+      },
+    });
+    manager.on("error", () => {});
+
+    await assert.rejects(() => manager.runSync(oneAgentScript), /first attempt failed/);
+    const failedRunId = manager.listRuns().find((run) => run.status === "failed")?.runId;
+    assert.ok(failedRunId);
+
+    shouldFail = false;
+    await manager.runSync(oneAgentScript);
+    assert.equal(await manager.resume(failedRunId), true);
+    await waitForRunStatus(manager, failedRunId, "completed");
+
+    assert.ok(manager.getRun(failedRunId), "the resumed terminal run remains in the bounded live set");
   }),
 );

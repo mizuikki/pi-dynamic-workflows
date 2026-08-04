@@ -67,9 +67,20 @@ export interface PersistedRunState {
     cacheRead?: number;
     cacheWrite?: number;
   };
-  journal?: Array<{ index: number; hash: string; result: unknown; storeDelta?: Record<string, unknown> }>;
+  journal?: Array<{
+    index: number;
+    runId?: string;
+    hash: string;
+    result: unknown;
+    storeDelta?: Record<string, unknown>;
+  }>;
   /** Explicit canonical run policy only; host snapshots are never persisted. */
   executionPolicy?: WorkflowExecutionPolicy;
+  /** Run-owned limits sampled at first admission and reused on resume. */
+  tokenBudget?: number | null;
+  maxAgents?: number;
+  agentTimeoutMs?: number | null;
+  concurrency?: number;
 }
 
 export interface WorkflowRunSummary {
@@ -273,6 +284,7 @@ function validateState(state: PersistedRunState): void {
     for (const entry of state.journal) {
       if (!entry || typeof entry !== "object") fail("INVALID_RUN_STATE", "Run journal is invalid.");
       validInteger(entry.index, "journal index");
+      validOptionalString(entry.runId, "journal run id");
       validString(entry.hash, "journal hash");
     }
   }
@@ -282,6 +294,12 @@ function validateState(state: PersistedRunState): void {
       fail("INVALID_RUN_STATE", "Run execution policy is invalid.");
     }
   }
+  if (state.tokenBudget !== undefined && state.tokenBudget !== null) validNumber(state.tokenBudget, "token budget");
+  if (state.maxAgents !== undefined) validInteger(state.maxAgents, "maximum agents");
+  if (state.agentTimeoutMs !== undefined && state.agentTimeoutMs !== null) {
+    validInteger(state.agentTimeoutMs, "agent timeout");
+  }
+  if (state.concurrency !== undefined) validInteger(state.concurrency, "concurrency");
   assertJsonSafe(state);
 }
 

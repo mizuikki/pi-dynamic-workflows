@@ -279,7 +279,7 @@ return a`,
   assert.equal(calls, 0);
 });
 
-test("runWorkflow keeps failed-attempt store effects while journaling only success", async () => {
+test("runWorkflow rolls back failed-attempt store effects before retrying", async () => {
   let calls = 0;
   const journal: JournalEntry[] = [];
   const sharedStore = new SharedStore();
@@ -315,9 +315,113 @@ return a`,
 
   assert.equal(result.result, "ok");
   assert.equal(calls, 2);
-  assert.equal(sharedStore.get("failed-attempt"), 1, "whole-agent retries do not roll back side effects");
+  assert.equal(sharedStore.has("failed-attempt"), false, "failed attempt writes must not survive");
   assert.equal(journal.length, 1, "only the successful attempt is journaled");
   assert.deepEqual(journal[0]?.storeDelta, {}, "only successful attempt writes should be journaled");
+});
+
+test("an un-awaited agent is drained before runWorkflow completes", async () => {
+  let strayCompleted = false;
+  const journal: JournalEntry[] = [];
+  const result = await runWorkflow<string>(
+    `export const meta = { name: 'stray_drain', description: 'drain un-awaited agents' }
+agent('stray', { label: 'stray' })
+return await agent('main', { label: 'main' })`,
+    {
+      agent: {
+        async run(prompt: string) {
+          if (prompt === "stray") {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            strayCompleted = true;
+            return "stray-done";
+          }
+          return "main-done";
+        },
+      },
+      persistLogs: false,
+      onAgentJournal: (entry) => journal.push(entry),
+    },
+  );
+
+  assert.equal(result.result, "main-done");
+  assert.equal(strayCompleted, true);
+  assert.ok(journal.some((entry) => entry.result === "stray-done"));
+});
+
+test("a fatal top-level script error aborts and drains an un-awaited agent", async () => {
+  let sawAbort = false;
+  let settled = false;
+  const run = runWorkflow(
+    `export const meta = { name: 'fatal_cleanup', description: 'fatal cleanup' }
+agent('stray', { label: 'stray' })
+throw new Error('fatal script error')`,
+    {
+      agent: {
+        async run(_prompt: string, options: { signal?: AbortSignal }) {
+          return await new Promise<string>((_resolve, reject) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                sawAbort = true;
+                setTimeout(() => {
+                  settled = true;
+                  reject(new Error("aborted"));
+                }, 10);
+              },
+              { once: true },
+            );
+          });
+        },
+      },
+      persistLogs: false,
+    },
+  );
+
+  await assert.rejects(run, /fatal script error/);
+  assert.equal(sawAbort, true);
+  assert.equal(settled, true);
+});
+
+test("agent timeout aborts and settles the underlying runner before retrying", async () => {
+  let aborted = false;
+  let settled = false;
+  let calls = 0;
+  const result = await runWorkflow(
+    `export const meta = { name: 'timeout_abort', description: 'abort timed out child' }
+return await agent('hang', { label: 'hang', timeoutMs: 10 })`,
+    {
+      agent: {
+        async run(_prompt: string, options: { signal?: AbortSignal }) {
+          calls++;
+          if (calls === 2) {
+            assert.equal(settled, true, "a retry must not overlap the timed-out child session");
+            return "retry-ok";
+          }
+          await new Promise<void>((_resolve, reject) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                aborted = true;
+                setTimeout(() => {
+                  settled = true;
+                  reject(new Error("aborted"));
+                }, 10);
+              },
+              { once: true },
+            );
+          });
+          return "unreachable";
+        },
+      },
+      agentRunRetries: 1,
+      persistLogs: false,
+    },
+  );
+
+  assert.equal(result.result, "retry-ok");
+  assert.equal(calls, 2);
+  assert.equal(aborted, true);
+  assert.equal(settled, true);
 });
 
 test("runWorkflow returns null when recoverable retries are exhausted", async () => {
@@ -751,6 +855,31 @@ return await agent('structured answer', { label: 'structured', schema: { type: '
   assert.equal(seen[0]?.structuredOutputEnabled, true);
 });
 
+test("runWorkflow rejects an enabled non-object schema before invoking the child runner", async () => {
+  let calls = 0;
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'schema_invalid', description: 'invalid schema' }
+return await agent('structured answer', { label: 'structured', schema: { type: 'array', items: { type: 'string' } } })`,
+      {
+        agent: {
+          async run() {
+            calls++;
+            return ["unexpected"];
+          },
+        },
+        structuredOutputEnabled: true,
+        persistLogs: false,
+      },
+    ),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+      /top-level JSON object schema/.test(error.message),
+  );
+  assert.equal(calls, 0);
+});
+
 test("disabled schema calls use ordinary empty-output recovery instead of schema noncompliance", async () => {
   const ended: Array<{ errorCode?: WorkflowErrorCode; recoverable?: boolean }> = [];
   const result = await runWorkflow(
@@ -782,7 +911,8 @@ return await agent('same prompt', { label: 'same', schema: ${schema} })`;
 
   const first = countingAgent();
   const journal: JournalEntry[] = [];
-  await runWorkflow(scriptWithSchema(`{ type: 'string' }`), {
+  const objectSchema = `{ type: 'object', properties: { value: { type: 'string' } } }`;
+  await runWorkflow(scriptWithSchema(objectSchema), {
     agent: first.runner,
     structuredOutputEnabled: false,
     persistLogs: false,
@@ -799,7 +929,7 @@ return await agent('same prompt', { label: 'same', schema: ${schema} })`;
   assert.equal(ignoredEdit.state.calls, 0, "an ignored schema edit must not invalidate text replay");
 
   const enabledTransition = countingAgent();
-  await runWorkflow(scriptWithSchema(`{ type: 'string' }`), {
+  await runWorkflow(scriptWithSchema(objectSchema), {
     agent: enabledTransition.runner,
     structuredOutputEnabled: true,
     persistLogs: false,
@@ -808,14 +938,14 @@ return await agent('same prompt', { label: 'same', schema: ${schema} })`;
   assert.equal(enabledTransition.state.calls, 1, "enabling structured output must miss a text journal entry");
 
   const enabledJournal: JournalEntry[] = [];
-  await runWorkflow(scriptWithSchema(`{ type: 'string' }`), {
+  await runWorkflow(scriptWithSchema(objectSchema), {
     agent: countingAgent().runner,
     structuredOutputEnabled: true,
     persistLogs: false,
     onAgentJournal: (entry) => enabledJournal.push(entry),
   });
   const disabledTransition = countingAgent();
-  await runWorkflow(scriptWithSchema(`{ type: 'string' }`), {
+  await runWorkflow(scriptWithSchema(objectSchema), {
     agent: disabledTransition.runner,
     structuredOutputEnabled: false,
     persistLogs: false,
@@ -1097,6 +1227,29 @@ return { a, second }`;
   });
 
   assert.equal(result.result.second, "blocked");
+});
+
+test("runWorkflow seeds a resumed token budget from cumulative prior usage", async () => {
+  let calls = 0;
+  await assert.rejects(
+    runWorkflow(
+      `export const meta = { name: 'cumulative_budget', description: 'resume budget seed' }
+return await agent('must-not-run', { label: 'blocked' })`,
+      {
+        agent: {
+          async run() {
+            calls++;
+            return "unexpected";
+          },
+        },
+        tokenBudget: 10,
+        initialTokenUsage: { input: 6, output: 4, total: 10, cost: 0, cacheRead: 0, cacheWrite: 0 },
+        persistLogs: false,
+      },
+    ),
+    (error: unknown) => error instanceof WorkflowError && error.code === WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED,
+  );
+  assert.equal(calls, 0);
 });
 
 test("token budget exhaustion inside parallel() halts (non-recoverable, not swallowed)", async () => {

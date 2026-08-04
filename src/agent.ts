@@ -84,6 +84,16 @@ const WORKFLOW_EXTENSION_SUFFIXES = [
 
 export type ExtensionPathFilter = (pathValue: string) => boolean;
 
+export const DEFAULT_EXCLUDED_SUBAGENT_TOOLS = ["workflow"] as const;
+
+export function subagentExcludedTools(
+  extra: readonly string[] = [],
+  sessionExcluded: readonly string[] = [],
+  callExcluded: readonly string[] = [],
+): string[] {
+  return [...new Set([...DEFAULT_EXCLUDED_SUBAGENT_TOOLS, ...sessionExcluded, ...extra, ...callExcluded])];
+}
+
 function shouldFilterWorkflowExtensionPath(pathValue: string): boolean {
   const normalized = pathValue.replace(/\\/g, "/").toLowerCase();
   return WORKFLOW_EXTENSION_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
@@ -437,6 +447,8 @@ export interface WorkflowAgentOptions {
   sessionId?: string;
   /** Additional extension path filters for child sessions (default: workflow only). */
   extensionPathFilters?: ExtensionPathFilter[];
+  /** Additional orchestration tools that child sessions must never activate. */
+  excludeTools?: string[];
   /** Immutable host policy sampled once for the owning workflow execution. */
   hostRetryPolicy?: ImmutableHostRetryPolicySnapshot;
   /** Run-level child agent-turn override. */
@@ -627,6 +639,7 @@ export class WorkflowAgent {
   private readonly contextLoader?: SubagentContextLoader;
   private readonly sessionId?: string;
   private readonly extensionPathFilters: ExtensionPathFilter[];
+  private readonly excludeTools: string[];
   private readonly hostRetryPolicy?: ImmutableHostRetryPolicySnapshot;
   private readonly agentTurnRetry?: AgentTurnRetryOverride;
   private readonly structuredOutputEnabled: boolean;
@@ -652,6 +665,7 @@ export class WorkflowAgent {
     this.contextLoader = options.contextLoader;
     this.sessionId = options.sessionId;
     this.extensionPathFilters = options.extensionPathFilters ?? [];
+    this.excludeTools = options.excludeTools ?? [];
     this.hostRetryPolicy = options.hostRetryPolicy;
     this.agentTurnRetry = options.agentTurnRetry;
     this.structuredOutputEnabled = options.structuredOutputEnabled === true;
@@ -748,6 +762,13 @@ export class WorkflowAgent {
     const effectiveSchema = structuredOutputEnabled === true ? requestedSchema : undefined;
     const effectiveOptions =
       effectiveSchema === requestedSchema ? options : ({ ...options, schema: undefined } as AgentRunOptions<undefined>);
+    if (effectiveSchema && (effectiveSchema as { type?: unknown }).type !== "object") {
+      throw new WorkflowError(
+        `agent() opts.schema must be a top-level JSON object schema (type: "object") - got type: ${(effectiveSchema as { type?: unknown }).type ?? "undefined"}`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false, agentLabel: options.label },
+      );
+    }
 
     // User/custom extras only. Built-in coding tools come from the SDK session
     // (bound to runCwd). System + schema tools are appended AFTER policy so they
@@ -771,7 +792,11 @@ export class WorkflowAgent {
     });
     // Denylist must not strip SharedStore or the enabled structured_output tool.
     const systemNameSet = new Set([...systemToolNames, ...(schemaTool ? ["structured_output"] : [])]);
-    const excludeTools = (options.disallowedToolNames ?? []).filter((name) => !systemNameSet.has(name));
+    const excludeTools = subagentExcludedTools(
+      this.excludeTools,
+      this.sessionOptions.excludeTools,
+      options.disallowedToolNames,
+    ).filter((name) => !systemNameSet.has(name));
 
     // Resolve only an explicit per-agent model. Unoverridden calls inherit the
     // model selected by the owning Workflow admission.
@@ -971,7 +996,7 @@ export class WorkflowAgent {
         )) as AgentRunResult<TSchemaDef>;
       }
 
-      const text = this.lastAssistantText(session.messages);
+      const text = this.finalAssistantText(session.messages);
       if (!text.trim()) {
         throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
           recoverable: true,
@@ -1031,6 +1056,27 @@ export class WorkflowAgent {
 
   private lastAssistantText(messages: unknown[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i] as Partial<AssistantMessage> | undefined;
+      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+      const text = message.content
+        .filter((part): part is TextContent => part.type === "text")
+        .map((part) => part.text)
+        .join("");
+      if (text.trim()) return text;
+    }
+    return "";
+  }
+
+  /** Return only terminal assistant text produced after the final tool result. */
+  private finalAssistantText(messages: unknown[]): string {
+    let lastToolResult = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if ((messages[i] as { role?: string } | undefined)?.role === "toolResult") {
+        lastToolResult = i;
+        break;
+      }
+    }
+    for (let i = messages.length - 1; i > lastToolResult; i--) {
       const message = messages[i] as Partial<AssistantMessage> | undefined;
       if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
       const text = message.content

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
@@ -184,6 +184,37 @@ test(
 );
 
 test(
+  "createWorkflowStorage delete removes a backup-only workflow",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd);
+    storage.save({ name: "backup-only", description: "d", script: "d" });
+    const path = join(workflowProjectPaths(cwd).savedDir, "backup-only.json");
+    unlinkSync(path);
+
+    assert.ok(storage.load("backup-only"), "the backup remains loadable");
+    assert.equal(storage.delete("backup-only"), true);
+    assert.equal(storage.load("backup-only"), null);
+  }),
+);
+
+test(
+  "createWorkflowStorage keeps the primary when backup deletion fails",
+  withIsolatedHome(async (cwd) => {
+    const good = createWorkflowStorage(cwd);
+    good.save({ name: "delete-failure", description: "d", script: "d" });
+    const failing = createWorkflowStorage(cwd, {
+      unlinkSync: (path) => {
+        if (String(path).endsWith(".bak")) throw new Error("simulated backup unlink failure");
+        unlinkSync(path);
+      },
+    });
+
+    assert.throws(() => failing.delete("delete-failure"), /simulated backup unlink failure/);
+    assert.ok(good.load("delete-failure"), "the primary remains loadable after the failed delete");
+  }),
+);
+
+test(
   "createWorkflowStorage delete returns false for nonexistent",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
@@ -274,6 +305,88 @@ test(
     const list = storage.list();
     assert.ok(Array.isArray(list), "list should be an array");
     assert.equal(list.length, 0); // only corrupted file
+  }),
+);
+
+test(
+  "createWorkflowStorage rejects a structurally invalid saved-workflow payload",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd);
+    const projectDir = workflowProjectPaths(cwd).savedDir;
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "invalid.json"),
+      JSON.stringify({
+        name: "invalid",
+        description: "invalid parameters",
+        script: "return null",
+        savedAt: "2026-08-04T00:00:00.000Z",
+        parameters: { query: { type: 42 } },
+      }),
+    );
+
+    assert.equal(storage.load("invalid"), null);
+    assert.deepEqual(storage.list(), []);
+  }),
+);
+
+test(
+  "createWorkflowStorage keeps an atomic backup and recovers a corrupt primary",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd);
+    storage.save({ name: "recoverable", description: "good", script: "good script" });
+    const path = join(workflowProjectPaths(cwd).savedDir, "recoverable.json");
+    assert.equal(existsSync(`${path}.bak`), true);
+    writeFileSync(path, "{ truncated", "utf-8");
+
+    const recovered = storage.load("recoverable");
+    assert.equal(recovered?.description, "good");
+    assert.equal(recovered?.script, "good script");
+  }),
+);
+
+test(
+  "createWorkflowStorage opens the temporary file read-write before fsync",
+  withIsolatedHome(async (cwd) => {
+    let flags: string | number | undefined;
+    const storage = createWorkflowStorage(cwd, {
+      openSync: (path, requestedFlags) => {
+        flags = requestedFlags;
+        return openSync(path, requestedFlags);
+      },
+    });
+
+    storage.save({ name: "fsync-mode", description: "d", script: "d" });
+    assert.equal(flags, "r+");
+  }),
+);
+
+test(
+  "createWorkflowStorage failed rename preserves the last valid primary",
+  withIsolatedHome(async (cwd) => {
+    const good = createWorkflowStorage(cwd);
+    good.save({ name: "atomic", description: "old", script: "old script" });
+    const failing = createWorkflowStorage(cwd, {
+      renameSync: () => {
+        throw new Error("simulated rename failure");
+      },
+    });
+
+    assert.throws(() => failing.save({ name: "atomic", description: "new", script: "new script" }));
+    assert.equal(good.load("atomic")?.description, "old");
+  }),
+);
+
+test(
+  "createWorkflowStorage list tolerates an unreadable directory",
+  withIsolatedHome(async (cwd) => {
+    mkdirSync(workflowProjectPaths(cwd).savedDir, { recursive: true });
+    const storage = createWorkflowStorage(cwd, {
+      readdirSync: () => {
+        throw new Error("EACCES");
+      },
+    });
+    assert.deepEqual(storage.list(), []);
   }),
 );
 

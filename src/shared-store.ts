@@ -32,10 +32,26 @@ export class SharedStore {
   // `${runId}:${callIndex}` string (see class doc) so nested workflow() runs
   // sharing this store can't collide on a bare callIndex.
   private readonly agentDeltas = new Map<string, Record<string, unknown>>();
+  private readonly priorValues = new Map<string, Map<string, { existed: boolean; value: unknown }>>();
+  private readonly keyWriteSequences = new Map<string, number>();
+  private readonly deltaWriteSequences = new Map<string, Map<string, number>>();
+  private writeSequence = 0;
+
+  private setValue(key: string, value: unknown): number {
+    const sequence = ++this.writeSequence;
+    this.map.set(key, value);
+    this.keyWriteSequences.set(key, sequence);
+    return sequence;
+  }
+
+  private deleteValue(key: string): void {
+    this.map.delete(key);
+    this.keyWriteSequences.set(key, ++this.writeSequence);
+  }
 
   /** Store a value under `key`. Overwrites any existing value. */
   put(key: string, value: unknown): void {
-    this.map.set(key, value);
+    this.setValue(key, value);
   }
 
   /**
@@ -45,13 +61,30 @@ export class SharedStore {
    * writes can be journaled and replayed independently.
    */
   trackPut(key: string, value: unknown, deltaKey: string): void {
-    this.map.set(key, value);
+    let priors = this.priorValues.get(deltaKey);
+    if (!priors) {
+      priors = new Map();
+      this.priorValues.set(deltaKey, priors);
+    }
+    if (!priors.has(key)) {
+      priors.set(
+        key,
+        this.map.has(key) ? { existed: true, value: this.map.get(key) } : { existed: false, value: undefined },
+      );
+    }
+    const sequence = this.setValue(key, value);
     let delta = this.agentDeltas.get(deltaKey);
     if (!delta) {
       delta = {};
       this.agentDeltas.set(deltaKey, delta);
     }
     delta[key] = value;
+    let sequences = this.deltaWriteSequences.get(deltaKey);
+    if (!sequences) {
+      sequences = new Map();
+      this.deltaWriteSequences.set(deltaKey, sequences);
+    }
+    sequences.set(key, sequence);
   }
 
   /** Retrieve the value for `key`, or `undefined` when absent. */
@@ -76,7 +109,26 @@ export class SharedStore {
   commitDelta(deltaKey: string): Record<string, unknown> {
     const delta = this.agentDeltas.get(deltaKey) ?? {};
     this.agentDeltas.delete(deltaKey);
+    this.priorValues.delete(deltaKey);
+    this.deltaWriteSequences.delete(deltaKey);
     return delta;
+  }
+
+  /** Roll back one failed attempt without overwriting a newer sibling write. */
+  discardDelta(deltaKey: string): void {
+    const delta = this.agentDeltas.get(deltaKey);
+    if (!delta) return;
+    const priors = this.priorValues.get(deltaKey);
+    const sequences = this.deltaWriteSequences.get(deltaKey);
+    for (const key of Object.keys(delta)) {
+      if (this.keyWriteSequences.get(key) !== sequences?.get(key)) continue;
+      const prior = priors?.get(key);
+      if (prior?.existed) this.setValue(key, prior.value);
+      else this.deleteValue(key);
+    }
+    this.agentDeltas.delete(deltaKey);
+    this.priorValues.delete(deltaKey);
+    this.deltaWriteSequences.delete(deltaKey);
   }
 
   /**
@@ -86,7 +138,7 @@ export class SharedStore {
    */
   applyDelta(delta: Record<string, unknown>): void {
     for (const [k, v] of Object.entries(delta)) {
-      this.map.set(k, v);
+      this.setValue(k, v);
     }
   }
 
@@ -96,8 +148,9 @@ export class SharedStore {
    */
   restore(snap: Record<string, unknown>): void {
     this.map.clear();
+    this.keyWriteSequences.clear();
     for (const [k, v] of Object.entries(snap)) {
-      this.map.set(k, v);
+      this.setValue(k, v);
     }
   }
 
@@ -105,6 +158,10 @@ export class SharedStore {
   dispose(): void {
     this.map.clear();
     this.agentDeltas.clear();
+    this.priorValues.clear();
+    this.keyWriteSequences.clear();
+    this.deltaWriteSequences.clear();
+    this.writeSequence = 0;
   }
 }
 

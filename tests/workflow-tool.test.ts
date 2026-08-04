@@ -48,6 +48,12 @@ test("createWorkflowTool has parameters defined", () => {
   assert.ok(tool.parameters, "should have parameters schema");
 });
 
+test("createWorkflowTool declares args as an explicit object schema", () => {
+  const tool = createWorkflowTool();
+  const parameters = tool.parameters as { properties?: Record<string, { type?: string }> };
+  assert.equal(parameters.properties?.args?.type, "object");
+});
+
 test("createWorkflowTool has execute function", () => {
   const tool = createWorkflowTool();
   assert.equal(typeof tool.execute, "function");
