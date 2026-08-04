@@ -18,6 +18,20 @@ import { WorkflowAgent, wrapResourceLoaderForWorkflowSubagents } from "../src/ag
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { createExplicitFauxModels, createFauxRuntimeBundle } from "./helpers/faux-models.js";
 
+async function waitForLifecycle(promise: Promise<void>, label: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 1_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 test("WorkflowAgent binds extensions so session_start-initialized tools work in subagents", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-ext-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-ext-cwd-"));
@@ -92,6 +106,208 @@ test("WorkflowAgent binds extensions so session_start-initialized tools work in 
 
       assert.equal(result, "tool returned session-ready");
       assert.equal(faux.getPendingResponseCount(), 0, "all faux responses should be consumed");
+    });
+  } finally {
+    faux.dispose();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowAgent awaits child session_shutdown before the run settles", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-shutdown-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-shutdown-cwd-"));
+  const agentDir = join(home, ".pi", "agent");
+  const faux = createExplicitFauxModels({
+    provider: "shutdown-fixture",
+    models: [{ id: "shutdown-model", name: "Shutdown Model" }],
+  });
+  let shutdownCount = 0;
+  let resourceLive = true;
+  let enterShutdown = () => {};
+  let releaseShutdown = () => {};
+  const shutdownEntered = new Promise<void>((resolve) => {
+    enterShutdown = resolve;
+  });
+  const shutdownReleased = new Promise<void>((resolve) => {
+    releaseShutdown = resolve;
+  });
+
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const settingsManager = SettingsManager.create(cwd, agentDir);
+      const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        extensionFactories: [
+          (pi: ExtensionAPI) => {
+            pi.on("session_shutdown", async (event) => {
+              shutdownCount += 1;
+              assert.equal(event.reason, "quit");
+              enterShutdown();
+              await shutdownReleased;
+              resourceLive = false;
+            });
+          },
+        ],
+      });
+      await resourceLoader.reload();
+      faux.setResponses([fauxAssistantMessage("child completed")]);
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+      const agent = new WorkflowAgent({
+        cwd,
+        modelRegistry,
+        modelRuntime,
+        session: {
+          model: faux.model,
+          resourceLoader,
+          sessionManager: SessionManager.inMemory(),
+          settingsManager,
+        },
+      });
+
+      const run = agent.run("Complete the child lifecycle test.", { label: "shutdown-check" });
+      await waitForLifecycle(shutdownEntered, "child session_shutdown");
+      let settled = false;
+      void run.finally(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(settled, false, "run must await asynchronous child shutdown");
+      assert.equal(resourceLive, true);
+
+      releaseShutdown();
+      assert.equal(await run, "child completed");
+      assert.equal(resourceLive, false);
+      assert.equal(shutdownCount, 1);
+    });
+  } finally {
+    releaseShutdown();
+    faux.dispose();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowAgent preserves the child result when a shutdown handler rejects", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-shutdown-error-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-shutdown-error-cwd-"));
+  const agentDir = join(home, ".pi", "agent");
+  const faux = createExplicitFauxModels({
+    provider: "shutdown-error-fixture",
+    models: [{ id: "shutdown-error-model", name: "Shutdown Error Model" }],
+  });
+  const extensionErrors: string[] = [];
+  const originalConsoleError = console.error;
+
+  try {
+    console.error = (...args: unknown[]) => {
+      extensionErrors.push(args.map(String).join(" "));
+    };
+    await withFakeHomeAsync(home, async () => {
+      const settingsManager = SettingsManager.create(cwd, agentDir);
+      const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        extensionFactories: [
+          (pi: ExtensionAPI) => {
+            pi.on("session_shutdown", async () => {
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              throw new Error("expected shutdown fixture failure");
+            });
+          },
+        ],
+      });
+      await resourceLoader.reload();
+      faux.setResponses([fauxAssistantMessage("primary child result")]);
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+      const agent = new WorkflowAgent({
+        cwd,
+        modelRegistry,
+        modelRuntime,
+        session: {
+          model: faux.model,
+          resourceLoader,
+          sessionManager: SessionManager.inMemory(),
+          settingsManager,
+        },
+      });
+
+      assert.equal(
+        await agent.run("Preserve the primary result.", { label: "shutdown-error" }),
+        "primary child result",
+      );
+      assert.equal(extensionErrors.length, 1);
+      assert.match(extensionErrors[0] ?? "", /expected shutdown fixture failure/);
+    });
+  } finally {
+    console.error = originalConsoleError;
+    faux.dispose();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("WorkflowAgent shuts down child extensions on cancellation and provider failure", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-terminal-shutdown-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-terminal-shutdown-cwd-"));
+  const agentDir = join(home, ".pi", "agent");
+  const faux = createExplicitFauxModels({
+    provider: "terminal-shutdown-fixture",
+    models: [{ id: "terminal-shutdown-model", name: "Terminal Shutdown Model" }],
+  });
+  let shutdownCount = 0;
+
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const settingsManager = SettingsManager.create(cwd, agentDir);
+      const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        extensionFactories: [
+          (pi: ExtensionAPI) => {
+            pi.on("session_shutdown", async (event) => {
+              assert.equal(event.reason, "quit");
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              shutdownCount += 1;
+            });
+          },
+        ],
+      });
+      await resourceLoader.reload();
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+      const createAgent = () =>
+        new WorkflowAgent({
+          cwd,
+          modelRegistry,
+          modelRuntime,
+          session: {
+            model: faux.model,
+            resourceLoader,
+            sessionManager: SessionManager.inMemory(),
+            settingsManager,
+          },
+        });
+
+      const controller = new AbortController();
+      controller.abort();
+      await assert.rejects(
+        () => createAgent().run("Cancel before prompting.", { label: "cancelled-child", signal: controller.signal }),
+        /Subagent was aborted/,
+      );
+      assert.equal(shutdownCount, 1);
+
+      faux.setResponses([
+        fauxAssistantMessage("", { stopReason: "error", errorMessage: "unexpected provider configuration" }),
+      ]);
+      await assert.rejects(
+        () => createAgent().run("Return a provider failure.", { label: "failed-child" }),
+        /unexpected provider configuration/,
+      );
+      assert.equal(shutdownCount, 2);
     });
   } finally {
     faux.dispose();
