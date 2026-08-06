@@ -364,7 +364,8 @@ export async function runWorkflow<T = unknown>(
   const admittedWorkflowModel: ResolvedWorkflowModel | undefined = options.workflowModel
     ? resolveWorkflowModelSnapshot(options.workflowModel, {
         sessionModel,
-        registry: options.modelRegistry,
+        registry: options.modelScope ?? options.modelRegistry,
+        modelScope: options.modelScope,
       })
     : (() => {
         const setting =
@@ -374,14 +375,16 @@ export async function runWorkflow<T = unknown>(
         const canResolve =
           setting !== undefined ||
           sessionModel !== undefined ||
-          (options.mainModel !== undefined && options.modelRegistry !== undefined);
+          (options.mainModel !== undefined &&
+            (options.modelScope !== undefined || options.modelRegistry !== undefined));
         return canResolve
           ? resolveWorkflowModel({
               setting,
               sessionModel,
               sessionModelId: options.mainModel,
               sessionEffort: options.currentThinkingLevel as ModelThinkingLevel | undefined,
-              registry: options.modelRegistry,
+              registry: options.modelScope ?? options.modelRegistry,
+              modelScope: options.modelScope,
             })
           : undefined;
       })();
@@ -546,7 +549,8 @@ export async function runWorkflow<T = unknown>(
       ? resolveAgentModelOverride(
           admittedWorkflowModel,
           { model: agentOptions.model, effort: agentOptions.effort },
-          options.modelRegistry,
+          options.modelScope ?? options.modelRegistry,
+          options.modelScope,
         )
       : agentOptions.model !== undefined || agentOptions.effort !== undefined
         ? (() => {
@@ -779,6 +783,7 @@ export async function runWorkflow<T = unknown>(
               model: modelSelection?.model,
               effort: modelSelection?.effort,
               modelRegistry: options.modelRegistry,
+              modelScope: options.modelScope,
               agentTurnRetry: perAgentTurnRetry,
               toolNames: agentDef?.tools,
               disallowedToolNames: agentDef?.disallowedTools,

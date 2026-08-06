@@ -34,6 +34,12 @@ export function workflowModelGuideline(
   registryOrAvailable?: AvailableModelsSource | readonly string[] | (() => AvailableModelsSource | undefined),
 ): string {
   const resolved = typeof registryOrAvailable === "function" ? registryOrAvailable() : registryOrAvailable;
+  const restricted =
+    resolved !== undefined &&
+    !Array.isArray(resolved) &&
+    typeof resolved === "object" &&
+    "restricted" in resolved &&
+    resolved.restricted === true;
   const available =
     resolved === undefined
       ? listAvailableModelSpecs()
@@ -41,8 +47,12 @@ export function workflowModelGuideline(
         ? [...resolved]
         : listAvailableModelSpecs(resolved as AvailableModelsSource);
   const list = available.length
-    ? `The user's currently available models (route only to these) are: ${available.join(", ")}.`
-    : "Use models the user has configured.";
+    ? restricted
+      ? `The user's currently available models permitted by Pi's active session scope (route only to these) are: ${available.join(", ")}.`
+      : `The user's currently available models (route only to these) are: ${available.join(", ")}.`
+    : restricted
+      ? "Pi's active session scope currently permits no available models; do not invent a route or bypass the scope."
+      : "Use models the user has configured.";
   return [
     "For workflow, /workflows-models configures one default Workflow Model as a concrete currently available provider/modelId plus optional Pi reasoning effort. Every agent inherits that admitted model/effort, including nested and background work.",
     "Use opts.model and/or opts.effort only for a temporary per-agent override requested by the user; model and effort are independent partial overrides.",
@@ -165,6 +175,8 @@ export interface WorkflowToolOptions {
   defaultConcurrency?: number;
   /** Current session model registry, used to list available models in prompt guidance. */
   modelRegistry?: AvailableModelsSource;
+  /** Current Pi available-and-scoped model view, used for prompt guidance. */
+  modelScope?: AvailableModelsSource;
   /** Auth-verified available model specs for prompt guidance. */
   availableModelSpecs?: readonly string[];
 }
@@ -224,7 +236,10 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           ? "For workflow, structured output is enabled: if agent() needs machine-readable output, pass a plain JSON Schema via opts.schema; agent() will return the validated object. Use JSON Schema syntax, not TypeScript or TypeBox constructors."
           : "For workflow, opts.schema is ignored while structured output is disabled; agent() returns final assistant text and logs a visible ignored-schema diagnostic. Do not dereference that result as a schema-shaped object; use text-safe scripts or parse deliberately in your own workflow code if needed.",
         workflowModelGuideline(
-          options.availableModelSpecs ?? options.modelRegistry ?? (() => manager.getModelRegistry()),
+          options.modelScope ??
+            options.availableModelSpecs ??
+            options.modelRegistry ??
+            (() => manager.getModelScope() ?? manager.getModelRegistry()),
         ),
         agentTypeGuidelineText,
         "For workflow, do not assume the parent assistant has repository code context inside subagents; include enough task context and relevant paths in each agent prompt.",

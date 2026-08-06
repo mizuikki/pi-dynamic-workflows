@@ -69,11 +69,31 @@ payload, then verify the immutable session identity again after decoding.
 
 Payloads can contain scripts, arguments, prompts, results, journals, errors,
 compact tool history, the run-owned default Workflow Model model/effort pair,
-each agent's concrete model/effort pair, and an optional canonical `executionPolicy`. The policy
+additive admission-time model-scope provenance, each agent's concrete
+model/effort pair, and an optional canonical `executionPolicy`. The policy
 contains only explicit `agentTurnRetry` and `agentRunRetries` overrides. Host
 retry-policy snapshots and deprecated alias names are never persisted. A warm
 or cold resume keeps the explicit policy but samples a fresh host snapshot, so
 changing Pi settings does not leave a stale default embedded in a run.
+
+### Pi model scope and resume identity
+
+Pi 0.83.0 supplies the extension with the same resolved `scopedModels` allowlist
+used by `/scoped-models`. An empty list means that no session allowlist is
+configured, so the current `ModelRegistry.getAvailable()` snapshot is eligible.
+A non-empty list is intersected with that available snapshot; an empty
+intersection and a missing or malformed scope fail closed. The extension never
+consults `getAll()` as a fallback.
+
+The payload's optional `modelScopeRestricted` and `modelScopePinnedEffort`
+fields are provenance only. `defaultModel` and `defaultEffort` remain the
+authoritative execution identity, so no SQLite schema or payload-version
+migration is required. Resume uses the persisted concrete pair: a model that is
+still available and in scope with a supported persisted effort resumes silently,
+even when unrelated allowlist entries or the scope-pinned default changed. A
+model that is unavailable/out of scope or an effort that is no longer supported
+fails with `MODEL_SELECTION_ERROR` before journal replay or child creation; the
+lease is released and no confirmation can bypass Pi's active scope.
 
 Diagnostics avoid payload values and full user-specific database paths. A
 background completion message points to `/workflows status <runId>` instead of

@@ -20,6 +20,7 @@
 - Blocking compatibility CI must use an immutable protected
   `pi-extension-sdk-v<major>.<minor>.<patch>` tag after the stacked migration;
   branch refs are only for the current coordination phase.
-- Current blocking CI pin: `pi-extension-sdk-v1.1.0` (private fork product
-  `0.82.1-local.1`; ABI remains `extensionSdkApiVersion` 1). Stock/public
+- Current blocking CI pin: `pi-extension-sdk-v1.3.1` at commit
+  `769eaaba2ead3e9153d4460dd64b040f9703a9f8` (private fork product
+  `0.83.0-local.1`; ABI remains `extensionSdkApiVersion` 1). Stock/public
   fail-closed package-smoke uses npm `0.82.1`.

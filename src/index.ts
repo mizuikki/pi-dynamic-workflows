@@ -149,11 +149,15 @@ export type {
   ModelRegistrySource,
   ModelThinkingLevel,
   ResolvedWorkflowModel,
+  WorkflowModelScopeProvenance,
+  WorkflowModelScopeSnapshot,
   WorkflowModelSetting,
   WorkflowModelSnapshot,
+  WorkflowScopedModel,
 } from "./model-selection.js";
 export {
   canonicalModelSpec,
+  createWorkflowModelScopeSnapshot,
   defaultModelEffort,
   listAvailableModels,
   listRegisteredModels,

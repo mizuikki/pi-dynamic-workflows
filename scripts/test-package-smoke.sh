@@ -70,7 +70,7 @@ npm install --ignore-scripts --legacy-peer-deps --prefix "$UPSTREAM_DIR" \
   "@earendil-works/pi-ai@0.82.1" \
   "@earendil-works/pi-coding-agent@0.82.1" \
   "@earendil-works/pi-tui@0.82.1" \
-  "typebox" \
+  "typebox@1.3.7" \
   "$TARBALL" >/dev/null
 cat > "$UPSTREAM_DIR/verify-upstream-host.mjs" <<'EOF'
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";

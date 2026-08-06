@@ -26,6 +26,26 @@ export interface AvailableModelSource {
   getAvailable(): readonly Model<Api>[];
 }
 
+/** One model entry from Pi's resolved session scope. */
+export interface WorkflowScopedModel {
+  model: Model<Api>;
+  thinkingLevel?: ModelThinkingLevel;
+}
+
+/** Immutable available-model view constrained by Pi's current session scope. */
+export interface WorkflowModelScopeSnapshot extends AvailableModelSource {
+  /** True when Pi supplied a non-empty allowlist or an incompatible scope. */
+  readonly restricted: boolean;
+  /** Return the scope-pinned effort for an admitted model, when one exists. */
+  scopedThinkingLevel(model: Model<Api>): ModelThinkingLevel | undefined;
+}
+
+/** Admission-time scope facts retained for diagnostics without changing identity. */
+export interface WorkflowModelScopeProvenance {
+  restricted: boolean;
+  pinnedEffort?: ModelThinkingLevel;
+}
+
 /** @deprecated Use AvailableModelSource. The source now exposes available models only. */
 export type ModelRegistrySource = AvailableModelSource;
 
@@ -44,6 +64,88 @@ export function listAvailableModels(source: AvailableModelSource | undefined): M
   } catch {
     return [];
   }
+}
+
+const MODEL_THINKING_LEVELS = new Set<ModelThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+function isModelLike(value: unknown): value is Model<Api> {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { provider?: unknown; id?: unknown };
+  return (
+    typeof candidate.provider === "string" &&
+    candidate.provider.length > 0 &&
+    typeof candidate.id === "string" &&
+    candidate.id.length > 0
+  );
+}
+
+function isWorkflowScopedModel(value: unknown): value is WorkflowScopedModel {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { model?: unknown; thinkingLevel?: unknown };
+  return (
+    isModelLike(candidate.model) &&
+    (candidate.thinkingLevel === undefined ||
+      (typeof candidate.thinkingLevel === "string" &&
+        MODEL_THINKING_LEVELS.has(candidate.thinkingLevel as ModelThinkingLevel)))
+  );
+}
+
+function scopeIdentity(model: Model<Api>): string {
+  return canonicalModelSpec(model).toLowerCase();
+}
+
+function emptyScopeSnapshot(restricted: boolean): WorkflowModelScopeSnapshot {
+  const models = Object.freeze([]) as readonly Model<Api>[];
+  return {
+    restricted,
+    getAvailable: () => [...models],
+    scopedThinkingLevel: () => undefined,
+  };
+}
+
+/**
+ * Build a copied, immutable model-selection view from Pi's availability and
+ * session scope snapshots. An absent or malformed scope fails closed; an
+ * empty scope is Pi's documented unrestricted state.
+ */
+export function createWorkflowModelScopeSnapshot(
+  availableSource: AvailableModelSource | undefined,
+  scopedModels?: unknown,
+): WorkflowModelScopeSnapshot {
+  if (!Array.isArray(scopedModels) || !scopedModels.every(isWorkflowScopedModel)) {
+    return emptyScopeSnapshot(true);
+  }
+
+  const available = listAvailableModels(availableSource).filter(isModelLike);
+  if (scopedModels.length === 0) {
+    const models = Object.freeze([...available]) as readonly Model<Api>[];
+    return {
+      restricted: false,
+      getAvailable: () => [...models],
+      scopedThinkingLevel: () => undefined,
+    };
+  }
+
+  const availableByIdentity = new Map(available.map((model) => [scopeIdentity(model), model]));
+  const selected: Model<Api>[] = [];
+  const pinned = new Map<string, ModelThinkingLevel | undefined>();
+  const seen = new Set<string>();
+  for (const scoped of scopedModels) {
+    const identity = scopeIdentity(scoped.model);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const availableModel = availableByIdentity.get(identity);
+    if (!availableModel) continue;
+    selected.push(availableModel);
+    pinned.set(identity, scoped.thinkingLevel);
+  }
+
+  const models = Object.freeze([...selected]) as readonly Model<Api>[];
+  return {
+    restricted: true,
+    getAvailable: () => [...models],
+    scopedThinkingLevel: (model) => pinned.get(scopeIdentity(model)),
+  };
 }
 
 /** @deprecated Use listAvailableModels. */
@@ -154,6 +256,7 @@ export interface ResolveWorkflowModelOptions {
   sessionModelId?: string;
   sessionEffort?: ModelThinkingLevel;
   registry?: AvailableModelSource;
+  modelScope?: Pick<WorkflowModelScopeSnapshot, "scopedThinkingLevel">;
 }
 
 /** Resolve and snapshot a run-owned default pair at admission. */
@@ -164,7 +267,9 @@ export function resolveWorkflowModel(options: ResolveWorkflowModelOptions): Reso
     model = resolveAvailableModel(setting.model, options.registry);
   } else if (setting === null || setting === undefined) {
     if (options.sessionModel) {
-      model = options.sessionModel;
+      model = options.modelScope
+        ? resolveAvailableModel(canonicalModelSpec(options.sessionModel), options.registry)
+        : options.sessionModel;
     } else if (options.sessionModelId) {
       model = resolveAvailableModel(options.sessionModelId, options.registry);
     } else {
@@ -179,22 +284,25 @@ export function resolveWorkflowModel(options: ResolveWorkflowModelOptions): Reso
     );
   }
 
+  const scopedEffort = setting?.model ? options.modelScope?.scopedThinkingLevel(model) : undefined;
   const effort =
     setting && setting.effort !== undefined
       ? validateModelEffort(model, setting.effort, "Configured Workflow effort")
-      : defaultModelEffort(model, options.sessionEffort);
+      : scopedEffort !== undefined
+        ? validateModelEffort(model, scopedEffort, "Pi-scoped Workflow effort")
+        : defaultModelEffort(model, options.sessionEffort);
   return { modelObject: model, model: canonicalModelSpec(model), effort };
 }
 
 /** Rehydrate a persisted pair without consulting current Workflow settings. */
 export function resolveWorkflowModelSnapshot(
   snapshot: WorkflowModelSnapshot,
-  options: Pick<ResolveWorkflowModelOptions, "sessionModel" | "registry"> = {},
+  options: Pick<ResolveWorkflowModelOptions, "sessionModel" | "registry" | "modelScope"> = {},
 ): ResolvedWorkflowModel {
   const sessionMatches =
     options.sessionModel && canonicalModelSpec(options.sessionModel).toLowerCase() === snapshot.model.toLowerCase();
   const model =
-    sessionMatches && options.sessionModel
+    !options.modelScope && sessionMatches && options.sessionModel
       ? options.sessionModel
       : resolveAvailableModel(snapshot.model, options.registry);
   const effort = validateModelEffort(model, snapshot.effort, "Persisted Workflow effort");
@@ -206,13 +314,17 @@ export function resolveAgentModelOverride(
   base: ResolvedWorkflowModel,
   override: { model?: string; effort?: ModelThinkingLevel },
   registry: AvailableModelSource | undefined,
+  modelScope?: Pick<WorkflowModelScopeSnapshot, "scopedThinkingLevel">,
 ): ResolvedWorkflowModel {
   const model = override.model === undefined ? base.modelObject : resolveAvailableModel(override.model, registry);
+  const scopedEffort = override.model === undefined ? undefined : modelScope?.scopedThinkingLevel(model);
   const effort =
     override.effort !== undefined
       ? validateModelEffort(model, override.effort, "Requested agent effort")
-      : override.model === undefined
-        ? base.effort
-        : clampThinkingLevel(model, base.effort);
+      : scopedEffort !== undefined
+        ? validateModelEffort(model, scopedEffort, "Pi-scoped agent effort")
+        : override.model === undefined
+          ? base.effort
+          : clampThinkingLevel(model, base.effort);
   return { modelObject: model, model: canonicalModelSpec(model), effort };
 }

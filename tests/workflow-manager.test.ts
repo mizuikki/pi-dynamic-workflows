@@ -5,8 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
+import { createWorkflowModelScopeSnapshot } from "../src/model-selection.js";
 import { createRunPersistence, type PersistedRunState } from "../src/run-persistence.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
+import { saveWorkflowSettings } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 /** Agent runner that reports fixed usage so token accounting is exercised. */
@@ -1252,6 +1254,188 @@ test(
 
     await assert.rejects(manager.resume(runId), { code: "MODEL_SELECTION_ERROR" });
     assert.equal(agentCalls, 0, "unavailable persisted models must fail before child execution");
+  }),
+);
+
+test(
+  "new runs persist scope provenance while resume keeps the persisted effort across scope-default drift",
+  withTempCwd(async (cwd) => {
+    const allowed = {
+      provider: "provider",
+      id: "allowed",
+      name: "allowed",
+      reasoning: true,
+      thinkingLevelMap: { off: null, low: "low", high: "high" },
+    } as any;
+    const other = { ...allowed, id: "other", name: "other" };
+    const registry = { getAvailable: () => [allowed, other] } as any;
+    const admissionScope = createWorkflowModelScopeSnapshot(registry, [{ model: allowed, thinkingLevel: "high" }]);
+    saveWorkflowSettings({ workflowModel: { model: "provider/allowed" } });
+
+    const deferred = deferredAgent();
+    const manager = new WorkflowManager({
+      cwd,
+      agent: deferred.runner,
+      modelRegistry: registry,
+      modelScope: admissionScope,
+    });
+    const { runId, promise } = manager.startInBackground(oneAgentScript);
+    const initial = manager.loadRun(runId);
+    assert.equal(initial?.modelScopeRestricted, true);
+    assert.equal(initial?.modelScopePinnedEffort, "high");
+    assert.equal(initial?.defaultEffort, "high");
+    deferred.resolve();
+    await promise;
+
+    const resumedModel = { ...allowed, id: "allowed" };
+    const currentScope = createWorkflowModelScopeSnapshot(registry, [{ model: resumedModel, thinkingLevel: "low" }]);
+    const efforts: unknown[] = [];
+    const resumed = new WorkflowManager({
+      cwd,
+      modelRegistry: registry,
+      modelScope: currentScope,
+      agent: {
+        async run(_prompt: string, options: { effort?: unknown }) {
+          efforts.push(options.effort);
+          return "resumed";
+        },
+      },
+    });
+    const runIdForResume = "scope-drift-resume";
+    seedRun(cwd, {
+      runId: runIdForResume,
+      workflowName: "scope_drift",
+      script: oneAgentScript,
+      defaultModel: "provider/allowed",
+      defaultEffort: "high",
+      modelScopeRestricted: true,
+      modelScopePinnedEffort: "high",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    assert.equal(await resumed.resume(runIdForResume), true);
+    await waitForRunStatus(resumed, runIdForResume, "completed");
+    assert.equal(resumed.getRun(runIdForResume)?.snapshot.defaultEffort, "high");
+    assert.deepEqual(efforts, ["high"]);
+  }),
+);
+
+test(
+  "new runs reject an out-of-scope inherited session model before child execution",
+  withTempCwd(async (cwd) => {
+    const allowed = { provider: "provider", id: "allowed", name: "allowed", reasoning: false } as any;
+    const outside = { provider: "provider", id: "outside", name: "outside", reasoning: false } as any;
+    const registry = { getAvailable: () => [allowed, outside] } as any;
+    const scope = createWorkflowModelScopeSnapshot(registry, [{ model: allowed }]);
+    let agentCalls = 0;
+    const manager = new WorkflowManager({
+      cwd,
+      modelRegistry: registry,
+      modelScope: scope,
+      session: { model: outside },
+      agent: {
+        async run() {
+          agentCalls++;
+          return "unexpected";
+        },
+      },
+    });
+
+    await assert.rejects(manager.runSync(oneAgentScript), { code: "MODEL_SELECTION_ERROR" });
+    assert.equal(agentCalls, 0);
+    assert.deepEqual(manager.listRuns(), []);
+  }),
+);
+
+test(
+  "resume rejects out-of-scope models before replay or child creation and releases its lease",
+  withTempCwd(async (cwd) => {
+    const allowed = { provider: "provider", id: "allowed", name: "allowed", reasoning: false } as any;
+    const outside = { provider: "provider", id: "outside", name: "outside", reasoning: false } as any;
+    const registry = { getAvailable: () => [allowed, outside] } as any;
+    const scope = createWorkflowModelScopeSnapshot(registry, [{ model: allowed }]);
+    let agentCalls = 0;
+    const manager = new WorkflowManager({
+      cwd,
+      modelRegistry: registry,
+      modelScope: scope,
+      session: { model: outside },
+      agent: {
+        async run() {
+          agentCalls++;
+          return "unexpected";
+        },
+      },
+    });
+    const runId = "scope-out-of-scope";
+    seedRun(cwd, {
+      runId,
+      workflowName: "scope_out_of_scope",
+      script: oneAgentScript,
+      defaultModel: "provider/outside",
+      defaultEffort: "off",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    await assert.rejects(manager.resume(runId), { code: "MODEL_SELECTION_ERROR" });
+    assert.equal(agentCalls, 0);
+    const repository = createRunPersistence(cwd);
+    const lease = repository.acquireRunLease(runId, "existing");
+    assert.ok(lease, "failed admission must release its resume lease");
+    repository.releaseRunLease(lease);
+    repository.close();
+  }),
+);
+
+test(
+  "resume rejects an explicit out-of-scope agent override before journal replay",
+  withTempCwd(async (cwd) => {
+    const allowed = { provider: "provider", id: "allowed", name: "allowed", reasoning: false } as any;
+    const outside = { provider: "provider", id: "outside", name: "outside", reasoning: false } as any;
+    const registry = { getAvailable: () => [allowed, outside] } as any;
+    const scope = createWorkflowModelScopeSnapshot(registry, [{ model: allowed }]);
+    let agentCalls = 0;
+    const manager = new WorkflowManager({
+      cwd,
+      modelRegistry: registry,
+      modelScope: scope,
+      agent: {
+        async run() {
+          agentCalls++;
+          return "unexpected";
+        },
+      },
+    });
+    const runId = "scope-agent-out-of-scope";
+    seedRun(cwd, {
+      runId,
+      workflowName: "scope_agent_out_of_scope",
+      script: `export const meta = { name: 'scope_agent_out_of_scope', description: 'scope' }
+const a = await agent('route', { label: 'route', model: 'provider/outside' })
+return { a }`,
+      defaultModel: "provider/allowed",
+      defaultEffort: "off",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    assert.equal(await manager.resume(runId), true);
+    const failed = await waitForRunStatus(manager, runId, "failed");
+    assert.equal(agentCalls, 0);
+    assert.equal(failed.agents.length, 0);
   }),
 );
 

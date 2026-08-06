@@ -35,6 +35,7 @@ import {
   type ModelThinkingLevel,
   resolveAvailableModel,
   validateModelEffort,
+  type WorkflowModelScopeSnapshot,
 } from "./model-selection.js";
 import {
   listAvailableModelSpecsAsync as listAvailableModelSpecsAsyncCompat,
@@ -216,7 +217,9 @@ export function wrapResourceLoaderForWorkflowSubagents(
     getThemes: () => resourceLoader.getThemes(),
     getAgentsFiles: () => resourceLoader.getAgentsFiles(),
     getSystemPrompt: () => resourceLoader.getSystemPrompt(),
+    getSystemPromptSource: () => resourceLoader.getSystemPromptSource(),
     getAppendSystemPrompt: () => resourceLoader.getAppendSystemPrompt(),
+    getAppendSystemPromptSources: () => resourceLoader.getAppendSystemPromptSources(),
     extendResources: (paths) => resourceLoader.extendResources(paths),
     reload: (reloadOptions) => resourceLoader.reload(reloadOptions),
   };
@@ -424,6 +427,8 @@ export interface WorkflowAgentOptions {
    * ModelRuntime. Not passed to createAgentSession.
    */
   modelRegistry?: ModelRegistry;
+  /** Pi's immutable available-and-scoped model view for selection. */
+  modelScope?: WorkflowModelScopeSnapshot;
   /**
    * Plugin-owned execution runtime for child sessions. When omitted, a cached
    * runtime is created asynchronously from agentDir auth/models paths.
@@ -598,6 +603,8 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * Takes precedence over the constructor's `modelRegistry`.
    */
   modelRegistry?: ModelRegistry;
+  /** Pi's immutable available-and-scoped model view for selection. */
+  modelScope?: WorkflowModelScopeSnapshot;
   /** Explicit thinking override for this run; otherwise the host setting applies. */
   thinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
   /** Optional per-run context loader override. */
@@ -646,6 +653,8 @@ export class WorkflowAgent {
   private readonly settingsManagerFactory?: WorkflowAgentOptions["settingsManagerFactory"];
   /** Host extension registry facade from the host session, when provided. */
   private readonly sharedRegistry?: ModelRegistry;
+  /** Pi's current available-and-scoped model view for selection. */
+  private readonly sharedModelScope?: WorkflowModelScopeSnapshot;
   /** Explicit execution runtime from constructor options, when provided. */
   private readonly sharedRuntime?: ModelRuntime;
   /** Cached plugin-owned runtime created on first use. */
@@ -660,6 +669,7 @@ export class WorkflowAgent {
     this.instructions = options.instructions;
     this.mainModel = options.mainModel;
     this.sharedRegistry = options.modelRegistry;
+    this.sharedModelScope = options.modelScope;
     this.sharedRuntime = options.modelRuntime;
     this.projectTrusted = options.projectTrusted;
     this.contextLoader = options.contextLoader;
@@ -710,7 +720,12 @@ export class WorkflowAgent {
    * Resolution list source after providers have been copied into the runtime.
    * Prefer the host availability snapshot; otherwise use the plugin runtime snapshot.
    */
-  private getResolutionSource(runtime: ModelRuntime, hostRegistry?: ModelRegistry): ModelListSource {
+  private getResolutionSource(
+    runtime: ModelRuntime,
+    hostRegistry?: ModelRegistry,
+    modelScope?: WorkflowModelScopeSnapshot,
+  ): ModelListSource {
+    if (modelScope) return modelScope;
     if (hostRegistry) return modelListFromRegistry(hostRegistry);
     return modelListFromRuntime(runtime);
   }
@@ -804,12 +819,13 @@ export class WorkflowAgent {
 
     // Plugin-owned execution runtime (never unwrap host runtime from ModelRegistry).
     const hostRegistry = this.getHostRegistry(options.modelRegistry);
+    const modelScope = options.modelScope ?? this.sharedModelScope;
     const modelRuntime = await this.getModelRuntime();
     copyRegisteredProviders(hostRegistry, modelRuntime);
 
     // Resolve a requested model to a concrete Pi registry model. Model selection
     // failures are non-recoverable; a child must never silently use another model.
-    const resolutionSource = this.getResolutionSource(modelRuntime, hostRegistry);
+    const resolutionSource = this.getResolutionSource(modelRuntime, hostRegistry, modelScope);
     let resolvedModel: Model<any> | undefined;
     let resolvedThinkingLevel: CreateAgentSessionOptions["thinkingLevel"] | undefined;
     if (modelSpec) {

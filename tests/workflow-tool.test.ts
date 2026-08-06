@@ -250,6 +250,21 @@ test("workflowModelGuideline advertises models from an injected registry", () =>
   assert.match(text, /router\/shared-model/);
 });
 
+test("workflowModelGuideline follows the active restricted model scope", () => {
+  const scopedModel = { provider: "scoped", id: "allowed" };
+  const scope = {
+    restricted: true,
+    getAvailable: () => [scopedModel],
+    scopedThinkingLevel: () => undefined,
+  };
+  const text = workflowModelGuideline(scope);
+  assert.match(text, /permitted by Pi's active session scope/i);
+  assert.match(text, /scoped\/allowed/);
+
+  const emptyScope = { ...scope, getAvailable: () => [] };
+  assert.match(workflowModelGuideline(emptyScope), /permits no available models/i);
+});
+
 test("workflowModelGuideline accepts a getter and resolves it lazily at call time", () => {
   // Empty registry (not undefined) so the getter path is exercised end-to-end
   // rather than falling through to the disk-registry default.

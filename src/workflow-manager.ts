@@ -18,6 +18,8 @@ import {
   type ResolvedWorkflowModel,
   resolveWorkflowModel,
   resolveWorkflowModelSnapshot,
+  type WorkflowModelScopeProvenance,
+  type WorkflowModelScopeSnapshot,
   type WorkflowModelSnapshot,
 } from "./model-selection.js";
 import {
@@ -59,6 +61,8 @@ export interface ManagedRun {
   script: string;
   /** Concrete default model/effort admitted for this run. */
   workflowModel?: WorkflowModelSnapshot;
+  /** Scope facts observed at admission; never recomputed during a run. */
+  workflowModelScope?: WorkflowModelScopeProvenance;
   args?: unknown;
   /** Accumulated agent results for resume (deterministic call index -> result). */
   journal: JournalEntry[];
@@ -133,6 +137,8 @@ export interface WorkflowManagerOptions {
    * the source of registered dynamic providers to copy into the plugin runtime.
    */
   modelRegistry?: ModelRegistry;
+  /** Pi's immutable available-and-scoped model view for selection. */
+  modelScope?: WorkflowModelScopeSnapshot;
   /** Plugin-owned execution ModelRuntime for child sessions. */
   modelRuntime?: ModelRuntime;
   /** Base host session options used by subagents; per-run model overrides win. */
@@ -188,6 +194,8 @@ export class WorkflowManager extends EventEmitter {
   private mainModel?: string;
   /** Host extension ModelRegistry facade. */
   private modelRegistry?: ModelRegistry;
+  /** Pi's current available-and-scoped model view for selection. */
+  private modelScope?: WorkflowModelScopeSnapshot;
   /** Plugin-owned execution ModelRuntime. */
   private modelRuntime?: ModelRuntime;
   private sessionOptions?: WorkflowAgentOptions["session"];
@@ -209,15 +217,25 @@ export class WorkflowManager extends EventEmitter {
     const canResolve =
       setting !== undefined ||
       sessionModel !== undefined ||
-      (this.mainModel !== undefined && this.modelRegistry !== undefined);
+      (this.mainModel !== undefined && (this.modelScope !== undefined || this.modelRegistry !== undefined));
     if (!canResolve) return undefined;
     return resolveWorkflowModel({
       setting,
       sessionModel,
       sessionModelId: this.mainModel,
       sessionEffort: this.currentThinkingLevel as ModelThinkingLevel | undefined,
-      registry: this.modelRegistry,
+      registry: this.modelScope ?? this.modelRegistry,
+      modelScope: this.modelScope,
     });
+  }
+
+  private admitWorkflowModelScope(model: ResolvedWorkflowModel | undefined): WorkflowModelScopeProvenance | undefined {
+    if (!model || !this.modelScope) return undefined;
+    const pinnedEffort = this.modelScope.scopedThinkingLevel(model.modelObject);
+    return {
+      restricted: this.modelScope.restricted,
+      ...(pinnedEffort !== undefined ? { pinnedEffort } : {}),
+    };
   }
 
   constructor(options: WorkflowManagerOptions = {}) {
@@ -228,6 +246,7 @@ export class WorkflowManager extends EventEmitter {
     this.agent = options.agent;
     this.mainModel = options.mainModel;
     this.modelRegistry = options.modelRegistry;
+    this.modelScope = options.modelScope;
     this.modelRuntime = options.modelRuntime;
     this.sessionOptions = options.session;
     this.currentThinkingLevel = options.thinkingLevel;
@@ -339,6 +358,11 @@ export class WorkflowManager extends EventEmitter {
     this.modelRegistry = registry;
   }
 
+  /** Set the current Pi available-and-scoped model snapshot for selection. */
+  setModelScope(scope: WorkflowModelScopeSnapshot | undefined): void {
+    this.modelScope = scope;
+  }
+
   /** Set the plugin-owned execution ModelRuntime for child sessions. */
   setModelRuntime(runtime: ModelRuntime | undefined): void {
     this.modelRuntime = runtime;
@@ -378,6 +402,10 @@ export class WorkflowManager extends EventEmitter {
     return this.modelRegistry;
   }
 
+  getModelScope(): WorkflowModelScopeSnapshot | undefined {
+    return this.modelScope;
+  }
+
   getModelRuntime(): ModelRuntime | undefined {
     return this.modelRuntime;
   }
@@ -395,6 +423,7 @@ export class WorkflowManager extends EventEmitter {
     const executionPolicy = normalizeExecutionPolicy(exec);
     const parsed = parseWorkflowScript(script);
     const admittedWorkflowModel = this.admitWorkflowModel();
+    const workflowModelScope = this.admitWorkflowModelScope(admittedWorkflowModel);
     const slug = parsed.meta.name
       ? parsed.meta.name
           .toLowerCase()
@@ -432,6 +461,7 @@ export class WorkflowManager extends EventEmitter {
       ...(admittedWorkflowModel
         ? { workflowModel: { model: admittedWorkflowModel.model, effort: admittedWorkflowModel.effort } }
         : {}),
+      ...(workflowModelScope ? { workflowModelScope } : {}),
       args,
       journal: [],
       ...(Object.keys(executionPolicy).length ? { executionPolicy } : {}),
@@ -457,6 +487,14 @@ export class WorkflowManager extends EventEmitter {
         status: "running",
         ...(admittedWorkflowModel
           ? { defaultModel: admittedWorkflowModel.model, defaultEffort: admittedWorkflowModel.effort }
+          : {}),
+        ...(workflowModelScope
+          ? {
+              modelScopeRestricted: workflowModelScope.restricted,
+              ...(workflowModelScope.pinnedEffort !== undefined
+                ? { modelScopePinnedEffort: workflowModelScope.pinnedEffort }
+                : {}),
+            }
           : {}),
         phases: managed.snapshot.phases,
         agents: [],
@@ -533,6 +571,7 @@ export class WorkflowManager extends EventEmitter {
   private createManaged(script: string, args: unknown, exec: ExecOptions): ManagedRun {
     const parsed = parseWorkflowScript(script);
     const admittedWorkflowModel = this.admitWorkflowModel();
+    const workflowModelScope = this.admitWorkflowModelScope(admittedWorkflowModel);
     const slug = parsed.meta.name
       ? parsed.meta.name
           .toLowerCase()
@@ -565,6 +604,7 @@ export class WorkflowManager extends EventEmitter {
       ...(admittedWorkflowModel
         ? { workflowModel: { model: admittedWorkflowModel.model, effort: admittedWorkflowModel.effort } }
         : {}),
+      ...(workflowModelScope ? { workflowModelScope } : {}),
       args,
       journal: [],
       background: false,
@@ -611,6 +651,7 @@ export class WorkflowManager extends EventEmitter {
         tools: runTools,
         mainModel: this.mainModel,
         modelRegistry: this.modelRegistry,
+        modelScope: this.modelScope,
         modelRuntime: this.modelRuntime,
         session:
           this.sessionOptions || this.currentThinkingLevel
@@ -849,6 +890,14 @@ export class WorkflowManager extends EventEmitter {
       ...(managed.workflowModel
         ? { defaultModel: managed.workflowModel.model, defaultEffort: managed.workflowModel.effort }
         : {}),
+      ...(managed.workflowModelScope
+        ? {
+            modelScopeRestricted: managed.workflowModelScope.restricted,
+            ...(managed.workflowModelScope.pinnedEffort !== undefined
+              ? { modelScopePinnedEffort: managed.workflowModelScope.pinnedEffort }
+              : {}),
+          }
+        : {}),
       sessionId: managed.sessionId,
       journal: managed.journal,
       ...(managed.executionPolicy ? { executionPolicy: managed.executionPolicy } : {}),
@@ -1008,7 +1057,8 @@ export class WorkflowManager extends EventEmitter {
           { model: persistedModel, effort: persistedEffort },
           {
             sessionModel: this.sessionOptions?.model as Model<Api> | undefined,
-            registry: this.modelRegistry,
+            registry: this.modelScope ?? this.modelRegistry,
+            modelScope: this.modelScope,
           },
         );
       }
@@ -1049,6 +1099,16 @@ export class WorkflowManager extends EventEmitter {
       controller,
       startedAt: new Date(),
       script: persisted.script,
+      ...(persisted.modelScopeRestricted !== undefined || persisted.modelScopePinnedEffort !== undefined
+        ? {
+            workflowModelScope: {
+              restricted: persisted.modelScopeRestricted ?? false,
+              ...(persisted.modelScopePinnedEffort !== undefined
+                ? { pinnedEffort: persisted.modelScopePinnedEffort }
+                : {}),
+            },
+          }
+        : {}),
       workflowModel: resumedWorkflowModel,
       args: persisted.args,
       journal: persisted.journal ?? [],

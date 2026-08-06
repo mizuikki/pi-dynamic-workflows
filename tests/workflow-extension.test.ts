@@ -33,6 +33,7 @@ test("workflow extension refreshes live model guidance on model_select without r
     contextWindow: 128000,
     maxTokens: 8192,
   } satisfies Model<"faux">;
+  const secondModel: Model<"faux"> = { ...explicitModel, id: "workflow-model-2", name: "Workflow Model 2" };
 
   const pi = {
     extensionSdkApiVersion: 1,
@@ -71,9 +72,10 @@ test("workflow extension refreshes live model guidance on model_select without r
         mode: "print",
         ui: {},
         modelRegistry: {
-          getAvailable: async () => [explicitModel],
+          getAvailable: () => [explicitModel, secondModel],
         },
         model: explicitModel,
+        scopedModels: [{ model: explicitModel }],
         sessionManager: {
           getSessionId: () => "session-123",
         },
@@ -89,12 +91,27 @@ test("workflow extension refreshes live model guidance on model_select without r
       } as unknown as ExtensionContext;
 
       await modelSelect?.({ type: "model_select" }, ctx);
+
+      const firstGuidance = registeredTools.at(-1)?.promptGuidelines?.join(" ") ?? "";
+      assert.match(firstGuidance, /explicit-faux\/workflow-model/);
+      assert.doesNotMatch(firstGuidance, /explicit-faux\/workflow-model-2/);
+
+      ctx.model = secondModel;
+      ctx.scopedModels = [{ model: secondModel }];
+      await modelSelect?.({ type: "model_select" }, ctx);
+      const scopedGuidance = registeredTools.at(-1)?.promptGuidelines?.join(" ") ?? "";
+      assert.match(scopedGuidance, /explicit-faux\/workflow-model-2/);
+
+      (ctx as unknown as { scopedModels: unknown }).scopedModels = { malformed: true };
+      await modelSelect?.({ type: "model_select" }, ctx);
+      const malformedGuidance = registeredTools.at(-1)?.promptGuidelines?.join(" ") ?? "";
+      assert.match(malformedGuidance, /permits no available models/i);
     });
 
     const workflowTool = registeredTools.at(-1);
     assert.ok(workflowTool, "workflow tool should be registered");
     const guidelines = workflowTool.promptGuidelines?.join(" ") ?? "";
-    assert.match(guidelines, /explicit-faux\/workflow-model/);
+    assert.match(guidelines, /permits no available models/i);
     assert.equal(
       activeTools.includes("workflow"),
       false,
@@ -239,6 +256,7 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
       getAvailable: async () => [],
     },
     model: undefined,
+    scopedModels: [],
     sessionManager: {
       getSessionId: () => "session-trellis",
     },

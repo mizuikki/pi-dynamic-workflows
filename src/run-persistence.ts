@@ -45,6 +45,9 @@ export interface PersistedRunState {
   /** Concrete default pair sampled at workflow admission. */
   defaultModel?: string;
   defaultEffort?: ModelThinkingLevel;
+  /** Optional admission provenance; defaults never rewrite an existing pair. */
+  modelScopeRestricted?: boolean;
+  modelScopePinnedEffort?: ModelThinkingLevel;
   toolNames?: string[];
   sessionId?: string;
   status: RunStatus;
@@ -228,6 +231,10 @@ function validateState(state: PersistedRunState): void {
   validOptionalString(state.sessionId, "session id");
   validOptionalString(state.defaultModel, "default model");
   validOptionalString(state.defaultEffort, "default effort");
+  if (state.modelScopeRestricted !== undefined && typeof state.modelScopeRestricted !== "boolean") {
+    fail("INVALID_RUN_STATE", "Invalid model scope restriction.");
+  }
+  validOptionalString(state.modelScopePinnedEffort, "model scope pinned effort");
   validOptionalString(state.pauseReason, "pause reason");
   validOptionalString(state.resetHint, "reset hint");
   if (!RUN_STATUSES.has(state.status)) fail("INVALID_RUN_STATE", "Invalid run status.");

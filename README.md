@@ -2,7 +2,7 @@
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 [![for Pi](https://img.shields.io/badge/for-Pi-7c3aed)](https://pi.dev)
-[![tests](https://img.shields.io/badge/tests-1013%20passing-success)](#development)
+[![tests](https://img.shields.io/badge/tests-1041%20passing-success)](#development)
 
 > **Claude Code–style dynamic workflows for [Pi](https://pi.dev).**
 > Turn one prompt into a fleet of subagents that fan out in parallel, cross-check each other, and hand back a single synthesized answer.
@@ -24,7 +24,7 @@ Node.js 24 or newer is required. Workflow persistence uses Node's built-in
 pi install -l /absolute/path/to/pi-dynamic-workflows
 ```
 
-Then `/reload` in Pi. This extension requires the sibling private Pi fork with
+Then `/reload` in Pi. This extension requires the sibling private Pi 0.83.0 fork with
 extension SDK API version `1`, model runtime API version `1`, and retry-policy
 snapshot API version `1`; upstream Pi is not a compatible host. Remove the
 project-local source with:
@@ -97,7 +97,7 @@ return await agent('Synthesize and double-check these findings:\n' + findings.jo
 ## Highlights
 
 - **Fan-out orchestration** — `agent()`, `parallel()`, `pipeline()`, `phase()` in a sandboxed script. Up to 16 concurrent / 1000 total subagents; intermediate results stay in variables, not the chat.
-- **One default Workflow Model** — `/workflows-models` selects one currently available model and optional Pi-supported reasoning effort. An individual `agent()` call may explicitly override either axis for that call only.
+- **One default Workflow Model** — `/workflows-models` selects one model currently available and permitted by Pi's active session scope, plus an optional Pi-supported reasoning effort. An individual `agent()` call may explicitly override either axis for that call only.
 - **Journaled resume** — an interrupted run replays finished agents from a journal (no re-run, no tokens) and runs only what's left or what you changed.
 - **Git worktree isolation** — `isolation: "worktree"` gives an agent its own branch, so parallel agents can edit the same files without clobbering each other.
 - **Real token & cost accounting** — read from each subagent's session, not estimated. Runs have no default token cap; `tokenBudget`, phase budgets, and `budget` let you add explicit gates when you want them.
@@ -119,7 +119,7 @@ The same model — on Pi, plus the production pieces a real run needs:
 | Structured outputs | Optional JSON-Schema `schema` → a validated object, with bounded repair if the model misses; off by default |
 | Background runs | Non-blocking by default, a live task panel, and auto-continue delivery |
 | Resume | **Journaled + replayable** — survives restarts and replays the unchanged prefix |
-| Model selection | **One admitted Workflow Model plus explicit per-agent overrides** across any model Pi currently makes available |
+| Model selection | **One admitted Workflow Model plus explicit per-agent overrides** across models Pi currently makes available and permits in the active session scope |
 | Ultracode (standing maximal-effort opt-in) | **`/ultracode`** (or `/effort ultra`) — auto-arms an exhaustive workflow for every substantive message |
 | — | **Git worktree isolation**, **real cost accounting**, **`/deep-research`**, and a **quality-pattern stdlib** |
 
@@ -142,7 +142,7 @@ The same model — on Pi, plus the production pieces a real run needs:
                             switch the live panel between the compact one-liner and the detailed
                             per-phase/per-agent view (with tokens, cost, and a live tok/s rate)
 /workflows-progress-max <N> cap agents shown per phase in detailed mode (1-1000, default 8)
-/workflows-models           edit one global or project Workflow Model and its Pi-supported effort
+/workflows-models           edit one global or project Workflow Model and its Pi-supported effort within Pi's active scope
 /workflows-prompt enable    confirm and enable the project-local main-agent prompt
 /workflows-prompt disable   disable the project-local main-agent prompt
 /workflows-prompt status    inspect project prompt metadata (path, state, size, and hash only)
@@ -232,9 +232,9 @@ The merged global/project settings may contain one default Workflow Model:
 }
 ```
 
-An absent setting supplies no scope override. `null` explicitly inherits the current Pi session model and effort; a project-level `null` therefore blocks a fixed global model. A project object or `null` takes precedence over the global setting. `/workflows-models` exposes these choices and fills the effort picker from the selected model's live Pi metadata.
+An absent setting supplies no Workflow Model override. `null` explicitly inherits the current Pi session model and effort; a project-level `null` therefore blocks a fixed global model. A project object or `null` takes precedence over the global setting. `/workflows-models` exposes only models in Pi's current available-and-scoped snapshot and fills the effort picker from the selected model's live Pi metadata. An empty Pi scope means no allowlist is configured, so all currently available models are eligible; a non-empty scope is an allowlist, and an empty intersection fails closed.
 
-Workflow model identifiers should use an exact currently available `provider/modelId`. A bare model ID or name is accepted only when it matches one available Pi model. Unknown, unavailable, and ambiguous values fail closed; the extension never silently falls back to the session model. Explicit effort must be supported by the selected model. When an agent changes only its model, the inherited effort is clamped through Pi and the concrete pair is shown in status and progress output. The legacy `~/.pi/workflows/model-tiers.json`, if present from an older installation, remains untouched.
+Workflow model identifiers should use an exact currently available and in-scope `provider/modelId`. A bare model ID or name is accepted only when it matches one permitted Pi model. Unknown, unavailable, out-of-scope, and ambiguous values fail closed; the extension never silently falls back to the session model. Explicit effort must be supported by the selected model. A scope-pinned effort is the default for a fixed Workflow Model or model-only agent override; explicit effort wins, and inherited effort is clamped through Pi only when no scope pin applies. The concrete pair is shown in status and progress output. The legacy `~/.pi/workflows/model-tiers.json`, if present from an older installation, remains untouched.
 
 To avoid accidental keyword triggers, configure a custom trigger word in `~/.pi/workflows/settings.json`:
 
@@ -355,7 +355,7 @@ Workflows run in a Node `vm` sandbox; `Date.now()`, `Math.random()`, `new Date()
 
 ## Workflow Model admission
 
-At top-level admission, the extension resolves the effective model and Pi-supported effort once and persists that concrete pair with the run. Nested and background work inherit the same snapshot. Resume uses the original snapshot rather than current settings; if its model is no longer available or its effort is unsupported, the run fails with actionable model-selection diagnostics instead of substituting another model. Runs written before these snapshot fields existed are re-admitted using current settings, so their model or effort may differ from the values used when they originally started. Progress, navigator, task-panel, logs, and status output show each agent's resolved model and effort.
+At top-level admission, the extension resolves the effective model and Pi-supported effort once from Pi's current available-and-scoped snapshot and persists that concrete pair with additive scope provenance. Nested and background work inherit the same snapshot. Resume uses the persisted pair rather than current settings or a changed scope default: if the model remains available and permitted and the effort remains supported, it resumes silently with that exact pair. Unrelated allowlist edits and changed scope-pinned defaults do not interrupt an existing run. If the model leaves the scope, becomes unavailable, or its effort is unsupported, resume fails before journal replay or child creation with actionable model-selection diagnostics; it never substitutes another model or adds a confirmation bypass. Runs written before these snapshot fields existed remain readable and are validated against the current scope.
 
 ## Optional Trellis adapter
 
