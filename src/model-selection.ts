@@ -267,7 +267,9 @@ export function resolveWorkflowModel(options: ResolveWorkflowModelOptions): Reso
     model = resolveAvailableModel(setting.model, options.registry);
   } else if (setting === null || setting === undefined) {
     if (options.sessionModel) {
-      model = options.sessionModel;
+      model = options.modelScope
+        ? resolveAvailableModel(canonicalModelSpec(options.sessionModel), options.registry)
+        : options.sessionModel;
     } else if (options.sessionModelId) {
       model = resolveAvailableModel(options.sessionModelId, options.registry);
     } else {

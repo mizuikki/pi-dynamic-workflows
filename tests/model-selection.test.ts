@@ -180,12 +180,13 @@ test("fixed Workflow Models use a Pi-scoped effort default before inherited effo
   });
   assert.equal(explicit.effort, "low");
 
+  const inheritedScope = createWorkflowModelScopeSnapshot(source, [{ model: session }]);
   const inherited = resolveWorkflowModel({
     setting: null,
     sessionModel: session,
     sessionEffort: "low",
-    registry: scope,
-    modelScope: scope,
+    registry: inheritedScope,
+    modelScope: inheritedScope,
   });
   assert.equal(inherited.effort, "low");
 });

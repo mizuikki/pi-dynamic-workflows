@@ -1318,9 +1318,36 @@ test(
       updatedAt: new Date().toISOString(),
     });
     assert.equal(await resumed.resume(runIdForResume), true);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitForRunStatus(resumed, runIdForResume, "completed");
     assert.equal(resumed.getRun(runIdForResume)?.snapshot.defaultEffort, "high");
     assert.deepEqual(efforts, ["high"]);
+  }),
+);
+
+test(
+  "new runs reject an out-of-scope inherited session model before child execution",
+  withTempCwd(async (cwd) => {
+    const allowed = { provider: "provider", id: "allowed", name: "allowed", reasoning: false } as any;
+    const outside = { provider: "provider", id: "outside", name: "outside", reasoning: false } as any;
+    const registry = { getAvailable: () => [allowed, outside] } as any;
+    const scope = createWorkflowModelScopeSnapshot(registry, [{ model: allowed }]);
+    let agentCalls = 0;
+    const manager = new WorkflowManager({
+      cwd,
+      modelRegistry: registry,
+      modelScope: scope,
+      session: { model: outside },
+      agent: {
+        async run() {
+          agentCalls++;
+          return "unexpected";
+        },
+      },
+    });
+
+    await assert.rejects(manager.runSync(oneAgentScript), { code: "MODEL_SELECTION_ERROR" });
+    assert.equal(agentCalls, 0);
+    assert.deepEqual(manager.listRuns(), []);
   }),
 );
 
