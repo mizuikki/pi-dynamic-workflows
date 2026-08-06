@@ -3,6 +3,7 @@ import {
   createEffortState,
   createTrellisContextLoader,
   createTrellisSubagentTool,
+  createWorkflowModelScopeSnapshot,
   createWorkflowStorage,
   createWorkflowTool,
   hasRegisteredTrellisSubagentTool,
@@ -13,7 +14,6 @@ import {
   installWorkflowEditor,
   isKnownTrellisChild,
   isWorkflowMainPromptEnabled,
-  listAvailableModelSpecsAsync,
   loadWorkflowMainPrompt,
   loadWorkflowSettings,
   registerAllSavedWorkflows,
@@ -124,6 +124,7 @@ export default function extension(pi: ExtensionAPI) {
   };
 
   let latestHostCtx: ExtensionContext | undefined;
+  let latestModelScope: ReturnType<typeof createWorkflowModelScopeSnapshot> | undefined;
   let pluginModelRuntime: ModelRuntime | undefined;
   let pluginModelRuntimePromise: Promise<ModelRuntime> | undefined;
 
@@ -167,6 +168,7 @@ export default function extension(pi: ExtensionAPI) {
             ...(hostThinkingLevel ? { thinkingLevel: hostThinkingLevel as never } : {}),
           },
           modelRegistry: host?.modelRegistry,
+          modelScope: latestModelScope,
           modelRuntime,
           mainModel: host?.model ? `${host.model.provider}/${host.model.id}` : undefined,
         });
@@ -193,6 +195,9 @@ export default function extension(pi: ExtensionAPI) {
     manager.setModelRuntime(modelRuntime);
     manager.setSessionOptions({ model: ctx.model });
     manager.setModelRegistry(ctx.modelRegistry);
+    const modelScope = createWorkflowModelScopeSnapshot(ctx.modelRegistry, ctx.scopedModels);
+    latestModelScope = modelScope;
+    manager.setModelScope(modelScope);
     manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
     manager.setThinkingLevel(pi.getThinkingLevel());
     hostThinkingLevel = pi.getThinkingLevel?.();
@@ -207,8 +212,7 @@ export default function extension(pi: ExtensionAPI) {
       hostSessionId = undefined;
       manager.setSessionId(undefined);
     }
-    const availableModelSpecs = await listAvailableModelSpecsAsync(ctx.modelRegistry);
-    workflowTool = createWorkflowTool({ cwd, manager, storage, modelRegistry: ctx.modelRegistry, availableModelSpecs });
+    workflowTool = createWorkflowTool({ cwd, manager, storage, modelRegistry: ctx.modelRegistry, modelScope });
     pi.registerTool(workflowTool);
     if (activateTool || wasActive) ensureWorkflowToolActive();
     // Register / re-check trellis_subagent after tools are live.

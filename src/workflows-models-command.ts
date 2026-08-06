@@ -10,6 +10,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   canonicalModelSpec,
+  createWorkflowModelScopeSnapshot,
   listAvailableModels,
   type ModelThinkingLevel,
   supportedModelEfforts,
@@ -98,7 +99,8 @@ export async function editWorkflowModel(
   } catch {
     // Keep the last availability snapshot when refresh cannot complete.
   }
-  const models = listAvailableModels(ctx.modelRegistry);
+  const modelScope = createWorkflowModelScopeSnapshot(ctx.modelRegistry, ctx.scopedModels);
+  const models = listAvailableModels(modelScope);
   if (!models.length) {
     ctx.ui.notify("No Pi models are currently available. Authenticate or select a model first.", "warning");
     return undefined;

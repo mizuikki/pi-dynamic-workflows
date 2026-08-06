@@ -15,7 +15,8 @@ permissions:
   contents: read
 
 env:
-  PI_EXTENSION_SDK_REF: pi-extension-sdk-v1.1.0
+  PI_EXTENSION_SDK_REF: pi-extension-sdk-v1.3.1
+  PI_EXTENSION_SDK_COMMIT: 769eaaba2ead3e9153d4460dd64b040f9703a9f8
   PI_EXTENSION_SDK_API_VERSION: "1"
 
 jobs:
@@ -32,8 +33,8 @@ jobs:
       - name: Check out local Pi fork
         run: |
           git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout --detach
-          test "$(git -C ../pi rev-parse HEAD)" = "$(git -C ../pi rev-parse "$PI_EXTENSION_SDK_REF^{commit}")"
+          git -C ../pi checkout --detach "$PI_EXTENSION_SDK_COMMIT"
+          test "$(git -C ../pi rev-parse HEAD)" = "$PI_EXTENSION_SDK_COMMIT"
       - name: Build local Pi SDK
         run: |
           npm ci --ignore-scripts --prefix ../pi
@@ -61,10 +62,10 @@ jobs:
       - name: Check out local Pi fork
         run: |
           git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout --detach
-          test "$(git -C ../pi rev-parse HEAD)" = "$(git -C ../pi rev-parse "$PI_EXTENSION_SDK_REF^{commit}")"
+          git -C ../pi checkout --detach "$PI_EXTENSION_SDK_COMMIT"
+          test "$(git -C ../pi rev-parse HEAD)" = "$PI_EXTENSION_SDK_COMMIT"
       - name: Build isolated Pi tarballs and test the project copy
-        run: PI_FORK_DIR=../pi PI_FORK_REF="$(git -C ../pi rev-parse HEAD)" npm run test:pi-fork
+        run: PI_FORK_DIR=../pi PI_FORK_REF="$PI_EXTENSION_SDK_COMMIT" npm run test:pi-fork
 
   package-smoke:
     runs-on: ubuntu-latest
@@ -79,8 +80,8 @@ jobs:
       - name: Check out local Pi fork
         run: |
           git clone --filter=blob:none --branch "$PI_EXTENSION_SDK_REF" https://github.com/mizuikki/pi.git ../pi
-          git -C ../pi checkout --detach
-          test "$(git -C ../pi rev-parse HEAD)" = "$(git -C ../pi rev-parse "$PI_EXTENSION_SDK_REF^{commit}")"
+          git -C ../pi checkout --detach "$PI_EXTENSION_SDK_COMMIT"
+          test "$(git -C ../pi rev-parse HEAD)" = "$PI_EXTENSION_SDK_COMMIT"
       - name: Build local Pi SDK
         run: |
           npm ci --ignore-scripts --prefix ../pi
@@ -93,4 +94,4 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Verify clean package installation and consumer types
-        run: PI_FORK_DIR=../pi PI_FORK_REF="$(git -C ../pi rev-parse HEAD)" npm run test:package-smoke
+        run: PI_FORK_DIR=../pi PI_FORK_REF="$PI_EXTENSION_SDK_COMMIT" npm run test:package-smoke

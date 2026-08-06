@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
+  createWorkflowModelScopeSnapshot,
   resolveAgentModelOverride,
   resolveAvailableModel,
   resolveWorkflowModel,
@@ -27,6 +28,57 @@ function model(
 function registry(available: Model<Api>[], all: Model<Api>[] = available) {
   return { getAvailable: () => available, getAll: () => all };
 }
+
+test("empty Pi scope means every currently available model is usable", () => {
+  const first = model("provider-a", "first");
+  const second = model("provider-b", "second");
+  const source = registry([first, second], [first, second, model("provider-c", "registered-only")]);
+  const snapshot = createWorkflowModelScopeSnapshot(source, []);
+
+  assert.equal(snapshot.restricted, false);
+  assert.deepEqual(snapshot.getAvailable(), [first, second]);
+  assert.equal(snapshot.scopedThinkingLevel(first), undefined);
+});
+
+test("non-empty Pi scope intersects availability by canonical identity and preserves pinned effort", () => {
+  const first = model("provider-a", "first");
+  const second = model("provider-b", "second");
+  const registeredOnly = model("provider-c", "registered-only");
+  const source = registry([first, second], [first, second, registeredOnly]);
+  const snapshot = createWorkflowModelScopeSnapshot(source, [
+    { model: { ...first }, thinkingLevel: "high" },
+    { model: registeredOnly, thinkingLevel: "low" },
+  ]);
+
+  assert.equal(snapshot.restricted, true);
+  assert.deepEqual(snapshot.getAvailable(), [first]);
+  assert.equal(snapshot.getAvailable()[0], first);
+  assert.equal(snapshot.scopedThinkingLevel(first), "high");
+  assert.equal(snapshot.scopedThinkingLevel(second), undefined);
+});
+
+test("an available-empty scope intersection stays restricted and never falls back to getAll", () => {
+  const registeredOnly = model("provider", "registered-only");
+  const source = {
+    getAvailable: () => [] as readonly Model<Api>[],
+    getAll: () => [registeredOnly],
+  };
+  const snapshot = createWorkflowModelScopeSnapshot(source, [{ model: registeredOnly }]);
+
+  assert.equal(snapshot.restricted, true);
+  assert.deepEqual(snapshot.getAvailable(), []);
+});
+
+test("missing or malformed Pi scope fails closed", () => {
+  const available = model("provider", "available");
+  const source = registry([available], [available]);
+
+  for (const malformed of [undefined, {}, [{ model: undefined }], [{ model: available, thinkingLevel: "ultra" }]]) {
+    const snapshot = createWorkflowModelScopeSnapshot(source, malformed);
+    assert.equal(snapshot.restricted, true);
+    assert.deepEqual(snapshot.getAvailable(), []);
+  }
+});
 
 test("resolves exact and unique bare available model ids", () => {
   const first = model("provider-a", "shared");
@@ -96,4 +148,92 @@ test("session inheritance and configured model are snapshotted as a concrete pai
   });
   assert.equal(fixed.model, "provider/configured");
   assert.equal(fixed.effort, "off");
+});
+
+test("fixed Workflow Models use a Pi-scoped effort default before inherited effort", () => {
+  const session = model("provider", "session", {
+    reasoning: true,
+    thinkingLevelMap: { off: null, low: "low", high: "high" },
+  });
+  const fixed = model("provider", "fixed", {
+    reasoning: true,
+    thinkingLevelMap: { off: null, low: "low", high: "high" },
+  });
+  const source = registry([session, fixed]);
+  const scope = createWorkflowModelScopeSnapshot(source, [{ model: fixed, thinkingLevel: "high" }]);
+
+  const scoped = resolveWorkflowModel({
+    setting: { model: "provider/fixed" },
+    sessionModel: session,
+    sessionEffort: "low",
+    registry: scope,
+    modelScope: scope,
+  });
+  assert.equal(scoped.effort, "high");
+
+  const explicit = resolveWorkflowModel({
+    setting: { model: "provider/fixed", effort: "low" },
+    sessionModel: session,
+    sessionEffort: "high",
+    registry: scope,
+    modelScope: scope,
+  });
+  assert.equal(explicit.effort, "low");
+
+  const inherited = resolveWorkflowModel({
+    setting: null,
+    sessionModel: session,
+    sessionEffort: "low",
+    registry: scope,
+    modelScope: scope,
+  });
+  assert.equal(inherited.effort, "low");
+});
+
+test("model-only agent overrides use the target scope pin before clamping", () => {
+  const base = model("provider", "base", {
+    reasoning: true,
+    thinkingLevelMap: { off: null, low: "low", high: "high" },
+  });
+  const target = model("provider", "target", {
+    reasoning: true,
+    thinkingLevelMap: { off: null, low: "low", high: "high" },
+  });
+  const source = registry([base, target]);
+  const scope = createWorkflowModelScopeSnapshot(source, [{ model: target, thinkingLevel: "low" }]);
+  const resolved = resolveAgentModelOverride(
+    { modelObject: base, model: "provider/base", effort: "high" },
+    { model: "provider/target" },
+    scope,
+    scope,
+  );
+
+  assert.equal(resolved.model, "provider/target");
+  assert.equal(resolved.effort, "low");
+});
+
+test("unsupported Pi-scoped effort fails closed for new model selections", () => {
+  const plain = model("provider", "plain");
+  const source = registry([plain]);
+  const scope = createWorkflowModelScopeSnapshot(source, [{ model: plain, thinkingLevel: "high" }]);
+
+  assert.throws(
+    () =>
+      resolveWorkflowModel({
+        setting: { model: "provider/plain" },
+        registry: scope,
+        modelScope: scope,
+      }),
+    { code: "MODEL_SELECTION_ERROR" },
+  );
+  assert.throws(
+    () =>
+      resolveAgentModelOverride(
+        { modelObject: plain, model: "provider/plain", effort: "off" },
+        { model: "provider/plain" },
+        scope,
+        scope,
+      ),
+    { code: "MODEL_SELECTION_ERROR" },
+  );
 });

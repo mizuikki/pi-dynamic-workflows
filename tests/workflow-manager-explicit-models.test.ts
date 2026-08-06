@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createCodingTools } from "@earendil-works/pi-coding-agent";
+import { createWorkflowModelScopeSnapshot } from "../src/model-selection.js";
 import { createWebTools } from "../src/web-tools.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { saveWorkflowSettings } from "../src/workflow-settings.js";
@@ -57,6 +58,74 @@ test(
 
       assert.equal((result.result as { a: string }).a, "explicit workflow result");
       assert.equal(faux.getPendingResponseCount(), 0, "the explicit model provider should be consumed");
+    } finally {
+      faux.dispose();
+    }
+  }),
+);
+
+test(
+  "real faux-provider child execution uses the admitted scoped model",
+  withTempCwd(async (cwd) => {
+    const faux = createExplicitFauxModels({
+      provider: "deepseek",
+      models: [
+        { id: "scope-allowed", name: "Scope Allowed Model" },
+        { id: "scope-outside", name: "Scope Outside Model" },
+      ],
+    });
+    try {
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+      const allowed = faux.getModel("scope-allowed");
+      if (!allowed) throw new Error("scope-allowed faux model should exist");
+      faux.setResponses([(_context, _options, _state, model) => fauxAssistantMessage(`resolved:${model.id}`)]);
+      saveWorkflowSettings({ workflowModel: { model: `${faux.provider}/${allowed.id}` } }, { cwd, scope: "project" });
+
+      const manager = new WorkflowManager({
+        cwd,
+        modelRegistry,
+        modelRuntime,
+        modelScope: createWorkflowModelScopeSnapshot(modelRegistry, [{ model: allowed }]),
+        session: { model: allowed },
+      });
+      const result = await manager.runSync(selectedModelScript);
+
+      assert.equal((result.result as { a: string }).a, "resolved:scope-allowed");
+      assert.equal(faux.getPendingResponseCount(), 0, "the scoped faux provider response should be consumed");
+    } finally {
+      faux.dispose();
+    }
+  }),
+);
+
+test(
+  "real faux-provider admission rejects an out-of-scope model before child setup",
+  withTempCwd(async (cwd) => {
+    const faux = createExplicitFauxModels({
+      provider: "deepseek",
+      models: [
+        { id: "scope-allowed", name: "Scope Allowed Model" },
+        { id: "scope-outside", name: "Scope Outside Model" },
+      ],
+    });
+    try {
+      const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
+      const allowed = faux.getModel("scope-allowed");
+      const outside = faux.getModel("scope-outside");
+      if (!allowed || !outside) throw new Error("scope faux models should exist");
+      saveWorkflowSettings({ workflowModel: { model: `${faux.provider}/${outside.id}` } }, { cwd, scope: "project" });
+
+      const manager = new WorkflowManager({
+        cwd,
+        modelRegistry,
+        modelRuntime,
+        modelScope: createWorkflowModelScopeSnapshot(modelRegistry, [{ model: allowed }]),
+        session: { model: allowed },
+      });
+
+      await assert.rejects(manager.runSync(selectedModelScript), { code: "MODEL_SELECTION_ERROR" });
+      assert.deepEqual(manager.listRuns(), [], "out-of-scope admission must not publish a run");
+      assert.equal(faux.getPendingResponseCount(), 0, "out-of-scope admission must not create a child session");
     } finally {
       faux.dispose();
     }

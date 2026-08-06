@@ -39,6 +39,8 @@ function state(runId = "run-1", sessionId: string | undefined = "session-1"): Pe
     script: "export const meta = { name: 'demo', description: 'demo' }",
     args: { quote: "' OR 1=1 --" },
     sessionId,
+    modelScopeRestricted: true,
+    modelScopePinnedEffort: "high",
     status: "running",
     phases: ["Scan"],
     currentPhase: "Scan",
@@ -323,6 +325,20 @@ test("payload v1 rejects a non-string journal run ID", async () => {
 
     assert.throws(() => repository.save(invalid, lease), /journal run id/);
     assert.equal(repository.getSummary("invalid-journal-owner"), null);
+    repository.releaseRunLease(lease);
+    repository.close();
+  });
+});
+
+test("payload v1 rejects malformed model scope provenance", async () => {
+  await isolated((_home, cwd, path) => {
+    const repository = createRunPersistence(cwd, { path });
+    const lease = repository.acquireRunLease("invalid-scope-provenance", "new");
+    assert.ok(lease);
+    const invalid = state("invalid-scope-provenance");
+    invalid.modelScopeRestricted = "yes" as never;
+    assert.throws(() => repository.save(invalid, lease), /model scope restriction/);
+    assert.equal(repository.getSummary("invalid-scope-provenance"), null);
     repository.releaseRunLease(lease);
     repository.close();
   });
