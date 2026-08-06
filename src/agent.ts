@@ -87,6 +87,33 @@ export type ExtensionPathFilter = (pathValue: string) => boolean;
 
 export const DEFAULT_EXCLUDED_SUBAGENT_TOOLS = ["workflow"] as const;
 
+type WorkflowChildSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+
+const childSessionFinalizations = new WeakMap<WorkflowChildSession, Promise<void>>();
+
+function finalizeChildSession(session: WorkflowChildSession): Promise<void> {
+  const active = childSessionFinalizations.get(session);
+  if (active) return active;
+  const finalization = Promise.resolve().then(async () => {
+    try {
+      const runner = session.extensionRunner;
+      if (runner.hasHandlers("session_shutdown")) {
+        await runner.emit({ type: "session_shutdown", reason: "quit" });
+      }
+    } catch {
+      console.warn("[workflow] child session shutdown failed");
+    } finally {
+      try {
+        session.dispose();
+      } catch {
+        console.warn("[workflow] child session disposal failed");
+      }
+    }
+  });
+  childSessionFinalizations.set(session, finalization);
+  return finalization;
+}
+
 export function subagentExcludedTools(
   extra: readonly string[] = [],
   sessionExcluded: readonly string[] = [],
@@ -936,42 +963,6 @@ export class WorkflowAgent {
       ...(excludeTools.length ? { excludeTools } : {}),
     };
     const { session } = await createAgentSession(childSessionOptions);
-
-    await session.bindExtensions({
-      commandContextActions: {
-        waitForIdle: () => session.agent.waitForIdle(),
-        newSession: async () => ({ cancelled: true }),
-        fork: async () => ({ cancelled: true }),
-        navigateTree: async () => ({ cancelled: true }),
-        switchSession: async () => ({ cancelled: true }),
-        reload: async () => {
-          await session.reload();
-        },
-      },
-      onError: (error) => {
-        console.error(`Extension error (${error.extensionPath}): ${error.error}`);
-      },
-    });
-
-    // Session creation/binding may reload file-backed settings. Apply the
-    // execution-only policy after that boundary so it remains effective for
-    // the prompt while never being persisted.
-    if (this.hostRetryPolicy) {
-      settingsManager.applyOverrides({
-        retry: childRetrySettings(this.hostRetryPolicy, this.agentTurnRetry, options.agentTurnRetry),
-      });
-    }
-
-    // Name the persisted session so it's identifiable in session pickers.
-    // Skip when an injected session.sessionManager override won (tests/embedders).
-    if (this.persistAgentSessions && !this.sessionOptions.sessionManager && options.sessionName) {
-      try {
-        sessionManager.appendSessionInfo(options.sessionName);
-      } catch {
-        // Naming is best-effort; never fail the run over it.
-      }
-    }
-
     let removeHistoryListener: (() => void) | undefined;
     let lastHistoryEmit = 0;
     const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
@@ -983,6 +974,41 @@ export class WorkflowAgent {
       emitHistory();
     };
     try {
+      await session.bindExtensions({
+        commandContextActions: {
+          waitForIdle: () => session.agent.waitForIdle(),
+          newSession: async () => ({ cancelled: true }),
+          fork: async () => ({ cancelled: true }),
+          navigateTree: async () => ({ cancelled: true }),
+          switchSession: async () => ({ cancelled: true }),
+          reload: async () => {
+            await session.reload();
+          },
+        },
+        onError: (error) => {
+          console.error(`Extension error (${error.extensionPath}): ${error.error}`);
+        },
+      });
+
+      // Session creation/binding may reload file-backed settings. Apply the
+      // execution-only policy after that boundary so it remains effective for
+      // the prompt while never being persisted.
+      if (this.hostRetryPolicy) {
+        settingsManager.applyOverrides({
+          retry: childRetrySettings(this.hostRetryPolicy, this.agentTurnRetry, options.agentTurnRetry),
+        });
+      }
+
+      // Name the persisted session so it's identifiable in session pickers.
+      // Skip when an injected session.sessionManager override won (tests/embedders).
+      if (this.persistAgentSessions && !this.sessionOptions.sessionManager && options.sessionName) {
+        try {
+          sessionManager.appendSessionInfo(options.sessionName);
+        } catch {
+          // Naming is best-effort; never fail the run over it.
+        }
+      }
+
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
       if (options.onHistory) {
         removeHistoryListener = session.subscribe(() => maybeEmitHistory());
@@ -1043,7 +1069,7 @@ export class WorkflowAgent {
           // Usage is best-effort; never let stats failure mask the real result/error.
         }
       }
-      session.dispose();
+      await finalizeChildSession(session);
     }
   }
 
