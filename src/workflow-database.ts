@@ -7,7 +7,7 @@ import { workflowDatabasePath } from "./workflow-paths.js";
 
 export const WORKFLOW_DATABASE_SCHEMA_VERSION = 1;
 export const WORKFLOW_PAYLOAD_VERSION = 1;
-export const WORKFLOW_DATABASE_APPLICATION_ID = 1346656070;
+export const WORKFLOW_DATABASE_APPLICATION_ID = 1347375683;
 export const WORKFLOW_DATABASE_BUSY_TIMEOUT_MS = 5000;
 
 export class WorkflowPersistenceError extends Error {
@@ -252,8 +252,24 @@ function configureRuntimeConnection(db: DatabaseSync, inMemory: boolean): void {
   db.exec("PRAGMA wal_autocheckpoint = 1000");
 }
 
-function secureDatabasePath(path: string): { created: boolean } {
+interface PreparedDatabasePath {
+  created: boolean;
+  identity?: { dev: number; ino: number };
+}
+
+function prepareDatabasePath(path: string): PreparedDatabasePath {
   const home = dirname(path);
+  try {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new WorkflowPersistenceError("INVALID_DATABASE_PATH", "The workflow database path is not a regular file.");
+    }
+    return { created: false, identity: { dev: stat.dev, ino: stat.ino } };
+  } catch (error) {
+    if (error instanceof WorkflowPersistenceError) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
   try {
@@ -261,14 +277,21 @@ function secureDatabasePath(path: string): { created: boolean } {
     closeSync(fd);
     return { created: true };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return prepareDatabasePath(path);
+    throw error;
   }
+}
+
+function secureAcceptedDatabasePath(path: string, identity: PreparedDatabasePath["identity"]): void {
   const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw new WorkflowPersistenceError("INVALID_DATABASE_PATH", "The workflow database path is not a regular file.");
+  if (!identity || stat.isSymbolicLink() || !stat.isFile() || stat.dev !== identity.dev || stat.ino !== identity.ino) {
+    throw new WorkflowPersistenceError(
+      "DATABASE_CHANGED_DURING_VALIDATION",
+      "The workflow database path changed during validation.",
+    );
   }
+  chmodSync(dirname(path), 0o700);
   chmodSync(path, 0o600);
-  return { created: false };
 }
 
 export interface OpenWorkflowDatabaseOptions {
@@ -282,10 +305,10 @@ export function openWorkflowDatabase(options: OpenWorkflowDatabaseOptions = {}):
   const Database = options.Database ?? loadNodeSqlite(options.nodeVersion);
   const path = options.path ?? workflowDatabasePath();
   const inMemory = path === ":memory:";
-  let created = inMemory;
+  let prepared: PreparedDatabasePath = { created: inMemory };
   if (!inMemory) {
     try {
-      ({ created } = secureDatabasePath(path));
+      prepared = prepareDatabasePath(path);
     } catch (error) {
       if (error instanceof WorkflowPersistenceError) throw error;
       throw new WorkflowPersistenceError(
@@ -295,7 +318,7 @@ export function openWorkflowDatabase(options: OpenWorkflowDatabaseOptions = {}):
     }
   }
 
-  if (!created) {
+  if (!prepared.created) {
     let validation: DatabaseSync | undefined;
     try {
       const validationPath = pathToFileURL(path);
@@ -316,6 +339,16 @@ export function openWorkflowDatabase(options: OpenWorkflowDatabaseOptions = {}):
       } catch {
         // Preserve the validation failure, if any.
       }
+    }
+
+    try {
+      secureAcceptedDatabasePath(path, prepared.identity);
+    } catch (error) {
+      if (error instanceof WorkflowPersistenceError) throw error;
+      throw new WorkflowPersistenceError(
+        "DATABASE_PERMISSION_FAILED",
+        "The workflow database permissions could not be secured.",
+      );
     }
   }
 

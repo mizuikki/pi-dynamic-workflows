@@ -12,7 +12,9 @@ export interface ModelAvailabilitySource {
 }
 
 function reportAvailabilityFailure(error: unknown): void {
-  console.warn(`[workflow] unable to read available models: ${error instanceof Error ? error.message : String(error)}`);
+  console.warn(
+    `[workflow-orchestrator] unable to read available models: ${error instanceof Error ? error.message : String(error)}`,
+  );
 }
 
 /** Best-effort synchronous snapshot: arrays only; Promises are not treated as data. */

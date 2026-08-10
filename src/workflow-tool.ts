@@ -54,7 +54,7 @@ export function workflowModelGuideline(
       ? "Pi's active session scope currently permits no available models; do not invent a route or bypass the scope."
       : "Use models the user has configured.";
   return [
-    "For workflow, /workflows-models configures one default Workflow Model as a concrete currently available provider/modelId plus optional Pi reasoning effort. Every agent inherits that admitted model/effort, including nested and background work.",
+    "For workflow, /workflow model configures one default Workflow Model as a concrete currently available provider/modelId plus optional Pi reasoning effort. Every agent inherits that admitted model/effort, including nested and background work.",
     "Use opts.model and/or opts.effort only for a temporary per-agent override requested by the user; model and effort are independent partial overrides.",
     "opts.model must be an exact currently available provider/modelId, or a bare model id only when it matches one available model. Do not invent provider/model ids or append an effort suffix to the model string.",
     "opts.effort must be one of the Pi-supported reasoning efforts for the selected model. If only opts.model changes, the inherited effort is clamped through Pi for that model.",
@@ -165,7 +165,7 @@ export type WorkflowToolInput = {
 export interface WorkflowToolOptions {
   cwd?: string;
   concurrency?: number;
-  /** Shared manager so background runs are reachable from the `/workflows` command. */
+  /** Shared manager so background runs are reachable from the `/workflow` command. */
   manager?: WorkflowManager;
   /** Shared saved-workflow storage. */
   storage?: WorkflowStorage;
@@ -219,7 +219,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         "For workflow, when meta.phases declares more than one phase, call phase('Exact Title') at the start of each phase's work (or set opts.phase on each agent) so every agent groups under the correct phase; never declare a phase you don't switch into — a declared phase with no agents shows as 0/0 and any agent you forgot to move stays in the previous phase.",
         "For workflow, do not set tokenBudget or agentTimeoutMs unless the user explicitly asks to cap spend or time; the defaults are unbounded.",
         "For workflow, to bound spend: pass tokenBudget for a hard run-wide cap; carve a per-phase ceiling with phase('Name', {budget: N}) (that phase throws at its sub-budget without touching the run total — wrap its work in try/catch so later phases proceed); use retry(thunk, {attempts, until}) for bounded retry, and gate(thunk, validator, {attempts}) when a validator's feedback should steer the next attempt. To degrade gracefully, branch on budget.remaining() to skip optional rounds.",
-        "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, multi-perspective review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
+        "For workflow, prefer it for decomposable work: repository inspection, independent research/checks, parallel review, or fan-out/fan-in synthesis. Do not use it for a single quick file read/edit or when ordinary tools are enough.",
         "For workflow, parallel() and parallelSettled() take functions, not promises: use `await parallel(items.map(item => () => agent('...', { label: '...' })))` or `await parallelSettled(items.map(item => () => agent('...', { label: '...' })))`, never map directly to agent promises. Results are returned in input order.",
         "For workflow, parallel() is fail-fast for fatal branches and cancels then drains its sibling group before rethrowing the root error. Use parallelSettled() for independent research so successful evidence remains available; explicitly count non-null fulfilled outcomes and fail with a clear message when the workflow's own quorum is not met.",
         "For workflow, pipeline(items, ...stages) runs each item through stages sequentially, while different items may run concurrently. Each stage receives (previousValue, originalItem, index).",
@@ -257,17 +257,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(cwd);
       const hostRetryPolicy = readRequiredHostRetryPolicy(ctx);
 
-      // checkpoint() reaches the human only on a UI-bearing foreground run; a
-      // background run is detached, so checkpoint() falls back to its headless
-      // default. Map a checkpoint to ctx.ui.confirm (a yes/no gate) when available.
-      const uiCtx = ctx as
-        | { hasUI?: boolean; ui?: { confirm?(title: string, message: string): Promise<boolean> } }
-        | undefined;
-      const uiConfirm = uiCtx?.hasUI ? uiCtx.ui?.confirm : undefined;
-      const confirm = uiConfirm
-        ? (promptText: string) => uiConfirm.call(uiCtx?.ui, "Workflow checkpoint", promptText)
-        : undefined;
-
       // Background execution is the default: return immediately so the turn ends
       // and the user isn't blocked. The result is delivered back into the
       // conversation when the run finishes (see installResultDelivery). Only an
@@ -290,7 +279,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       }
 
       // Synchronous execution (blocking) — but routed through the manager so the
-      // run shows up live in the /workflows navigator and the task panel while it
+      // run shows up live in the /workflow navigator and the task panel while it
       // runs, then stays in history afterwards. We still block on the result and
       // return it inline, so the model gets the full output in the same turn.
       let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
@@ -312,7 +301,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
           structuredOutputEnabled,
           agentTimeoutMs: params.agentTimeoutMs,
           tokenBudget: params.tokenBudget,
-          confirm,
           externalSignal: signal,
           onProgress(live) {
             snapshot = recomputeWorkflowSnapshot(live);
@@ -427,7 +415,7 @@ export function backgroundStartedText(name: string, runId: string): string {
     "do anything. Tell the user they can simply wait here for it to finish (it will",
     "resume the conversation by itself), or keep chatting / working on other things",
     "in the meantime; either way the result will come back to this conversation.",
-    `They can also track or cancel it with /workflows status ${runId} or /workflows stop ${runId}.`,
+    `They can also track or cancel it with /workflow status ${runId} or /workflow stop ${runId}.`,
   ].join("\n");
 }
 

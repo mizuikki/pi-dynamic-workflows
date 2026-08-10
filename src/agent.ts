@@ -101,12 +101,12 @@ function finalizeChildSession(session: WorkflowChildSession): Promise<void> {
         await runner.emit({ type: "session_shutdown", reason: "quit" });
       }
     } catch {
-      console.warn("[workflow] child session shutdown failed");
+      console.warn("[workflow-orchestrator] child session shutdown failed");
     } finally {
       try {
         session.dispose();
       } catch {
-        console.warn("[workflow] child session disposal failed");
+        console.warn("[workflow-orchestrator] child session disposal failed");
       }
     }
   });
@@ -138,7 +138,7 @@ function extensionPathValues(extension: { path: string; resolvedPath?: string })
  * also covers a host command collision where command registration is skipped.
  */
 function isWorkflowPolicyExtension(extension: Extension): boolean {
-  return extension.tools?.has("workflow") === true || extension.commands?.has("workflows-prompt") === true;
+  return extension.tools?.has("workflow") === true || extension.commands?.has("workflow") === true;
 }
 
 function configuredFilterMatches(pathValues: string[], filters: ExtensionPathFilter[]): boolean {
@@ -195,7 +195,7 @@ export interface WrapResourceLoaderOptions {
   env?: Record<string, string>;
 }
 
-const SUBAGENT_ENV_EXTENSION_PATH = "<inline:pi-dynamic-workflows-env>";
+const SUBAGENT_ENV_EXTENSION_PATH = "<inline:pi-workflow-orchestrator-env>";
 
 function rewriteSubagentBashEnv(event: { toolName?: string; input?: unknown }, env: Record<string, string>): void {
   if (event.toolName !== "bash") return;
@@ -216,7 +216,7 @@ function createSubagentEnvExtension(env: Record<string, string>): Extension {
     path: SUBAGENT_ENV_EXTENSION_PATH,
     resolvedPath: SUBAGENT_ENV_EXTENSION_PATH,
     sourceInfo: createSyntheticSourceInfo(SUBAGENT_ENV_EXTENSION_PATH, {
-      source: "pi-dynamic-workflows",
+      source: "pi-workflow-orchestrator",
     }),
     handlers,
     tools: new Map(),
@@ -418,7 +418,7 @@ export async function resolveStructuredOutput<T>(
   const extracted = extractValidated<T>(lastText(session.messages), schema);
   if (extracted !== undefined) {
     console.warn(
-      "[workflow] structured_output recovered from prose extraction (the model never called the tool); prefer a tool-reliable model",
+      "[workflow-orchestrator] structured_output recovered from prose extraction (the model never called the tool); prefer a tool-reliable model",
     );
     return extracted;
   }
@@ -778,7 +778,7 @@ export class WorkflowAgent {
       return manager;
     } catch (error) {
       console.warn(
-        `[workflow] persistAgentSessions: could not persist this agent's session (${
+        `[workflow-orchestrator] persistAgentSessions: could not persist this agent's session (${
           error instanceof Error ? error.message : String(error)
         }); continuing with an in-memory session`,
       );
@@ -1028,7 +1028,7 @@ export class WorkflowAgent {
 
       // The SDK buries a provider usage/quota limit in the assistant message rather
       // than throwing; detect it here (before the schema/empty-text branches) so it
-      // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
+      // is classified as a recoverable pause, not a SCHEMA_NONCOMPLIANCE failure
       // (schema path) or a silent empty-output null (non-schema path).
       throwIfAssistantError(session.messages, options.label);
 

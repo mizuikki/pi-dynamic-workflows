@@ -630,7 +630,7 @@ test("wrapResourceLoader filters workflow path and tool/command identities", () 
       extension("extensions/safe.ts", "C:\\PROJECT\\EXTENSIONS\\WORKFLOW.CJS"),
       extension("extensions/safe-filter.ts", "/tmp/project/other-filter.ts"),
       extension("<inline:workflow>", "<inline:workflow>", ["workflow"]),
-      extension("<inline:prompt>", "<inline:prompt>", [], ["workflows-prompt"]),
+      extension("<inline:prompt>", "<inline:prompt>", [], ["workflow"]),
       extension("extensions/other.ts", "/tmp/project/extensions/other.ts"),
     ],
     errors: [

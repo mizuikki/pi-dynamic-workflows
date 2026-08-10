@@ -24,7 +24,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { DEFAULT_KEYWORD_TRIGGER_WORD, normalizeKeywordTriggerWord } from "./config.js";
-import { type EffortState, effortDirective, isSubstantive } from "./effort-command.js";
+import { type IntensityState, intensityDirective, isSubstantive } from "./intensity-command.js";
 import {
   loadWorkflowSettings,
   saveWorkflowSettings,
@@ -35,7 +35,7 @@ import {
 // A keyword trigger is a configured literal term. The default `workflow`
 // trigger keeps legacy substring behavior and plural support (`workflows`) while
 // custom trigger words match only that exact term. Slash commands like
-// `/workflows` or `/pi-workflow` are left alone (not colored, not armed).
+// `/workflow` or `/pi-workflow` are left alone (not colored, not armed).
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -75,6 +75,7 @@ export interface WorkflowModeState {
 
 export interface InstallWorkflowEditorOptions {
   settingsStore?: WorkflowSettingsStore;
+  state?: WorkflowModeState;
 }
 
 interface AnsiToken {
@@ -283,14 +284,14 @@ export function buildForcedWorkflowPrompt(text: string, extraDirective?: string)
     "---",
     "[workflows mode is ON for this message]",
     "You MUST handle this request by calling the tool named exactly `workflow` (Pi's",
-    "deterministic JavaScript workflow-orchestration tool from pi-dynamic-workflows).",
+    "deterministic JavaScript workflow-orchestration tool from Pi Workflow Orchestrator).",
     "Write a workflow script that fans the task out across subagents via",
     "agent()/parallel()/pipeline().",
     "",
     "The ONLY acceptable action is a `workflow` tool call. Do NOT instead:",
     "- answer directly or in prose,",
     "- call the `subagent` tool yourself,",
-    "- use any skill or command (e.g. pi-subagents, /code-review, deep-research),",
+    "- use another skill, command, or orchestration tool,",
     '- or interpret the word "workflow/workflows" loosely as some other parallel/audit approach.',
     "Even for a small task, wrap it in a minimal `workflow` call with at least one agent().",
   ];
@@ -305,148 +306,137 @@ export function buildForcedWorkflowPrompt(text: string, extraDirective?: string)
 /** The exact name of the workflow tool that workflows mode forces. */
 export const WORKFLOW_TOOL_NAME = "workflow";
 
-export function registerWorkflowTriggerCommand(
+export async function handleWorkflowTriggerCommand(
   pi: ExtensionAPI,
   state: WorkflowModeState,
+  args: string,
+  _ctx: ExtensionCommandContext,
   settingsStore: WorkflowSettingsStore = DEFAULT_SETTINGS_STORE,
-): void {
-  pi.registerCommand?.("workflows-trigger", {
-    description: "Keyword workflow trigger: on | off | set <word> | reset | status",
-    async handler(args: string, _ctx: ExtensionCommandContext) {
-      const raw = args.trim();
-      const [command = "status", ...rest] = raw.split(/\s+/);
-      const arg = command.toLowerCase();
-      const say = (content: string) => pi.sendMessage({ customType: "workflows-trigger", content, display: true });
-      if (arg === "on") {
-        state.keywordTriggerEnabled = true;
-        state.suppressedKeywordText = undefined;
-        const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerEnabled: true });
-        await say(
-          saved
-            ? `Workflows keyword trigger on — mentioning ${triggerDisplayName(state.keywordTriggerWord)} in an interactive message will auto-arm workflows mode. Saved for new sessions.`
-            : "Workflows keyword trigger on for this session, but the preference could not be saved.",
-        );
-        return;
-      }
-      if (arg === "off") {
-        state.keywordTriggerEnabled = false;
-        state.active = false;
-        state.suppressedKeywordText = undefined;
-        const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerEnabled: false });
-        await say(
-          saved
-            ? `Workflows keyword trigger off — messages can mention ${triggerDisplayName(state.keywordTriggerWord)} without forcing the workflow tool. Saved for new sessions. Use /workflows-trigger on to restore.`
-            : "Workflows keyword trigger off for this session, but the preference could not be saved. Use /workflows-trigger on to restore.",
-        );
-        return;
-      }
-      if (arg === "set") {
-        const requested = rest.join(" ");
-        const keywordTriggerWord = normalizeKeywordTriggerWord(requested);
-        if (!keywordTriggerWord) {
-          await say(
-            'Invalid trigger word. Use a non-empty term with no spaces and no leading "/", e.g. /workflows-trigger set pi-workflow',
-          );
-          return;
-        }
-        state.keywordTriggerWord = keywordTriggerWord;
-        state.suppressedKeywordText = undefined;
-        const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerWord });
-        await say(
-          saved
-            ? `Workflows keyword trigger word set to "${keywordTriggerWord}". Saved for new sessions.`
-            : `Workflows keyword trigger word set to "${keywordTriggerWord}" for this session, but the preference could not be saved.`,
-        );
-        return;
-      }
-      if (arg === "reset") {
-        state.keywordTriggerWord = DEFAULT_KEYWORD_TRIGGER_WORD;
-        state.suppressedKeywordText = undefined;
-        const saved = persistWorkflowTriggerSettings(settingsStore, {
-          keywordTriggerWord: DEFAULT_KEYWORD_TRIGGER_WORD,
-        });
-        await say(
-          saved
-            ? 'Workflows keyword trigger word reset to "workflow" (also matches "workflows"). Saved for new sessions.'
-            : 'Workflows keyword trigger word reset to "workflow" for this session, but the preference could not be saved.',
-        );
-        return;
-      }
-      const keywordTriggerWord = resolvedTriggerWord(state.keywordTriggerWord);
+): Promise<void> {
+  const raw = args.trim();
+  const [command = "status", ...rest] = raw.split(/\s+/);
+  const arg = command.toLowerCase();
+  const say = (content: string) => pi.sendMessage({ customType: "workflow-trigger", content, display: true });
+  if (arg === "on") {
+    state.keywordTriggerEnabled = true;
+    state.suppressedKeywordText = undefined;
+    const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerEnabled: true });
+    await say(
+      saved
+        ? `Workflows keyword trigger on — mentioning ${triggerDisplayName(state.keywordTriggerWord)} in an interactive message will auto-arm workflows mode. Saved for new sessions.`
+        : "Workflows keyword trigger on for this session, but the preference could not be saved.",
+    );
+    return;
+  }
+  if (arg === "off") {
+    state.keywordTriggerEnabled = false;
+    state.active = false;
+    state.suppressedKeywordText = undefined;
+    const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerEnabled: false });
+    await say(
+      saved
+        ? `Workflows keyword trigger off — messages can mention ${triggerDisplayName(state.keywordTriggerWord)} without forcing the workflow tool. Saved for new sessions. Use /workflow trigger on to restore.`
+        : "Workflows keyword trigger off for this session, but the preference could not be saved. Use /workflow trigger on to restore.",
+    );
+    return;
+  }
+  if (arg === "set") {
+    const requested = rest.join(" ");
+    const keywordTriggerWord = normalizeKeywordTriggerWord(requested);
+    if (!keywordTriggerWord) {
       await say(
-        `Workflows keyword trigger is ${state.keywordTriggerEnabled ? "on" : "off"}; trigger word is "${keywordTriggerWord}". Changes are saved for new sessions. Usage: /workflows-trigger on | off | set <word> | reset | status`,
+        'Invalid trigger word. Use a non-empty term with no spaces and no leading "/", e.g. /workflow trigger set pi-workflow',
       );
-    },
-  });
+      return;
+    }
+    state.keywordTriggerWord = keywordTriggerWord;
+    state.suppressedKeywordText = undefined;
+    const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerWord });
+    await say(
+      saved
+        ? `Workflows keyword trigger word set to "${keywordTriggerWord}". Saved for new sessions.`
+        : `Workflows keyword trigger word set to "${keywordTriggerWord}" for this session, but the preference could not be saved.`,
+    );
+    return;
+  }
+  if (arg === "reset") {
+    state.keywordTriggerWord = DEFAULT_KEYWORD_TRIGGER_WORD;
+    state.suppressedKeywordText = undefined;
+    const saved = persistWorkflowTriggerSettings(settingsStore, {
+      keywordTriggerWord: DEFAULT_KEYWORD_TRIGGER_WORD,
+    });
+    await say(
+      saved
+        ? 'Workflows keyword trigger word reset to "workflow" (also matches "workflows"). Saved for new sessions.'
+        : 'Workflows keyword trigger word reset to "workflow" for this session, but the preference could not be saved.',
+    );
+    return;
+  }
+  const keywordTriggerWord = resolvedTriggerWord(state.keywordTriggerWord);
+  await say(
+    `Workflows keyword trigger is ${state.keywordTriggerEnabled ? "on" : "off"}; trigger word is "${keywordTriggerWord}". Changes are saved for new sessions. Usage: /workflow trigger on | off | set <word> | reset | status`,
+  );
 }
 
 /**
  * Register the bottom progress-panel preference commands:
- *  - `/workflows-progress compact|detailed|status` — switch (or report) the panel mode.
- *  - `/workflows-progress-max <1-1000>` — cap agents shown per phase in detailed mode.
+ *  - `/workflow progress compact|detailed|status` — switch (or report) the panel mode.
+ *  - `/workflow progress max <1-1000>` — cap agents shown per phase in detailed mode.
  * Both persist via `settingsStore` and take effect on the next live run (the panel
  * live-reads its settings), so no session restart is needed.
  */
-export function registerWorkflowProgressCommands(
+export async function handleWorkflowProgressCommand(
   pi: ExtensionAPI,
+  args: string,
+  _ctx: ExtensionCommandContext,
   settingsStore: WorkflowSettingsStore = DEFAULT_SETTINGS_STORE,
-): void {
-  pi.registerCommand?.("workflows-progress", {
-    description: "Bottom progress panel: compact | detailed | status",
-    async handler(args: string, _ctx: ExtensionCommandContext) {
-      const arg = args.trim().toLowerCase();
-      const say = (content: string) => pi.sendMessage({ customType: "workflows-progress", content, display: true });
-      if (arg === "compact" || arg === "detailed") {
-        const saved = persistProgressSettings(settingsStore, { progressPanelMode: arg });
-        await say(
-          saved
-            ? `Workflow progress panel set to ${arg} — takes effect on the next render of a live run (no restart needed).`
-            : `Workflow progress panel set to ${arg} for this session, but the preference could not be saved.`,
-        );
-        return;
-      }
+): Promise<void> {
+  const [command = "status", value = ""] = args.trim().toLowerCase().split(/\s+/, 2);
+  const say = (content: string) => pi.sendMessage({ customType: "workflow-progress", content, display: true });
+  if (command === "max") {
+    if (!value) {
       await say(
-        `Workflow progress panel is ${loadProgressMode(settingsStore)}. Usage: /workflows-progress compact | detailed | status`,
+        `Detailed progress shows up to ${loadProgressMaxAgents(settingsStore)} agents per phase. Usage: /workflow progress max <1-1000>`,
       );
-    },
-  });
-
-  pi.registerCommand?.("workflows-progress-max", {
-    description: "Max agents shown per phase in detailed progress mode (1-1000)",
-    async handler(args: string, _ctx: ExtensionCommandContext) {
-      const arg = args.trim();
-      const say = (content: string) => pi.sendMessage({ customType: "workflows-progress", content, display: true });
-      if (!arg) {
-        await say(
-          `Detailed progress shows up to ${loadProgressMaxAgents(settingsStore)} agents per phase. Usage: /workflows-progress-max <1-1000>`,
-        );
-        return;
-      }
-      const n = Number.parseInt(arg, 10);
-      if (!Number.isFinite(n) || n < 1) {
-        await say(`Invalid value "${arg}". Usage: /workflows-progress-max <1-1000> (a whole number ≥ 1).`);
-        return;
-      }
-      const clamped = Math.min(1000, n);
-      const saved = persistProgressSettings(settingsStore, { progressPanelMaxAgents: clamped });
-      await say(
-        saved
-          ? `Detailed progress now shows up to ${clamped} agents per phase.`
-          : `Set to ${clamped} for this session, but the preference could not be saved.`,
-      );
-    },
-  });
+      return;
+    }
+    const n = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(n) || n < 1) {
+      await say(`Invalid value "${value}". Usage: /workflow progress max <1-1000> (a whole number >= 1).`);
+      return;
+    }
+    const clamped = Math.min(1000, n);
+    const saved = persistProgressSettings(settingsStore, { progressPanelMaxAgents: clamped });
+    await say(
+      saved
+        ? `Detailed progress now shows up to ${clamped} agents per phase.`
+        : `Set to ${clamped} for this session, but the preference could not be saved.`,
+    );
+    return;
+  }
+  if (command === "compact" || command === "detailed") {
+    const saved = persistProgressSettings(settingsStore, { progressPanelMode: command });
+    await say(
+      saved
+        ? `Workflow progress panel set to ${command} — takes effect on the next render of a live run (no restart needed).`
+        : `Workflow progress panel set to ${command} for this session, but the preference could not be saved.`,
+    );
+    return;
+  }
+  await say(
+    `Workflow progress panel is ${loadProgressMode(settingsStore)}. Usage: /workflow progress compact | detailed | status | max <1-1000>`,
+  );
 }
 
 export function installWorkflowEditor(
   pi: ExtensionAPI,
   ui: ExtensionUIContext,
-  effort?: EffortState,
+  intensity?: IntensityState,
   options: InstallWorkflowEditorOptions = {},
 ): WorkflowModeState {
   const settingsStore = options.settingsStore ?? DEFAULT_SETTINGS_STORE;
   const initialSettings = loadInitialWorkflowSettings(settingsStore);
-  const state: WorkflowModeState = {
+  const state: WorkflowModeState = options.state ?? {
     active: false,
     keywordTriggerEnabled: initialSettings.keywordTriggerEnabled ?? true,
     keywordTriggerWord: initialSettings.keywordTriggerWord ?? DEFAULT_KEYWORD_TRIGGER_WORD,
@@ -455,15 +445,13 @@ export function installWorkflowEditor(
   if (!ui.getEditorComponent?.()) {
     ui.setEditorComponent((tui, theme, keybindings) => new WorkflowEditor(tui, theme, keybindings, state));
   }
-  registerWorkflowTriggerCommand(pi, state, settingsStore);
-  registerWorkflowProgressCommands(pi, settingsStore);
 
   // Active tools saved while a turn is restricted to `workflow`; restored on turn_end.
   let savedTools: string[] | undefined;
 
   // When armed at submit time, rewrite the user's message to force a workflow AND
   // ensure the `workflow` tool is in the active tool set, so the model can call it.
-  // We keep all existing tools (bash, read, edit, write, web_search, etc.) because
+  // We keep all existing tools because
   // the model often needs them BEFORE writing the workflow script (e.g. exploring
   // the codebase, reading files, searching for context). This only ADDS the
   // workflow tool to the active set; no tools are removed (the original set is
@@ -480,8 +468,8 @@ export function installWorkflowEditor(
     const suppressed = state.suppressedKeywordText === normalizedText;
     if (suppressed) state.suppressedKeywordText = undefined;
     const triggered = state.keywordTriggerEnabled && !suppressed && hasTrigger(event.text, state.keywordTriggerWord);
-    const byEffort = !triggered && !!effort && effort.level !== "off" && isSubstantive(event.text);
-    if (!triggered && !byEffort) return { action: "continue" } as const;
+    const byIntensity = !triggered && !!intensity && intensity.level !== "off" && isSubstantive(event.text);
+    if (!triggered && !byIntensity) return { action: "continue" } as const;
     try {
       if (savedTools === undefined) {
         savedTools = pi.getActiveTools?.() ?? [];
@@ -495,7 +483,7 @@ export function installWorkflowEditor(
       // Tool restriction is best-effort; the directive still forces the workflow.
     }
     const structuredOutputEnabled = readStructuredOutputEnabled(settingsStore);
-    const extra = byEffort && effort ? effortDirective(effort.level, structuredOutputEnabled) : undefined;
+    const extra = byIntensity && intensity ? intensityDirective(intensity.level, structuredOutputEnabled) : undefined;
     return { action: "transform", text: buildForcedWorkflowPrompt(event.text, extra) } as const;
   });
 

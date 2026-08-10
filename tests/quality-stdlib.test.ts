@@ -127,7 +127,7 @@ test("schema-dependent helpers refuse before spawning children while disabled", 
         assert.equal(error?.code, WorkflowErrorCode.STRUCTURED_OUTPUT_DISABLED);
         assert.equal(error.recoverable, false);
         assert.match(error.message, /"structuredOutputEnabled": true/);
-        assert.match(error.message, /~\/\.pi\/workflows\/settings\.json/);
+        assert.match(error.message, /~\/\.pi\/workflow-orchestrator\/settings\.json/);
         return true;
       },
     );

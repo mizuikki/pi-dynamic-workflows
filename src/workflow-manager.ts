@@ -117,8 +117,6 @@ export interface ExecOptions {
   agentTurnRetry?: AgentTurnRetryOverride;
   /** Immutable host retry snapshot sampled for this execution. */
   hostRetryPolicy?: ImmutableHostRetryPolicySnapshot;
-  /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
-  confirm?: (promptText: string, options: unknown) => Promise<unknown>;
   /** Additional tools for built-in workflows and other manager-backed runs. */
   tools?: import("@earendil-works/pi-coding-agent").ToolDefinition[];
 }
@@ -528,7 +526,7 @@ export class WorkflowManager extends EventEmitter {
 
   /**
    * Execute a workflow synchronously (blocking) while still tracking it like a
-   * background run, so the `/workflows` navigator and the live task panel see it.
+   * background run, so the `/workflow` navigator and the live task panel see it.
    * `onProgress` fires on every progress event with the current snapshot, letting
    * a caller (e.g. the workflow tool) drive its own inline display.
    */
@@ -622,16 +620,8 @@ export class WorkflowManager extends EventEmitter {
     args?: unknown,
     exec: ExecOptions = {},
   ): Promise<WorkflowRunResult> {
-    const {
-      resumeJournal,
-      externalSignal,
-      onProgress,
-      hostRetryPolicy,
-      structuredOutputEnabled,
-      confirm,
-      tools,
-      onPhase,
-    } = exec;
+    const { resumeJournal, externalSignal, onProgress, hostRetryPolicy, structuredOutputEnabled, tools, onPhase } =
+      exec;
     const runTools = tools ?? managed.tools;
     const resolvedAgentTimeoutMs = managed.agentTimeoutMs;
     const resolvedConcurrency = managed.concurrency;
@@ -692,7 +682,6 @@ export class WorkflowManager extends EventEmitter {
           managed.snapshot.tokenUsage = usage;
           this.persistRun(managed);
         },
-        confirm,
         loadSavedWorkflow: this.loadSavedWorkflow,
         resumeJournal,
         resumeFromRunId: resumeJournal ? managed.runId : undefined,
@@ -798,7 +787,7 @@ export class WorkflowManager extends EventEmitter {
           managed.status = "aborted";
         }
       } else if (usageLimitPaused) {
-        // Provider quota/usage limit: NOT a failure. Checkpoint the run as paused so
+        // Provider quota/usage limit: NOT a failure. Pause the run so
         // the persisted journal (completed agent results) is replayed by resume()
         // once the budget refills — instead of the user starting from scratch.
         managed.status = "paused";
@@ -878,7 +867,7 @@ export class WorkflowManager extends EventEmitter {
     if (managed.leaseLost) return;
     managed.leaseLost = true;
     managed.controller.abort();
-    console.warn(`[workflow-manager] Workflow run ownership lost (${managed.runId}).`);
+    console.warn(`[workflow-orchestrator] Workflow run ownership lost (${managed.runId}).`);
   }
 
   private persistedState(managed: ManagedRun): PersistedRunState {
@@ -952,7 +941,7 @@ export class WorkflowManager extends EventEmitter {
     } catch (err) {
       if (err instanceof WorkflowPersistenceError && err.code === "LEASE_LOST") this.markLeaseLost(managed);
       if (required) throw err;
-      console.warn("[workflow-manager] Workflow checkpoint failed.");
+      console.warn("[workflow-orchestrator] Workflow persistence save failed.");
       return false;
     }
   }

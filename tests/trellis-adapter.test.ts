@@ -12,6 +12,7 @@ import {
   MAX_TRELLIS_TASK_CONTEXT_BYTES,
   parseActiveTaskLine,
   resolveActiveTaskPath,
+  resolveTrellisContextKey,
   SUPPORTED_TRELLIS_PROJECT_VERSION,
   shouldEnableTrellisAdapter,
   shouldRegisterTrellisSubagentTool,
@@ -20,13 +21,13 @@ import {
 import { runWorkflow } from "../src/workflow.js";
 import { loadWorkflowSettings, saveWorkflowSettings } from "../src/workflow-settings.js";
 import {
-  TRELLIS_1_0_3_LIMITS,
-  TRELLIS_1_0_3_NOTICES,
-  TRELLIS_1_0_3_TEMPLATE_SHA256,
+  TRELLIS_1_0_4_LIMITS,
+  TRELLIS_1_0_4_NOTICES,
+  TRELLIS_1_0_4_TEMPLATE_SHA256,
   trellisArtifactNotice,
-  V01_TRELLIS_1_0_3_PAYLOAD,
+  V01_TRELLIS_1_0_4_PAYLOAD,
   writeCanonicalTaskFixture,
-} from "./fixtures/trellis-1.0.3-context.js";
+} from "./fixtures/trellis-1.0.4-context.js";
 
 function makeProject(): string {
   return mkdtempSync(join(tmpdir(), "pi-dw-trellis-"));
@@ -35,18 +36,18 @@ function makeProject(): string {
 function writeTask(cwd: string, name = "04-17-demo"): string {
   const taskDir = join(cwd, ".trellis", "tasks", name);
   mkdirSync(taskDir, { recursive: true });
-  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
+  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.4\n", "utf-8");
   writeFileSync(join(taskDir, "prd.md"), "# PRD\nImplement the adapter.", "utf-8");
   writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: name, status: "in_progress" }), "utf-8");
   return taskDir;
 }
 
-test("V01: canonical 1.0.3 fixture payload is byte-identical", () => {
+test("V01: canonical 1.0.4 fixture payload is byte-identical", () => {
   const cwd = makeProject();
   try {
     const taskDir = writeCanonicalTaskFixture(cwd);
-    assert.equal(buildTrellisTaskContext(cwd, taskDir, "trellis-research"), V01_TRELLIS_1_0_3_PAYLOAD);
-    assert.match(TRELLIS_1_0_3_TEMPLATE_SHA256, /^[a-f0-9]{64}$/);
+    assert.equal(buildTrellisTaskContext(cwd, taskDir, "trellis-research"), V01_TRELLIS_1_0_4_PAYLOAD);
+    assert.match(TRELLIS_1_0_4_TEMPLATE_SHA256, /^[a-f0-9]{64}$/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -73,7 +74,7 @@ test("V03: invalid UTF-8 stays within the rendered artifact ceiling", () => {
     writeFileSync(join(taskDir, "prd.md"), Buffer.alloc(30_000, 0xff));
     const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
     assert.ok(payload.includes(trellisArtifactNotice(".trellis/tasks/invalid-utf8/prd.md")));
-    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_3_LIMITS.taskContext);
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_4_LIMITS.taskContext);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -86,7 +87,7 @@ test("V04: a partial multi-byte boundary is bounded with the canonical notice", 
     writeFileSync(join(taskDir, "prd.md"), `${"a".repeat(65_535)}é`, "utf-8");
     const payload = buildTrellisTaskContext(cwd, taskDir, "trellis-research");
     assert.ok(payload.includes(trellisArtifactNotice(".trellis/tasks/multibyte/prd.md")));
-    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_3_LIMITS.taskContext);
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_4_LIMITS.taskContext);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -102,7 +103,7 @@ test("V05: a source-truncated manifest retains its on-demand notice", () => {
     );
     const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
     assert.match(payload, /implement\.jsonl candidate context index/);
-    assert.ok(payload.includes(TRELLIS_1_0_3_NOTICES.manifestSource));
+    assert.ok(payload.includes(TRELLIS_1_0_4_NOTICES.manifestSource));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -195,9 +196,9 @@ test("V10: manifest and aggregate ceilings retain canonical limit notices", () =
     }
     writeFileSync(join(taskDir, "implement.jsonl"), rows.join("\n"));
     const payload = buildTrellisTaskContext(cwd, taskDir, "implement");
-    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_3_LIMITS.taskContext);
-    assert.ok(payload.includes(TRELLIS_1_0_3_NOTICES.manifestRendered));
-    assert.ok(payload.includes(TRELLIS_1_0_3_NOTICES.manifestEntry));
+    assert.ok(Buffer.byteLength(payload, "utf8") <= TRELLIS_1_0_4_LIMITS.taskContext);
+    assert.ok(payload.includes(TRELLIS_1_0_4_NOTICES.manifestRendered));
+    assert.ok(payload.includes(TRELLIS_1_0_4_NOTICES.manifestEntry));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -437,7 +438,7 @@ test("T19: research agentType does not attach jsonl map", () => {
   }
 });
 
-test("T20: multiple sessions with tasks fail closed", () => {
+test("T20: session pointers are never scanned when native identity is unavailable", () => {
   const cwd = makeProject();
   try {
     writeTask(cwd, "task-a");
@@ -447,9 +448,15 @@ test("T20: multiple sessions with tasks fail closed", () => {
     writeFileSync(join(sessions, "s1.json"), JSON.stringify({ current_task: ".trellis/tasks/task-a" }), "utf-8");
     writeFileSync(join(sessions, "s2.json"), JSON.stringify({ current_task: ".trellis/tasks/task-b" }), "utf-8");
     const warnings: string[] = [];
-    const path = resolveActiveTaskPath(cwd, "no active task line", undefined, {}, (m) => warnings.push(m));
+    const path = resolveActiveTaskPath(
+      cwd,
+      "no active task line",
+      undefined,
+      { resolveTaskPyCurrent: () => null },
+      (m) => warnings.push(m),
+    );
     assert.equal(path, undefined);
-    assert.ok(warnings.some((w) => w.includes("refusing to guess")));
+    assert.deepEqual(warnings, []);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -571,7 +578,7 @@ test("workflow settings normalize trellisAdapter", () => {
   }
 });
 
-test("single session adopt resolves task when prompt line missing", async () => {
+test("a singleton session pointer is not adopted when native identity is missing", async () => {
   const cwd = makeProject();
   try {
     writeTask(cwd);
@@ -580,7 +587,7 @@ test("single session adopt resolves task when prompt line missing", async () => 
     writeFileSync(join(sessions, "only.json"), JSON.stringify({ current_task: ".trellis/tasks/04-17-demo" }), "utf-8");
     const loader = createTrellisContextLoader({ enabled: "on", resolveTaskPyCurrent: () => null });
     const ctx = await loader({ cwd, prompt: "work", agentType: "trellis-implement" });
-    assert.ok(ctx?.promptPrefix?.includes("04-17-demo"));
+    assert.equal(ctx, undefined);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -723,6 +730,30 @@ test("sessionId resolves pi_<id> Trellis session map key", async () => {
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test("native session ids outrank ambient context and lossy normalization appends a hash", () => {
+  const original = process.env.TRELLIS_CONTEXT_ID;
+  process.env.TRELLIS_CONTEXT_ID = "pi_ambient";
+  try {
+    assert.equal(resolveTrellisContextKey("/tmp", "native"), "pi_native");
+    const first = resolveTrellisContextKey("/tmp", "a/b");
+    const second = resolveTrellisContextKey("/tmp", "a?b");
+    assert.match(first ?? "", /^pi_a_b_[a-f0-9]{24}$/);
+    assert.match(second ?? "", /^pi_a_b_[a-f0-9]{24}$/);
+    assert.notEqual(first, second);
+    assert.equal(resolveTrellisContextKey("/tmp", undefined), undefined);
+    assert.equal(resolveTrellisContextKey("/tmp", undefined, { preferEnv: true }), "pi_ambient");
+  } finally {
+    if (original === undefined) delete process.env.TRELLIS_CONTEXT_ID;
+    else process.env.TRELLIS_CONTEXT_ID = original;
+  }
+});
+
+test("native transcript identity is used only when session id is absent", () => {
+  const transcript = resolveTrellisContextKey("/tmp", undefined, { sessionFile: "/tmp/session.jsonl" });
+  assert.match(transcript ?? "", /^pi_transcript_[a-f0-9]{24}$/);
+  assert.equal(resolveTrellisContextKey("/tmp", "native", { sessionFile: "/tmp/session.jsonl" }), "pi_native");
 });
 
 test("loader returns env.TRELLIS_CONTEXT_ID when sessionId resolves", async () => {

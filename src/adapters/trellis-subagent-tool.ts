@@ -1,5 +1,5 @@
 /**
- * Optional host-facing `trellis_subagent` tool for pi-dynamic-workflows.
+ * Optional host-facing `trellis_subagent` tool for Pi Workflow Orchestrator.
  *
  * Dispatches single/parallel/chain runs through the shared WorkflowAgent runtime
  * with Trellis task context. Does NOT own Trellis lifecycle (create/start/archive).
@@ -118,6 +118,8 @@ export interface TrellisSubagentToolOptions {
   contextLoader?: SubagentContextLoader;
   /** Host session id for context key + loader. */
   getSessionId?: () => string | undefined;
+  /** Host transcript path fallback for native Trellis context identity. */
+  getSessionFile?: () => string | undefined;
   /** Host project trust flag. */
   getProjectTrusted?: () => boolean | undefined;
   /** Host thinking level when tool input omits thinking. */
@@ -295,7 +297,18 @@ export function createTrellisSubagentTool(
         options.getSessionId?.() ??
         (() => {
           try {
-            return (ctx as ExtensionContext | undefined)?.sessionManager?.getSessionId?.();
+            const manager = (ctx as ExtensionContext | undefined)?.sessionManager;
+            return manager?.getSessionId?.call(manager);
+          } catch {
+            return undefined;
+          }
+        })();
+      const sessionFile =
+        options.getSessionFile?.() ??
+        (() => {
+          try {
+            const manager = (ctx as ExtensionContext | undefined)?.sessionManager;
+            return manager?.getSessionFile?.call(manager);
           } catch {
             return undefined;
           }
@@ -323,11 +336,12 @@ export function createTrellisSubagentTool(
       void projectTrusted;
       void ctx;
 
-      const contextKey = resolveTrellisContextKey(cwd, sessionId);
+      const contextKey = resolveTrellisContextKey(cwd, sessionId, { sessionFile });
       const loaderOptions: TrellisContextLoaderOptions = {
         enabled: "on",
         autoPrependActiveTaskLine: autoPrepend,
         resolveTaskPyCurrent: options.resolveTaskPyCurrent,
+        getSessionFile: () => sessionFile,
         warn,
       };
 
@@ -386,7 +400,7 @@ export function createTrellisSubagentTool(
         const fullPrompt = buildDelegatedPrompt(cwd, agentName, agentDefinition, taskPrompt, taskDir);
         const contextLoader: SubagentContextLoader = async (args) => {
           const base = options.contextLoader ? await options.contextLoader(args) : undefined;
-          const key = contextKey ?? resolveTrellisContextKey(args.cwd, args.sessionId);
+          const key = contextKey ?? resolveTrellisContextKey(args.cwd, args.sessionId, { sessionFile });
           const env = key ? { TRELLIS_CONTEXT_ID: key } : undefined;
           // Prompt already includes task context; only inject env (+ optional instructions).
           return {

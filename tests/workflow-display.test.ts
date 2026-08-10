@@ -689,8 +689,8 @@ describe("deliverText", () => {
 describe("backgroundStartedText", () => {
   it("includes workflow name and run ID", async () => {
     const { backgroundStartedText } = await loadTool();
-    const text = backgroundStartedText("deep-research", "run-xyz");
-    assert.ok(text.includes("deep-research"), "should contain deep-research");
+    const text = backgroundStartedText("audit-workflow", "run-xyz");
+    assert.ok(text.includes("audit-workflow"), "should contain the workflow name");
     assert.ok(text.includes("run-xyz"), "should contain run-xyz");
   });
 
@@ -706,10 +706,10 @@ describe("backgroundStartedText", () => {
     assert.ok(text.includes("wait here") || text.includes("other things"), "should mention options");
   });
 
-  it("mentions /workflows status command for tracking", async () => {
+  it("mentions /workflow status command for tracking", async () => {
     const { backgroundStartedText } = await loadTool();
     const text = backgroundStartedText("audit", "r-1");
-    assert.ok(text.includes("/workflows"), "should mention /workflows");
+    assert.ok(text.includes("/workflow status r-1"), "should mention the workflow status command");
   });
 });
 

@@ -16,7 +16,7 @@ export enum WorkflowErrorCode {
   /**
    * The provider's subscription/usage/quota limit was hit. Distinct from the
    * user's self-imposed TOKEN_BUDGET_EXHAUSTED: a provider limit refills on its own,
-   * so the run is checkpointed (paused) and replayed by resume() rather than failed.
+   * so the run is paused and replayed by resume() rather than failed.
    */
   PROVIDER_USAGE_LIMIT = "PROVIDER_USAGE_LIMIT",
   /** Script validation failed. */
@@ -148,8 +148,8 @@ export function wrapError(error: unknown, context?: { agentLabel?: string }): Wo
 
   // Defense-in-depth: today the SDK buries provider usage/quota limits in an
   // assistant message (detected in agent.ts), but a future SDK might throw them.
-  // Classify a thrown limit here too — recoverable:false so the run checkpoints
-  // (paused) instead of being retried into the same wall or silently nulled.
+  // Classify a thrown limit here too — recoverable:false so the run pauses
+  // instead of being retried into the same wall or silently nulled.
   if (error instanceof Error) {
     const limit = classifyProviderLimit(error.message);
     if (limit.matched) {

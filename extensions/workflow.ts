@@ -1,11 +1,12 @@
 import type { ExtensionAPI, ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
-  createEffortState,
+  createIntensityState,
   createTrellisContextLoader,
   createTrellisSubagentTool,
   createWorkflowModelScopeSnapshot,
   createWorkflowStorage,
   createWorkflowTool,
+  DEFAULT_KEYWORD_TRIGGER_WORD,
   hasRegisteredTrellisSubagentTool,
   hasSupportedTrellisProject,
   hasTrellisProject,
@@ -16,13 +17,8 @@ import {
   isWorkflowMainPromptEnabled,
   loadWorkflowMainPrompt,
   loadWorkflowSettings,
-  registerAllSavedWorkflows,
-  registerBuiltinWorkflows,
-  registerEffortCommand,
-  registerWorkflowCommands,
-  registerWorkflowMainPromptCommand,
+  registerWorkflowCommand,
   registerWorkflowMainPromptFlag,
-  registerWorkflowModelsCommand,
   SUPPORTED_TRELLIS_PROJECT_VERSION,
   saveWorkflowSettingsForCwd,
   shouldEnableTrellisAdapter,
@@ -44,20 +40,26 @@ export default function extension(pi: ExtensionAPI) {
     throw new Error("Pi host is incompatible: requires retry policy snapshot API version 1");
   }
 
-  // Single manager/storage shared by the workflow tool and the /workflows command,
+  // Single manager/storage shared by the workflow tool and the /workflow command,
   // so background runs started by the tool are reachable from the command.
   const cwd = process.cwd();
+  let hostSessionId: string | undefined;
+  let hostSessionFile: string | undefined;
   const storage = createWorkflowStorage(cwd);
   const settings = loadWorkflowSettings({ cwd });
   if (settings.defaultAgentRetries !== undefined) {
-    console.warn("[workflow] defaultAgentRetries is deprecated and ignored; use explicit agentRunRetries per run");
+    console.warn(
+      "[workflow-orchestrator] defaultAgentRetries is deprecated and ignored; use explicit agentRunRetries per run",
+    );
   }
   // Optional Trellis adapter: read-only context injection + optional host tool
   // when the native Trellis extension is absent. Never owns create/start/archive
   // or phase management.
   const trellisCompatible = hasSupportedTrellisProject(cwd);
   if (hasTrellisProject(cwd) && !trellisCompatible) {
-    console.warn(`[trellis-adapter] disabled: requires Trellis project version ${SUPPORTED_TRELLIS_PROJECT_VERSION}`);
+    console.warn(
+      `[workflow-orchestrator] Trellis adapter disabled: requires project version ${SUPPORTED_TRELLIS_PROJECT_VERSION}`,
+    );
   }
   const trellisEnabled = trellisCompatible && shouldEnableTrellisAdapter(cwd, settings.trellisAdapter);
   const trellisContextLoader = trellisEnabled
@@ -65,6 +67,7 @@ export default function extension(pi: ExtensionAPI) {
         enabled: settings.trellisAdapter?.enabled ?? "auto",
         autoPrependActiveTaskLine: settings.trellisAdapter?.autoPrependActiveTaskLine,
         registerSubagentTool: settings.trellisAdapter?.registerSubagentTool,
+        getSessionFile: () => hostSessionFile,
       })
     : undefined;
   const manager = new WorkflowManager({
@@ -109,7 +112,6 @@ export default function extension(pi: ExtensionAPI) {
   // extension files are absent (auto), and no tool with that name exists yet.
   // Decision is deferred to session_start when getAllTools is reliably available.
   let trellisSubagentRegistered = false;
-  let hostSessionId: string | undefined;
   let hostProjectTrusted: boolean | undefined;
   let hostThinkingLevel: string | undefined;
 
@@ -149,7 +151,9 @@ export default function extension(pi: ExtensionAPI) {
     if (trellisSubagentRegistered) return;
     if (!trellisCompatible || !shouldRegisterTrellisSubagentTool(cwd, settings.trellisAdapter)) return;
     if (hasRegisteredTrellisSubagentTool(pi)) {
-      console.warn("[trellis-subagent-tool] skipped: tool already registered (native Trellis or another extension)");
+      console.warn(
+        "[workflow-orchestrator] Trellis subagent tool skipped: tool already registered (native Trellis or another extension)",
+      );
       return;
     }
     // Lazy agent: rebuild each run so model runtime / trust / thinking stay current.
@@ -180,6 +184,7 @@ export default function extension(pi: ExtensionAPI) {
       agent,
       contextLoader: trellisContextLoader,
       getSessionId: () => hostSessionId,
+      getSessionFile: () => hostSessionFile,
       getProjectTrusted: () => hostProjectTrusted,
       getThinkingLevel: () => hostThinkingLevel ?? pi.getThinkingLevel?.(),
       settings: settings.trellisAdapter,
@@ -204,31 +209,44 @@ export default function extension(pi: ExtensionAPI) {
     // Inherit host project trust; ExtensionContext always exposes isProjectTrusted.
     hostProjectTrusted = ctx.isProjectTrusted();
     manager.setProjectTrusted(hostProjectTrusted);
+    const sessionManager = ctx.sessionManager;
     try {
-      hostSessionId = ctx.sessionManager?.getSessionId();
-      manager.setSessionId(hostSessionId);
+      hostSessionId = sessionManager?.getSessionId?.call(sessionManager);
     } catch {
-      // Some headless contexts do not expose a session manager.
       hostSessionId = undefined;
-      manager.setSessionId(undefined);
     }
+    try {
+      hostSessionFile = sessionManager?.getSessionFile?.call(sessionManager);
+    } catch {
+      hostSessionFile = undefined;
+    }
+    manager.setSessionId(hostSessionId);
     workflowTool = createWorkflowTool({ cwd, manager, storage, modelRegistry: ctx.modelRegistry, modelScope });
     pi.registerTool(workflowTool);
     if (activateTool || wasActive) ensureWorkflowToolActive();
     // Register / re-check trellis_subagent after tools are live.
     tryRegisterTrellisSubagent(ctx);
   };
-  // Standing /effort opt-in (off|high|ultra): auto-arms a workflow for substantive
-  // messages, like CC's ultracode. Shared with the editor's input hook below and
-  // with the explicit /workflows run <prompt> manual trigger.
-  const effort = createEffortState();
-  registerWorkflowCommands(pi, manager, { storage, cwd, effort });
+  // Standing orchestration intensity is shared by the root command and editor hook.
+  const intensity = createIntensityState();
+  const workflowModeState = {
+    active: false,
+    keywordTriggerEnabled: settings.keywordTriggerEnabled ?? true,
+    keywordTriggerWord: settings.keywordTriggerWord ?? DEFAULT_KEYWORD_TRIGGER_WORD,
+  };
+  const settingsStore = {
+    load: () => loadWorkflowSettings({ cwd }),
+    save: (nextSettings: Parameters<typeof saveWorkflowSettingsForCwd>[0]) =>
+      saveWorkflowSettingsForCwd(nextSettings, cwd),
+  };
+  registerWorkflowCommand(pi, manager, {
+    storage,
+    cwd,
+    intensity,
+    modeState: workflowModeState,
+    settingsStore,
+  });
   registerWorkflowMainPromptFlag(pi);
-  registerWorkflowMainPromptCommand(pi);
-  registerWorkflowModelsCommand(pi);
-  registerBuiltinWorkflows(pi, { cwd, manager });
-  registerAllSavedWorkflows(pi, cwd, storage, manager);
-  registerEffortCommand(pi, effort);
   // "Workflows mode": type `workflow(s)` to arm a forced workflow (animated),
   // Backspace right after the word disarms it. Registers the `input` hook now;
   // the editor itself is installed once the UI is available (session_start).
@@ -242,15 +260,13 @@ export default function extension(pi: ExtensionAPI) {
     // a restart.
     installResultDelivery(pi, manager, { loadSettings: () => loadWorkflowSettings({ cwd }) });
     // Live "workflows running" panel below the input (focus + enter to open).
-    // Pass a live settings loader so /workflows-progress (compact|detailed) takes
+    // Pass a live settings loader so /workflow progress takes
     // effect without a restart.
     installTaskPanel(pi, manager, ctx.ui, { storage, cwd, loadSettings: () => loadWorkflowSettings({ cwd }) });
     if (!editorInstalled) {
-      installWorkflowEditor(pi, ctx.ui, effort, {
-        settingsStore: {
-          load: () => loadWorkflowSettings({ cwd }),
-          save: (nextSettings) => saveWorkflowSettingsForCwd(nextSettings, cwd),
-        },
+      installWorkflowEditor(pi, ctx.ui, intensity, {
+        settingsStore,
+        state: workflowModeState,
       });
       editorInstalled = true;
     }

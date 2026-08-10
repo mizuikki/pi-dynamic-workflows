@@ -17,11 +17,11 @@ import {
   enableWorkflowMainPrompt,
   formatWorkflowMainPromptDiagnostic,
   getWorkflowMainPromptSettingsPath,
+  handleWorkflowMainPromptCommand,
   inspectWorkflowMainPrompt,
   isWorkflowMainPromptEnabled,
   MAX_WORKFLOW_MAIN_BYTES,
   loadWorkflowMainPrompt as readWorkflowMainPromptFile,
-  registerWorkflowMainPromptCommand,
   WORKFLOW_MAIN_MARKER,
   WORKFLOW_MAIN_RELATIVE_PATH,
 } from "../src/main-agent-prompt.js";
@@ -164,7 +164,10 @@ test("prompt opt-in is exact-project scoped with no global or parent inheritance
       assert.equal(isWorkflowMainPromptEnabled(parent), true);
       assert.equal(isWorkflowMainPromptEnabled(child), false);
       assert.equal(isWorkflowMainPromptEnabled(sibling), false);
-      writeFileSync(join(home, ".pi", "workflows", "settings.json"), JSON.stringify({ mainPromptEnabled: true }));
+      writeFileSync(
+        join(home, ".pi", "workflow-orchestrator", "settings.json"),
+        JSON.stringify({ mainPromptEnabled: true }),
+      );
       assert.equal(isWorkflowMainPromptEnabled(sibling), false);
     });
   } finally {
@@ -242,23 +245,14 @@ test("accepts exactly the 64 KiB boundary and rejects read errors without raw er
   }
 });
 
-test("prompt command requires opt-in, confirms writes, and reports metadata only after authorization", async () => {
+test("prompt command requires opt-in, enables directly, and reports metadata only after authorization", async () => {
   const cwd = project();
   const home = mkdtempSync(join(tmpdir(), "pi-dw-main-prompt-command-home-"));
-  const commands: Array<{ name: string; handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }> = [];
   const notifications: string[] = [];
   const sent: unknown[] = [];
-  let confirmed = false;
   let flagValue: boolean | undefined;
   const pi = {
-    getCommands: () => [],
     getFlag: () => flagValue,
-    registerCommand: (
-      name: string,
-      command: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> },
-    ) => {
-      commands.push({ name, handler: command.handler });
-    },
     sendMessage: (message: unknown) => sent.push(message),
   } as unknown as ExtensionAPI;
 
@@ -267,10 +261,9 @@ test("prompt command requires opt-in, confirms writes, and reports metadata only
   try {
     await withFakeHomeAsync(home, async () => {
       writeFileSync(promptPath(cwd), "secret prompt content");
-      registerWorkflowMainPromptCommand(pi);
-      assert.equal(commands.length, 1);
-      const command = commands[0];
-      assert.ok(command);
+      const command = {
+        handler: (args: string, ctx: ExtensionCommandContext) => handleWorkflowMainPromptCommand(pi, args, ctx),
+      };
 
       const ctx = {
         cwd,
@@ -280,7 +273,6 @@ test("prompt command requires opt-in, confirms writes, and reports metadata only
           throw new Error("status must not consult the current system prompt");
         },
         ui: {
-          confirm: async () => confirmed,
           notify: (message: string) => notifications.push(message),
         },
       } as unknown as ExtensionCommandContext;
@@ -288,21 +280,16 @@ test("prompt command requires opt-in, confirms writes, and reports metadata only
       assert.match(notifications.at(-1) ?? "", /reason=opt-in-disabled/);
       assert.equal(sent.length, 0);
 
-      const headless = { ...ctx, hasUI: false } as unknown as ExtensionCommandContext;
-      await command.handler("enable", headless);
-      assert.match(notifications.at(-1) ?? "", /requires interactive UI/);
-      assert.equal(existsSync(getWorkflowMainPromptSettingsPath(cwd)), false);
+      await command.handler("enable", { ...ctx, hasUI: false });
+      assert.equal(JSON.parse(readFileSync(getWorkflowMainPromptSettingsPath(cwd), "utf8")).mainPromptEnabled, true);
 
-      confirmed = false;
-      await command.handler("enable", ctx);
-      assert.match(notifications.at(-1) ?? "", /remains disabled/);
+      await command.handler("disable", ctx);
       assert.equal(existsSync(getWorkflowMainPromptSettingsPath(cwd)), false);
 
       await command.handler("enable", { ...ctx, isProjectTrusted: () => false });
       assert.match(notifications.at(-1) ?? "", /requires a trusted project/);
       assert.equal(existsSync(getWorkflowMainPromptSettingsPath(cwd)), false);
 
-      confirmed = true;
       await command.handler("enable", ctx);
       assert.equal(JSON.parse(readFileSync(getWorkflowMainPromptSettingsPath(cwd), "utf8")).mainPromptEnabled, true);
 
@@ -321,7 +308,7 @@ test("prompt command requires opt-in, confirms writes, and reports metadata only
       assert.equal(existsSync(getWorkflowMainPromptSettingsPath(cwd)), false);
 
       await command.handler("", ctx);
-      assert.match(notifications.at(-1) ?? "", /Usage: \/workflows-prompt enable\|disable\|status/);
+      assert.match(notifications.at(-1) ?? "", /Usage: \/workflow prompt enable\|disable\|status/);
 
       const untrusted = { ...ctx, isProjectTrusted: () => false } as unknown as ExtensionCommandContext;
       await command.handler("status", untrusted);
@@ -361,16 +348,6 @@ test("only explicit child markers suppress host prompt loading", () => {
   assert.equal(isKnownTrellisChild({ PI_DYNAMIC_WORKFLOWS_CHILD: "1" }), true);
   assert.equal(isKnownTrellisChild({ TRELLIS_CONTEXT_ID: "pi_session" }), false);
   assert.equal(isKnownTrellisChild({ TRELLIS_SUBAGENT_CHILD: "0" }), false);
-});
-
-test("duplicate command registration is ignored", () => {
-  const commands: string[] = [];
-  const pi = {
-    getCommands: () => [{ name: "workflows-prompt" }],
-    registerCommand: (name: string) => commands.push(name),
-  } as unknown as ExtensionAPI;
-  registerWorkflowMainPromptCommand(pi);
-  assert.deepEqual(commands, []);
 });
 
 test("real Pi host turns inject, chain, and re-read the project prompt once per turn", async () => {
@@ -463,9 +440,9 @@ test("real Pi host turns inject, chain, and re-read the project prompt once per 
     });
 
     assert.equal(capturedPrompts.length, 3);
-    assert.equal((capturedPrompts[0]?.match(/pi-dynamic-workflows:workflow-main/g) ?? []).length, 1);
-    assert.equal((capturedPrompts[1]?.match(/pi-dynamic-workflows:workflow-main/g) ?? []).length, 1);
-    assert.equal((capturedPrompts[2]?.match(/pi-dynamic-workflows:workflow-main/g) ?? []).length, 1);
+    assert.equal((capturedPrompts[0]?.match(/pi-workflow-orchestrator:workflow-main/g) ?? []).length, 1);
+    assert.equal((capturedPrompts[1]?.match(/pi-workflow-orchestrator:workflow-main/g) ?? []).length, 1);
+    assert.equal((capturedPrompts[2]?.match(/pi-workflow-orchestrator:workflow-main/g) ?? []).length, 1);
     assert.match(capturedPrompts[0] ?? "", /host prompt one/);
     assert.match(capturedPrompts[0] ?? "", /shared append instructions/);
     assert.match(capturedPrompts[0] ?? "", /chain handler/);
@@ -538,7 +515,7 @@ test("WorkflowAgent child sessions filter the host extension before it can injec
 
     assert.equal(capturedPrompts.length, 1);
     assert.doesNotMatch(capturedPrompts[0] ?? "", /host prompt must stay out of child/);
-    assert.equal((capturedPrompts[0]?.match(/pi-dynamic-workflows:workflow-main/g) ?? []).length, 0);
+    assert.equal((capturedPrompts[0]?.match(/pi-workflow-orchestrator:workflow-main/g) ?? []).length, 0);
   } finally {
     faux.dispose();
     rmSync(home, { recursive: true, force: true });
@@ -612,7 +589,7 @@ test("WorkflowAgent custom inline loaders isolate the host policy and preserve A
     assert.equal(capturedPrompts.length, 1);
     assert.doesNotMatch(capturedPrompts[0] ?? "", /inline host prompt must stay out/);
     assert.match(capturedPrompts[0] ?? "", /append instructions must remain/);
-    assert.equal((capturedPrompts[0]?.match(/pi-dynamic-workflows:workflow-main/g) ?? []).length, 0);
+    assert.equal((capturedPrompts[0]?.match(/pi-workflow-orchestrator:workflow-main/g) ?? []).length, 0);
   } finally {
     faux.dispose();
     rmSync(home, { recursive: true, force: true });

@@ -1,8 +1,8 @@
 {
-  "name": "@quintinshaw/pi-dynamic-workflows",
+  "name": "@mizuikki/pi-workflow-orchestrator",
   "version": "2.14.0",
   "private": true,
-  "description": "Claude-Code-style dynamic workflows for Pi — fan a task out across 100s of subagents with real model routing, token/cost accounting, resume, git-worktree isolation, an interactive /workflows TUI, and a real /deep-research.",
+  "description": "Pi Workflow Orchestrator: deterministic JavaScript workflows with subagents, persistence, resume, model controls, and Trellis integration.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,7 +16,9 @@
     "dist/",
     "extensions/",
     "src/",
+    "docs/architecture.md",
     "docs/storage.md",
+    "docs/media/",
     "README.md"
   ],
   "scripts": {
@@ -24,12 +26,14 @@
     "test:unit": "node scripts/run-unit-tests.mjs",
     "test:pi-fork": "node scripts/test-pi-fork.mjs",
     "test:package-smoke": "bash scripts/test-package-smoke.sh",
+    "test:local-install-smoke": "node scripts/test-local-install-smoke.mjs",
     "smoke:trellis-context": "node scripts/smoke-trellis-context.mjs",
-    "verify:trellis-oracle": "node scripts/verify-trellis-1.0.3-oracle.mjs ../Trellis/packages/cli/src/templates/pi/extensions/trellis/index.ts.txt",
+    "verify:trellis-oracle": "node scripts/verify-trellis-1.0.4-oracle.mjs ../Trellis/packages/cli/src/templates/pi/extensions/trellis/index.ts.txt",
+    "verify:product-boundary": "node scripts/verify-product-boundary.mjs",
     "check": "biome check .",
     "format": "biome format --write .",
     "lint": "biome lint .",
-    "build": "tsc",
+    "build": "node scripts/build.mjs",
     "benchmark:persistence": "tsx scripts/benchmark-run-persistence.ts",
     "dev": "tsx src/index.ts"
   },
@@ -39,7 +43,7 @@
     "pi-coding-agent",
     "workflow",
     "workflows",
-    "dynamic-workflows",
+    "workflow-orchestrator",
     "orchestration",
     "subagents",
     "multi-agent",
@@ -48,8 +52,6 @@
     "parallel",
     "fan-out",
     "claude-code",
-    "deep-research",
-    "code-review",
     "llm"
   ],
   "pi": {
@@ -59,7 +61,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/QuintinShaw/pi-dynamic-workflows.git"
+    "url": "git+https://github.com/mizuikki/pi-dynamic-workflows.git"
   },
   "author": "QuintinShaw",
   "contributors": [
@@ -97,7 +99,7 @@
     "test": "tests"
   },
   "bugs": {
-    "url": "https://github.com/QuintinShaw/pi-dynamic-workflows/issues"
+    "url": "https://github.com/mizuikki/pi-dynamic-workflows/issues"
   },
-  "homepage": "https://github.com/QuintinShaw/pi-dynamic-workflows#readme"
+  "homepage": "https://github.com/mizuikki/pi-dynamic-workflows#readme"
 }

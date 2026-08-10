@@ -4,12 +4,12 @@ import {
   type ModelThinkingLevel,
   type WorkflowManager,
   type WorkflowRunOptions,
-} from "@quintinshaw/pi-dynamic-workflows";
+} from "@mizuikki/pi-workflow-orchestrator";
 
 const manager: WorkflowManager | undefined = undefined;
 const options: WorkflowRunOptions = { cwd: "." };
 const descriptor = createKeelPiHostDescriptor({
-  revision: "6b29c9e1a2f09fee6e041fb5e239ae664f06c005",
+  revision: "0000000000000000000000000000000000000000",
   distribution: "maintained-fork-checkout",
 });
 const bridge: KeelHostBridgeV1 | undefined = undefined;

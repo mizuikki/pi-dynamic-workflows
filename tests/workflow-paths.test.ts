@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, normalize, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import {
   WORKFLOW_DATABASE_FILENAME,
@@ -9,10 +9,10 @@ import {
   WORKFLOW_PROJECTS_SUBDIR,
   workflowCanonicalProjectPath,
   workflowDatabasePath,
+  workflowGlobalSavedDir,
   workflowHomeDir,
   workflowProjectKey,
   workflowProjectPaths,
-  workflowUserSavedDir,
 } from "../src/workflow-paths.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
@@ -31,7 +31,7 @@ describe("workflow paths", () => {
   it("resolves workflow home under the user home", async () => {
     await withIsolatedHome(async (home) => {
       assert.equal(workflowHomeDir(), join(home, WORKFLOW_HOME_RELATIVE_DIR));
-      assert.equal(workflowUserSavedDir(), join(home, WORKFLOW_HOME_RELATIVE_DIR, "saved"));
+      assert.equal(workflowGlobalSavedDir(), join(home, WORKFLOW_HOME_RELATIVE_DIR, "saved"));
       assert.equal(workflowDatabasePath(), join(home, WORKFLOW_HOME_RELATIVE_DIR, WORKFLOW_DATABASE_FILENAME));
     });
   });
@@ -51,7 +51,6 @@ describe("workflow paths", () => {
       assert.ok(paths.rootDir.startsWith(join(home, WORKFLOW_HOME_RELATIVE_DIR, WORKFLOW_PROJECTS_SUBDIR)));
       assert.equal(paths.savedDir, join(paths.rootDir, "saved"));
       assert.equal(paths.settingsPath, join(paths.rootDir, "settings.json"));
-      assert.equal(paths.legacySavedDir, normalize(join(cwd, ".pi/workflows/saved")));
       assert.equal(workflowCanonicalProjectPath(cwd), resolve(cwd));
     });
   });

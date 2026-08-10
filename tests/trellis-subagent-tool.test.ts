@@ -22,7 +22,7 @@ function makeProject(): string {
 function writeTask(cwd: string, name = "04-17-demo"): string {
   const taskDir = join(cwd, ".trellis", "tasks", name);
   mkdirSync(taskDir, { recursive: true });
-  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
+  writeFileSync(join(cwd, ".trellis", ".version"), "1.0.4\n", "utf-8");
   writeFileSync(join(taskDir, "prd.md"), "# PRD\nImplement the adapter.", "utf-8");
   writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: name, status: "in_progress" }), "utf-8");
   return taskDir;
@@ -83,7 +83,7 @@ test("D3: native trellis extension path → auto skips registration", () => {
   const cwd = makeProject();
   try {
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.4\n", "utf-8");
     mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
     writeFileSync(join(cwd, ".pi", "extensions", "trellis.ts"), "export default () => {}", "utf-8");
     assert.equal(hasNativeTrellisExtension(cwd), true);
@@ -511,7 +511,7 @@ test("auto + .trellis without native wants registration", () => {
   const cwd = makeProject();
   try {
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.4\n", "utf-8");
     assert.equal(shouldRegisterTrellisSubagentTool(cwd, { enabled: "auto" }), true);
   } finally {
     rmSync(cwd, { recursive: true, force: true });

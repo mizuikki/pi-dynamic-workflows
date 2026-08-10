@@ -13,7 +13,7 @@ if (manifestPath === undefined || consumerDirectory === undefined || tarball ===
 }
 
 createManifestConsumer(consumerDirectory, readLocalSdkManifest(manifestPath), {
-  "@quintinshaw/pi-dynamic-workflows": `file:${tarball}`,
+  "@mizuikki/pi-workflow-orchestrator": `file:${tarball}`,
   typebox: "1.3.7",
   typescript: "latest",
 });

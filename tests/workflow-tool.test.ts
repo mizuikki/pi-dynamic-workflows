@@ -26,7 +26,7 @@ test("backgroundStartedText tells the user it auto-continues and they can wait",
   assert.match(text, /wait here/i);
   assert.match(text, /continues automatically|resume the conversation/i);
   assert.match(text, /other things/i);
-  assert.match(text, /\/workflows status abc-123/);
+  assert.match(text, /\/workflow status abc-123/);
 });
 
 // ─── createWorkflowTool ────────────────────────────────────────────────────────

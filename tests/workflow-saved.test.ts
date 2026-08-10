@@ -3,14 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unl
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { WORKFLOW_SAVED_DIR } from "../src/config.js";
-import { workflowProjectPaths } from "../src/workflow-paths.js";
+import { workflowGlobalSavedDir, workflowProjectPaths } from "../src/workflow-paths.js";
 import { createWorkflowStorage } from "../src/workflow-saved.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 /**
  * Run tests with HOME overridden to a temp directory so the user-level
- * saved workflows directory (~/.pi/workflows/saved) is isolated.
+ * global saved workflows directory is isolated.
  */
 function withIsolatedHome(fn: (cwd: string) => Promise<void>) {
   return async () => {
@@ -41,24 +40,27 @@ test(
     const dir = workflowProjectPaths(cwd).savedDir;
     assert.ok(existsSync(dir), "project saved dir should exist");
     assert.ok(existsSync(join(dir, "test-wf.json")), "file should exist");
-    assert.equal(existsSync(join(cwd, WORKFLOW_SAVED_DIR)), false, "legacy project saved dir should not be created");
+    assert.equal(existsSync(join(cwd, ".pi", "workflows")), false, "old project state must not be created");
   }),
 );
 
 test(
-  "createWorkflowStorage save to user location",
+  "createWorkflowStorage save to global location",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
     const saved = storage.save(
       {
-        name: "user-wf",
-        description: "User workflow",
+        name: "global-wf",
+        description: "Global workflow",
         script: "export const meta = { name: 'u', description: 'u' }",
       },
-      "user",
+      "global",
     );
-    assert.equal(saved.location, "user");
-    assert.ok(saved.path.includes(`.pi${sep}workflows${sep}saved`), "should contain .pi/workflows/saved");
+    assert.equal(saved.location, "global");
+    assert.ok(
+      saved.path.includes(`.pi${sep}workflow-orchestrator${sep}saved`),
+      "should use the new global saved directory",
+    );
   }),
 );
 
@@ -74,10 +76,10 @@ test(
     storage.save(
       {
         name: "shared",
-        description: "User version",
-        script: "user script",
+        description: "Global version",
+        script: "global script",
       },
-      "user",
+      "global",
     );
     const loaded = storage.load("shared");
     assert.ok(loaded, "should load");
@@ -95,70 +97,113 @@ test(
 );
 
 test(
-  "createWorkflowStorage load returns user workflow when no project version exists",
+  "createWorkflowStorage supports explicit project/global lookup and all-scope listing",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save(
-      {
-        name: "user-only",
-        description: "Only in user",
-        script: "user script",
-      },
-      "user",
+    storage.save({ name: "shared", description: "Project", script: "project" }, "project");
+    storage.save({ name: "shared", description: "Global", script: "global" }, "global");
+
+    assert.equal(storage.load("shared", "project")?.script, "project");
+    assert.equal(storage.load("shared", "global")?.script, "global");
+    assert.deepEqual(
+      storage.list("all").map((workflow) => `${workflow.location}:${workflow.name}`),
+      ["project:shared", "global:shared"],
     );
-    const loaded = storage.load("user-only");
-    assert.ok(loaded, "should load successfully");
-    assert.equal(loaded?.script, "user script");
-    assert.equal(loaded?.location, "user");
   }),
 );
 
 test(
-  "createWorkflowStorage load reads legacy project workflows before user workflows",
+  "createWorkflowStorage load returns global workflow when no project version exists",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const legacyProjectDir = join(cwd, WORKFLOW_SAVED_DIR);
-    mkdirSync(legacyProjectDir, { recursive: true });
+    storage.save(
+      {
+        name: "global-only",
+        description: "Only global",
+        script: "global script",
+      },
+      "global",
+    );
+    const loaded = storage.load("global-only");
+    assert.ok(loaded, "should load successfully");
+    assert.equal(loaded?.script, "global script");
+    assert.equal(loaded?.location, "global");
+  }),
+);
+
+test(
+  "createWorkflowStorage never reads old project state",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd);
+    const oldProjectDir = join(cwd, ".pi", "workflows", "saved");
+    mkdirSync(oldProjectDir, { recursive: true });
     writeFileSync(
-      join(legacyProjectDir, "shared.json"),
+      join(oldProjectDir, "shared.json"),
       JSON.stringify({
         name: "shared",
-        description: "Legacy project version",
-        script: "legacy project script",
+        description: "Old project version",
+        script: "old project script",
         location: "project",
         savedAt: "2024-01-01T00:00:00.000Z",
-        path: join(legacyProjectDir, "shared.json"),
+        path: join(oldProjectDir, "shared.json"),
       }),
       "utf-8",
     );
     storage.save(
       {
         name: "shared",
-        description: "User version",
-        script: "user script",
+        description: "Global version",
+        script: "global script",
       },
-      "user",
+      "global",
     );
 
     const loaded = storage.load("shared");
-    assert.equal(loaded?.script, "legacy project script");
-    assert.equal(loaded?.location, "project");
+    assert.equal(loaded?.script, "global script");
+    assert.equal(loaded?.location, "global");
+    assert.equal(readFileSync(join(oldProjectDir, "shared.json"), "utf-8").includes("old project script"), true);
   }),
 );
 
 test(
-  "createWorkflowStorage list combines project and user workflows sorted by name",
+  "createWorkflowStorage never reads or deletes old global state",
+  withIsolatedHome(async (cwd) => {
+    const oldGlobalDir = join(workflowGlobalSavedDir(), "..", "..", "workflows", "saved");
+    const oldGlobalPath = join(oldGlobalDir, "old-only.json");
+    mkdirSync(oldGlobalDir, { recursive: true });
+    writeFileSync(
+      oldGlobalPath,
+      JSON.stringify({
+        name: "old-only",
+        description: "Old global version",
+        script: "old global script",
+        location: "user",
+        savedAt: "2024-01-01T00:00:00.000Z",
+      }),
+      "utf-8",
+    );
+
+    const storage = createWorkflowStorage(cwd);
+    assert.equal(storage.load("old-only"), null);
+    assert.deepEqual(storage.list(), []);
+    assert.equal(storage.delete("old-only"), false);
+    assert.equal(readFileSync(oldGlobalPath, "utf-8").includes("old global script"), true);
+  }),
+);
+
+test(
+  "createWorkflowStorage list combines project and global workflows sorted by name",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
     storage.save({ name: "b-project", description: "b", script: "b" });
     storage.save({ name: "a-project", description: "a", script: "a" });
-    storage.save({ name: "c-user", description: "c", script: "c" }, "user");
+    storage.save({ name: "c-global", description: "c", script: "c" }, "global");
 
     const list = storage.list();
     assert.equal(list.length, 3);
     assert.equal(list[0].name, "a-project");
     assert.equal(list[1].name, "b-project");
-    assert.equal(list[2].name, "c-user");
+    assert.equal(list[2].name, "c-global");
   }),
 );
 
@@ -227,15 +272,15 @@ test(
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
     storage.save({ name: "both", description: "p", script: "p" });
-    storage.save({ name: "both", description: "u", script: "u" }, "user");
+    storage.save({ name: "both", description: "g", script: "g" }, "global");
     assert.ok(storage.load("both"), "load() should succeed");
     // Delete only from project
     const deleted = storage.delete("both", "project");
     assert.equal(deleted, true);
-    // User version should still exist
-    const userVersion = storage.load("both");
-    assert.ok(userVersion, "user version should still exist");
-    assert.equal(userVersion?.location, "user");
+    // Global version should still exist.
+    const globalVersion = storage.load("both");
+    assert.ok(globalVersion, "global version should still exist");
+    assert.equal(globalVersion?.location, "global");
   }),
 );
 

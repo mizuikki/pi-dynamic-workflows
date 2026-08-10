@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createEffortState, effortDirective } from "../src/effort-command.js";
-import { registerWorkflowCommands } from "../src/workflow-commands.js";
+import { createIntensityState, intensityDirective } from "../src/intensity-command.js";
+import { registerWorkflowCommand } from "../src/workflow-commands.js";
 import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME } from "../src/workflow-editor.js";
 import type { WorkflowManager } from "../src/workflow-manager.js";
 
@@ -71,7 +71,7 @@ function harness(
     ...managerOverrides,
   };
 
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager, commandOptions);
+  registerWorkflowCommand(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager, commandOptions);
   const ctx = {
     getRetryPolicy: () => ({
       agentTurn: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
@@ -86,13 +86,13 @@ function harness(
   return { run, printed, sent, notified, calls, activeTools };
 }
 
-test("/workflows list shows empty hint when no runs", async () => {
+test("/workflow list shows empty hint when no runs", async () => {
   const h = harness();
   await h.run("list");
   assert.match(h.printed[0], /No workflow runs yet/);
 });
 
-test("/workflows (no args) defaults to list", async () => {
+test("/workflow (no args) defaults to list", async () => {
   const h = harness({
     listRuns: () => [
       {
@@ -112,16 +112,16 @@ test("/workflows (no args) defaults to list", async () => {
   assert.match(h.printed[0], /run-1/);
 });
 
-test("/workflows run without prompt warns usage", async () => {
+test("/workflow run without prompt warns usage", async () => {
   const h = harness();
   await h.run("run");
   assert.equal(h.sent.length, 0);
   assert.equal(h.notified.length, 1);
   assert.equal(h.notified[0].type, "warning");
-  assert.match(h.notified[0].message, /Usage: \/workflows run <prompt>/);
+  assert.match(h.notified[0].message, /Usage: \/workflow run <request>/);
 });
 
-test("/workflows run <prompt> sends a forced workflow follow-up turn", async () => {
+test("/workflow run <prompt> sends a forced workflow follow-up turn", async () => {
   const h = harness();
   await h.run("run audit auth boundaries");
   assert.equal(h.sent.length, 1);
@@ -132,7 +132,7 @@ test("/workflows run <prompt> sends a forced workflow follow-up turn", async () 
   assert.deepEqual(h.activeTools, [WORKFLOW_TOOL_NAME], "does not duplicate an already-active workflow tool");
 });
 
-test("/workflows run <prompt> notifies error when sendMessage rejects and does not bubble", async () => {
+test("/workflow run <prompt> notifies error when sendMessage rejects and does not bubble", async () => {
   const failingSend = async () => {
     throw new Error("send failed");
   };
@@ -144,28 +144,105 @@ test("/workflows run <prompt> notifies error when sendMessage rejects and does n
   );
 });
 
-test("/workflows run adds the workflow tool when absent and does not depend on the keyword trigger", async () => {
+test("/workflow run adds the workflow tool when absent and does not depend on the keyword trigger", async () => {
   const h = harness({}, {}, ["bash", "read"]);
   await h.run("run summarize the auth module");
   assert.deepEqual(h.activeTools, ["bash", "read", WORKFLOW_TOOL_NAME]);
   assert.equal(h.sent[0].content, buildForcedWorkflowPrompt("summarize the auth module"));
 });
 
-test("/workflows run carries standing effort directives", async () => {
-  const effort = createEffortState();
-  effort.level = "ultra";
-  const h = harness({}, { effort });
+test("/workflow run carries standing intensity directives", async () => {
+  const intensity = createIntensityState();
+  intensity.level = "ultra";
+  const h = harness({}, { intensity });
   await h.run("run do X");
-  assert.equal(h.sent[0].content, buildForcedWorkflowPrompt("do X", effortDirective("ultra", false)));
+  assert.equal(h.sent[0].content, buildForcedWorkflowPrompt("do X", intensityDirective("ultra", false)));
 });
 
-test("/workflows stop <id> calls manager.stop", async () => {
+test("/workflow run @name snapshots the saved script into a manager-backed run", async () => {
+  const script = "export const meta = { name: 'saved', description: 'saved' };\nreturn args;";
+  let started: { script: string; args: unknown; options: unknown } | undefined;
+  const storage = {
+    load: (name: string, location?: string) => ({
+      name,
+      description: "Saved workflow",
+      script,
+      parameters: { limit: { type: "number", default: 3 } },
+      location: location ?? "project",
+      path: "/saved.json",
+      savedAt: "2026-01-01T00:00:00.000Z",
+    }),
+  };
+  const h = harness(
+    {
+      startInBackground: (savedScript: string, args: unknown, options: unknown) => {
+        started = { script: savedScript, args, options };
+        return { runId: "saved-run", promise: Promise.resolve({ result: null }) };
+      },
+    },
+    { storage, cwd: "/tmp/workflow-command" },
+  );
+
+  await h.run("run @audit --global -- topic=auth");
+
+  assert.equal(started?.script, script, "the exact stored script must be admitted");
+  assert.deepEqual(started?.args, { topic: "auth", _: "", _raw: "topic=auth", limit: 3 });
+  assert.match(h.notified.at(-1)?.message ?? "", /Started @audit \[global\] as saved-run/);
+});
+
+test("/workflow list --saved, show, and delete stay under the root command", async () => {
+  let deleted: [string, string] | undefined;
+  const saved = {
+    name: "audit",
+    description: "Audit boundaries",
+    script: "return { report: 'ok' };",
+    location: "project" as const,
+    path: "/audit.json",
+    savedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const storage = {
+    list: () => [saved],
+    load: () => saved,
+    delete: (name: string, location: string) => {
+      deleted = [name, location];
+      return true;
+    },
+  };
+  const h = harness({}, { storage });
+
+  await h.run("list --saved");
+  assert.match(h.printed.at(-1) ?? "", /@audit \[project\]/);
+  await h.run("show @audit");
+  assert.match(h.printed.at(-1) ?? "", /return \{ report: 'ok' \};/);
+  await h.run("delete @audit");
+  assert.deepEqual(deleted, ["audit", "project"]);
+});
+
+test("saved-workflow scope parsing rejects conflicts and ignores flags after the args separator", async () => {
+  const loadedScopes: Array<string | undefined> = [];
+  const storage = {
+    load: (_name: string, scope?: string) => {
+      loadedScopes.push(scope);
+      return null;
+    },
+  };
+  const h = harness({}, { storage });
+
+  await h.run("run @audit --project --global");
+  assert.match(h.notified.at(-1)?.message ?? "", /Conflicting/);
+  assert.deepEqual(loadedScopes, []);
+
+  await h.run("run @audit --global -- --project");
+  assert.deepEqual(loadedScopes, ["global"]);
+});
+
+test("/workflow stop <id> calls manager.stop", async () => {
   const h = harness();
   await h.run("stop run-9");
   assert.deepEqual(h.calls, ["stop:run-9"]);
 });
 
-test("/workflows status <id> renders a persisted run", async () => {
+test("/workflow status <id> renders a persisted run", async () => {
   const h = harness({
     loadRun: () => ({
       runId: "run-7",
@@ -182,26 +259,26 @@ test("/workflows status <id> renders a persisted run", async () => {
   assert.match(h.printed[0], /scan files/);
 });
 
-test("/workflows status without id warns", async () => {
+test("/workflow status without id warns", async () => {
   const h = harness();
   await h.run("status");
   assert.equal(h.notified.length, 1);
   assert.equal(h.notified[0].type, "warning");
 });
 
-test("registerWorkflowCommands is idempotent (skips when already registered)", () => {
+test("registerWorkflowCommand is idempotent (skips when already registered)", () => {
   let registrations = 0;
   const pi: Partial<ExtensionAPI> = {
-    getCommands: () => [{ name: "workflows" }],
+    getCommands: () => [{ name: "workflow" }],
     registerCommand: () => {
       registrations++;
     },
   };
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, {} as unknown as WorkflowManager);
+  registerWorkflowCommand(pi as unknown as ExtensionAPI, {} as unknown as WorkflowManager);
   assert.equal(registrations, 0);
 });
 
-test("/workflows status watches a running run: live status bar + prints on completion", async () => {
+test("/workflow status watches a running run: live status bar + prints on completion", async () => {
   const snapshot = {
     name: "demo",
     phases: ["Run"],
@@ -228,7 +305,7 @@ test("/workflows status watches a running run: live status bar + prints on compl
     },
     sendMessage: async (m: any) => printed.push(m.content),
   };
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager);
+  registerWorkflowCommand(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager);
   const ctx = { ui: { notify: () => {}, setStatus: (_k: string, t?: string) => statusLine.push(t) } };
 
   assert.ok(handler, "handler should exist");
@@ -250,7 +327,7 @@ test("/workflows status watches a running run: live status bar + prints on compl
 // pause — calls manager.pause, shows notify
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("/workflows pause <id> calls manager.pause and notifies Paused", async () => {
+test("/workflow pause <id> calls manager.pause and notifies Paused", async () => {
   const h = harness();
   await h.run("pause run-p1");
   assert.deepEqual(h.calls, ["pause:run-p1"], "should call manager.pause");
@@ -258,7 +335,7 @@ test("/workflows pause <id> calls manager.pause and notifies Paused", async () =
   assert.match(h.notified[0].message, /Paused.+run-p1/);
 });
 
-test("/workflows pause without id warns usage", async () => {
+test("/workflow pause without id warns usage", async () => {
   const h = harness();
   await h.run("pause");
   assert.equal(h.notified.length, 1);
@@ -266,7 +343,7 @@ test("/workflows pause without id warns usage", async () => {
   assert.match(h.notified[0].message, /Usage/);
 });
 
-test("/workflows pause <id> warns when manager.pause returns false", async () => {
+test("/workflow pause <id> warns when manager.pause returns false", async () => {
   const h = harness({ pause: () => false });
   await h.run("pause run-nonexistent");
   assert.ok(
@@ -279,7 +356,7 @@ test("/workflows pause <id> warns when manager.pause returns false", async () =>
 // resume — calls manager.resume, shows notify
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("/workflows resume <id> calls manager.resume and notifies Resumed", async () => {
+test("/workflow resume <id> calls manager.resume and notifies Resumed", async () => {
   const h = harness({
     resume: async (id: string) => {
       h.calls.push(`resume:${id}`);
@@ -297,7 +374,7 @@ test("/workflows resume <id> calls manager.resume and notifies Resumed", async (
   );
 });
 
-test("/workflows resume without id warns usage", async () => {
+test("/workflow resume without id warns usage", async () => {
   const h = harness();
   await h.run("resume");
   assert.equal(h.notified.length, 1);
@@ -305,7 +382,7 @@ test("/workflows resume without id warns usage", async () => {
   assert.match(h.notified[0].message, /Usage/);
 });
 
-test("/workflows resume <id> warns when resume returns false", async () => {
+test("/workflow resume <id> warns when resume returns false", async () => {
   const h = harness({ resume: async () => false });
   await h.run("resume run-fail");
   assert.ok(
@@ -319,7 +396,7 @@ test("/workflows resume <id> warns when resume returns false", async () => {
 // rm — calls manager.deleteRun, shows notify
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("/workflows rm <id> calls manager.deleteRun and notifies Removed", async () => {
+test("/workflow rm <id> calls manager.deleteRun and notifies Removed", async () => {
   const h = harness();
   await h.run("rm run-del1");
   assert.deepEqual(h.calls, ["rm:run-del1"], "should call manager.deleteRun");
@@ -329,7 +406,7 @@ test("/workflows rm <id> calls manager.deleteRun and notifies Removed", async ()
   );
 });
 
-test("/workflows rm without id warns usage", async () => {
+test("/workflow rm without id warns usage", async () => {
   const h = harness();
   await h.run("rm");
   assert.equal(h.notified.length, 1);
@@ -337,7 +414,7 @@ test("/workflows rm without id warns usage", async () => {
   assert.match(h.notified[0].message, /Usage/);
 });
 
-test("/workflows rm <id> warns when deleteRun returns not_found", async () => {
+test("/workflow rm <id> warns when deleteRun returns not_found", async () => {
   const h = harness({ deleteRun: async () => "not_found" });
   await h.run("rm run-missing");
   assert.ok(
@@ -346,7 +423,7 @@ test("/workflows rm <id> warns when deleteRun returns not_found", async () => {
   );
 });
 
-test("/workflows rm <id> distinguishes a live foreign lease", async () => {
+test("/workflow rm <id> distinguishes a live foreign lease", async () => {
   const h = harness({ deleteRun: async () => "leased" });
   await h.run("rm run-1");
   assert.equal(h.notified[0]?.type, "warning");
@@ -357,7 +434,7 @@ test("/workflows rm <id> distinguishes a live foreign lease", async () => {
 // stop without id — warn usage
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("/workflows stop without id warns usage", async () => {
+test("/workflow stop without id warns usage", async () => {
   const h = harness();
   await h.run("stop");
   assert.equal(h.notified.length, 1);
@@ -365,7 +442,7 @@ test("/workflows stop without id warns usage", async () => {
   assert.match(h.notified[0].message, /Usage/);
 });
 
-test("/workflows stop <id> shows Cannot stop when manager returns false", async () => {
+test("/workflow stop <id> shows Cannot stop when manager returns false", async () => {
   const h = harness({ stop: () => false, getRun: () => undefined });
   await h.run("stop run-nonexistent");
   assert.ok(
@@ -375,7 +452,7 @@ test("/workflows stop <id> shows Cannot stop when manager returns false", async 
   assert.equal(h.notified.find((n) => n.message.includes("Cannot stop"))?.type, "warning");
 });
 
-test("/workflows stop <id> notifies info (not warning) when stopped a real run", async () => {
+test("/workflow stop <id> notifies info (not warning) when stopped a real run", async () => {
   const h = harness({ stop: () => true, getRun: () => ({}) });
   await h.run("stop run-active");
   const stopMsg = h.notified.find((n) => n.message.includes("Stopped"));
@@ -387,7 +464,7 @@ test("/workflows stop <id> notifies info (not warning) when stopped a real run",
 // save — saves a run's script as a saved workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("/workflows save without name warns usage", async () => {
+test("/workflow save without name warns usage", async () => {
   const h = harness();
   await h.run("save");
   assert.equal(h.notified.length, 1);
@@ -395,7 +472,7 @@ test("/workflows save without name warns usage", async () => {
   assert.match(h.notified[0].message, /Usage/);
 });
 
-test("/workflows save <name> warns when no storage configured", async () => {
+test("/workflow save <name> warns when no storage configured", async () => {
   const h = harness();
   await h.run("save my-workflow");
   assert.equal(h.notified.length, 1);
@@ -403,7 +480,7 @@ test("/workflows save <name> warns when no storage configured", async () => {
   assert.match(h.notified[0].message, /Saving is not available/);
 });
 
-test("/workflows save <name> saves the most recent run with a script", async () => {
+test("/workflow save <name> saves the most recent run with a script", async () => {
   const saved: Array<{ name: string; description: string; script: string }> = [];
   const _h = harness({
     listRuns: () => [
@@ -420,12 +497,13 @@ test("/workflows save <name> saves the most recent run with a script", async () 
   });
   // Register with storage mock
   const storage: any = {
+    load: () => null,
     save: (w: any) => {
       saved.push(w);
       return { ...w, id: "saved-1" };
     },
   };
-  registerWorkflowCommands(
+  registerWorkflowCommand(
     {
       getCommands: () => [],
       registerCommand: (_n: string, _o: any) => {},
@@ -455,9 +533,10 @@ test("/workflows save <name> saves the most recent run with a script", async () 
   assert.equal(saved.length, 0);
 });
 
-test("/workflows save <name> <runId> saves the specified run", async () => {
+test("/workflow save <name> <runId> saves the specified run", async () => {
   const saved: Array<{ name: string; description: string; script: string }> = [];
   const storage: any = {
+    load: () => null,
     save: (w: any) => {
       saved.push(w);
       return { ...w, id: "saved-2" };
@@ -476,7 +555,7 @@ test("/workflows save <name> <runId> saves the specified run", async () => {
   ];
 
   // Override the handler for one invocation
-  const { registerWorkflowCommands: reg2 } = await import("../src/workflow-commands.js");
+  const { registerWorkflowCommand: reg2 } = await import("../src/workflow-commands.js");
   const notified: Array<{ message: string; type?: string }> = [];
   let handler: any;
   reg2(
@@ -515,10 +594,10 @@ test("/workflows save <name> <runId> saves the specified run", async () => {
   );
 });
 
-test("/workflows save <name> <runId> warns when run has no script", async () => {
-  const storage: any = { save: (w: any) => w };
+test("/workflow save <name> <runId> warns when run has no script", async () => {
+  const storage: any = { load: () => null, save: (w: any) => w };
   let handler: any;
-  const { registerWorkflowCommands: reg3 } = await import("../src/workflow-commands.js");
+  const { registerWorkflowCommand: reg3 } = await import("../src/workflow-commands.js");
   const notified: Array<{ message: string; type?: string }> = [];
   reg3(
     {
@@ -554,7 +633,7 @@ test("/workflows save <name> <runId> warns when run has no script", async () => 
 // unknown subcommand
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("/workflows <unknown> warns usage", async () => {
+test("/workflow <unknown> warns usage", async () => {
   const h = harness();
   await h.run("bogus");
   assert.equal(h.notified.length, 1);

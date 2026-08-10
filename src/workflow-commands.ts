@@ -1,18 +1,26 @@
 /**
- * `/workflows` slash command: list, inspect, and control background workflow runs.
+ * `/workflow` slash command: the single user-facing workflow dispatcher.
  * Shares the extension's single WorkflowManager so background runs are reachable.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { recomputeWorkflowSnapshot, renderWorkflowText, type WorkflowSnapshot } from "./display.js";
-import { type EffortState, effortDirective } from "./effort-command.js";
+import { handleWorkflowIntensityCommand, type IntensityState, intensityDirective } from "./intensity-command.js";
+import { handleWorkflowMainPromptCommand } from "./main-agent-prompt.js";
 import { readRequiredHostRetryPolicy } from "./retry-policy.js";
 import type { PersistedRunState, WorkflowRunSummary } from "./run-persistence.js";
-import { registerSavedWorkflow } from "./saved-commands.js";
-import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME } from "./workflow-editor.js";
+import { parseCommandArgs } from "./saved-commands.js";
+import {
+  buildForcedWorkflowPrompt,
+  handleWorkflowProgressCommand,
+  handleWorkflowTriggerCommand,
+  WORKFLOW_TOOL_NAME,
+  type WorkflowModeState,
+} from "./workflow-editor.js";
 import type { WorkflowManager } from "./workflow-manager.js";
-import type { WorkflowStorage } from "./workflow-saved.js";
-import { isWorkflowStructuredOutputEnabled } from "./workflow-settings.js";
+import { openWorkflowModelEditor } from "./workflow-model-command.js";
+import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
+import { isWorkflowStructuredOutputEnabled, type WorkflowSettingsStore } from "./workflow-settings.js";
 import { openWorkflowNavigator } from "./workflow-ui.js";
 
 const STATUS_ICON: Record<string, string> = {
@@ -25,9 +33,9 @@ const STATUS_ICON: Record<string, string> = {
 };
 
 const USAGE =
-  "Usage: /workflows [list] | run <prompt> | status <id> | watch <id> | stop <id> | pause <id> | resume <id> | rm <id> | save <name> [runId]";
+  "Usage: /workflow [list] | run <request|@name> | status/watch/stop/pause/resume/rm <id> | list --saved | show/delete @name | save <name> [runId] | model | trigger ... | progress ... | prompt ... | intensity off|high|ultra";
 
-const RUN_USAGE = "Usage: /workflows run <prompt> — force a dynamic workflow from the prompt";
+const RUN_USAGE = "Usage: /workflow run <request> | /workflow run @name [--project|--global] [-- <args>]";
 
 function summarizeRun(run: WorkflowRunSummary): string {
   const icon = STATUS_ICON[run.status] ?? "?";
@@ -110,28 +118,48 @@ function renderPersistedStatus(run: PersistedRunState): string {
 }
 
 export interface WorkflowCommandOptions {
-  /** Saved-workflow storage, enabling `/workflows save`. */
+  /** Saved-workflow storage, enabling saved-workflow subcommands. */
   storage?: WorkflowStorage;
-  /** Working directory for saved workflows registered via `save`. */
+  /** Working directory for settings and saved workflows. */
   cwd?: string;
-  /** Standing effort mode; when high/ultra, `/workflows run` carries its directive too. */
-  effort?: EffortState;
+  /** Standing orchestration intensity shared with the editor input hook. */
+  intensity?: IntensityState;
+  modeState?: WorkflowModeState;
+  settingsStore?: WorkflowSettingsStore;
 }
 
-/** Register the `/workflows` command against the shared manager. Idempotent. */
-export function registerWorkflowCommands(
+function parseSavedScope(parts: string[], allowAll = false): { scope?: "project" | "global" | "all"; error?: string } {
+  const separator = parts.indexOf("--");
+  const optionParts = separator >= 0 ? parts.slice(0, separator) : parts;
+  const flags = ["--project", "--global", ...(allowAll ? ["--all"] : [])].filter((flag) => optionParts.includes(flag));
+  if (flags.length > 1) return { error: `Conflicting saved-workflow scope flags: ${flags.join(", ")}` };
+  if (!allowAll && optionParts.includes("--all")) return { error: "--all is valid only with /workflow list --saved" };
+  const flag = flags[0];
+  return { scope: flag ? (flag.slice(2) as "project" | "global" | "all") : undefined };
+}
+
+function savedName(ref: string | undefined): string | undefined {
+  return ref?.startsWith("@") && ref.length > 1 ? ref.slice(1) : undefined;
+}
+
+function renderSavedWorkflow(saved: SavedWorkflow): string {
+  return [`@${saved.name} [${saved.location}]`, saved.description, "", saved.script].join("\n");
+}
+
+/** Register the sole `/workflow` command against the shared manager. Idempotent. */
+export function registerWorkflowCommand(
   pi: ExtensionAPI,
   manager: WorkflowManager,
   opts: WorkflowCommandOptions = {},
 ): void {
   try {
-    const taken = (pi.getCommands?.() ?? []).some((c: { name: string }) => c.name === "workflows");
+    const taken = (pi.getCommands?.() ?? []).some((c: { name: string }) => c.name === "workflow");
     if (taken) return;
   } catch {
     // getCommands may be unavailable in some hosts; fall through and try to register.
   }
 
-  pi.registerCommand("workflows", {
+  pi.registerCommand("workflow", {
     description:
       "Manage workflow runs — no args (opens navigator) | run <prompt> | status/stop/pause/resume <id> | rm <id> | save <name> [runId]",
     async handler(args: string, ctx: ExtensionCommandContext) {
@@ -142,12 +170,45 @@ export function registerWorkflowCommands(
 
       switch (sub) {
         case "run": {
-          const prompt = args
+          const request = args
             .trim()
             .slice(parts[0]?.length ?? 0)
             .trim();
-          if (!prompt) {
+          if (!request) {
             ctx.ui.notify(RUN_USAGE, "warning");
+            return;
+          }
+
+          const reference = savedName(parts[1]);
+          if (reference) {
+            if (!opts.storage) {
+              ctx.ui.notify("Saved workflows are not available (no storage configured)", "error");
+              return;
+            }
+            const parsedScope = parseSavedScope(parts.slice(2));
+            if (parsedScope.error) return ctx.ui.notify(parsedScope.error, "warning");
+            const scope = parsedScope.scope as "project" | "global" | undefined;
+            const saved = opts.storage.load(reference, scope);
+            if (!saved) {
+              ctx.ui.notify(`No saved workflow "@${reference}"${scope ? ` in ${scope}` : ""}`, "error");
+              return;
+            }
+            const separator = parts.indexOf("--");
+            const rawSavedArgs = separator >= 0 ? parts.slice(separator + 1).join(" ") : "";
+            try {
+              const { runId, promise } = manager.startInBackground(
+                saved.script,
+                parseCommandArgs(rawSavedArgs, saved.parameters),
+                {
+                  hostRetryPolicy: readRequiredHostRetryPolicy(ctx),
+                  structuredOutputEnabled: isWorkflowStructuredOutputEnabled(opts.cwd ?? process.cwd()),
+                },
+              );
+              void promise.catch(() => undefined);
+              ctx.ui.notify(`Started @${saved.name} [${saved.location}] as ${runId}`, "info");
+            } catch (error) {
+              ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+            }
             return;
           }
 
@@ -160,12 +221,14 @@ export function registerWorkflowCommands(
             // ignore — the forced directive is the real forcing primitive
           }
 
-          const effort = opts.effort;
+          const intensity = opts.intensity;
           const structuredOutputEnabled = isWorkflowStructuredOutputEnabled(opts.cwd ?? process.cwd());
           const extra =
-            effort && effort.level !== "off" ? effortDirective(effort.level, structuredOutputEnabled) : undefined;
-          const forced = buildForcedWorkflowPrompt(prompt, extra);
-          ctx.ui.notify(`Forcing workflow: ${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}`, "info");
+            intensity && intensity.level !== "off"
+              ? intensityDirective(intensity.level, structuredOutputEnabled)
+              : undefined;
+          const forced = buildForcedWorkflowPrompt(request, extra);
+          ctx.ui.notify(`Forcing workflow: ${request.slice(0, 60)}${request.length > 60 ? "…" : ""}`, "info");
           try {
             await pi.sendMessage(
               { customType: "workflow-run", content: forced, display: true },
@@ -178,6 +241,24 @@ export function registerWorkflowCommands(
         }
         case "ui":
         case "list": {
+          if (parts.includes("--saved")) {
+            if (!opts.storage) {
+              ctx.ui.notify("Saved workflows are not available (no storage configured)", "error");
+              return;
+            }
+            const parsedScope = parseSavedScope(parts, true);
+            if (parsedScope.error) return ctx.ui.notify(parsedScope.error, "warning");
+            const scope = parsedScope.scope;
+            const saved = opts.storage.list(scope);
+            await print(
+              saved.length
+                ? ["Saved workflows:", ...saved.map((wf) => `@${wf.name} [${wf.location}]  ${wf.description}`)].join(
+                    "\n",
+                  )
+                : "No saved workflows.",
+            );
+            return;
+          }
           // Interactive navigator when a UI is available; plain text otherwise
           // (print/RPC mode) or when the user explicitly asks for `list`.
           if (sub !== "list" && ctx.hasUI) {
@@ -267,11 +348,22 @@ export function registerWorkflowCommands(
         }
         case "save": {
           const name = id;
-          if (!name) return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
+          if (!name)
+            return ctx.ui.notify("Usage: /workflow save <name> [runId] [--project|--global] [--replace]", "warning");
           if (!opts.storage) return ctx.ui.notify("Saving is not available (no storage configured)", "error");
           const storage = opts.storage;
           const runs = manager.listRuns();
-          const runIdArg = parts[2];
+          const runIdArg = parts.slice(2).find((part) => !part.startsWith("--"));
+          const parsedScope = parseSavedScope(parts.slice(2));
+          if (parsedScope.error) return ctx.ui.notify(parsedScope.error, "warning");
+          const location = (parsedScope.scope as "project" | "global" | undefined) ?? "project";
+          if (!parts.includes("--replace") && storage.load(name, location)) {
+            ctx.ui.notify(
+              `Saved workflow "@${name}" already exists in ${location}; pass --replace to overwrite it`,
+              "warning",
+            );
+            return;
+          }
           // Pick the named run, else the most recent run that still has its script.
           const summary = runIdArg ? runs.find((r) => r.runId === runIdArg) : runs.find((r) => r.hasScript);
           const run = summary ? manager.loadRun(summary.runId) : null;
@@ -281,20 +373,68 @@ export function registerWorkflowCommands(
           }
           let saved: ReturnType<WorkflowStorage["save"]>;
           try {
-            saved = storage.save({
-              name,
-              description: run.workflowName,
-              script: run.script,
-              location: "project",
-            });
+            saved = storage.save(
+              {
+                name,
+                description: run.workflowName,
+                script: run.script,
+                location,
+              },
+              location,
+            );
           } catch (error) {
             ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
             return;
           }
-          registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
-            storage.list().some((w) => w.name === saved.name),
+          ctx.ui.notify(`Saved @${name} [${saved.location}] (from ${run.runId})`, "info");
+          return;
+        }
+        case "show": {
+          const name = savedName(id);
+          if (!name) return ctx.ui.notify("Usage: /workflow show @name [--project|--global]", "warning");
+          const parsedScope = parseSavedScope(parts.slice(2));
+          if (parsedScope.error) return ctx.ui.notify(parsedScope.error, "warning");
+          const saved = opts.storage?.load(name, parsedScope.scope as "project" | "global" | undefined);
+          if (!saved) return ctx.ui.notify(`No saved workflow "@${name}"`, "error");
+          await print(renderSavedWorkflow(saved));
+          return;
+        }
+        case "delete": {
+          const name = savedName(id);
+          if (!name) return ctx.ui.notify("Usage: /workflow delete @name [--project|--global]", "warning");
+          const parsedScope = parseSavedScope(parts.slice(2));
+          if (parsedScope.error) return ctx.ui.notify(parsedScope.error, "warning");
+          const scope = parsedScope.scope as "project" | "global" | undefined;
+          const saved = opts.storage?.load(name, scope);
+          if (!saved) return ctx.ui.notify(`No saved workflow "@${name}"`, "error");
+          const deleted = opts.storage?.delete(name, saved.location) === true;
+          ctx.ui.notify(
+            deleted ? `Deleted @${name} [${saved.location}]` : `Could not delete @${name}`,
+            deleted ? "info" : "error",
           );
-          ctx.ui.notify(`Saved /${name} (from ${run.runId})`, "info");
+          return;
+        }
+        case "model": {
+          await ctx.waitForIdle();
+          await openWorkflowModelEditor(ctx);
+          return;
+        }
+        case "trigger": {
+          if (!opts.modeState) return ctx.ui.notify("Workflow trigger settings are unavailable", "error");
+          await handleWorkflowTriggerCommand(pi, opts.modeState, parts.slice(1).join(" "), ctx, opts.settingsStore);
+          return;
+        }
+        case "progress": {
+          await handleWorkflowProgressCommand(pi, parts.slice(1).join(" "), ctx, opts.settingsStore);
+          return;
+        }
+        case "prompt": {
+          await handleWorkflowMainPromptCommand(pi, parts.slice(1).join(" "), ctx);
+          return;
+        }
+        case "intensity": {
+          if (!opts.intensity) return ctx.ui.notify("Workflow intensity is unavailable", "error");
+          await handleWorkflowIntensityCommand(pi, opts.intensity, parts.slice(1).join(" "), ctx);
           return;
         }
         default:

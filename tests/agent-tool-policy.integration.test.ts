@@ -152,7 +152,7 @@ test("Trellis fallback strips a max suffix before real Pi model resolution", asy
   await withAgentSession(async ({ cwd, agentDir, faux, modelRuntime, registry }) => {
     mkdirSync(join(cwd, ".trellis", "tasks", "model-routing"), { recursive: true });
     mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.4\n");
     writeFileSync(join(cwd, ".trellis", "tasks", "model-routing", "prd.md"), "# Model routing\n");
     writeFileSync(join(cwd, ".pi", "agents", "trellis-implement.md"), "---\nname: trellis-implement\n---\nImplement.");
     faux.setResponses([fauxAssistantMessage("suffix route ok")]);

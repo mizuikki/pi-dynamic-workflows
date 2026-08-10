@@ -1,23 +1,23 @@
 # Workflow run storage
 
-pi-dynamic-workflows requires Node.js 24 or newer and stores runtime state for
+Pi Workflow Orchestrator requires Node.js 24 or newer and stores runtime state for
 all projects in one database:
 
 ```text
-~/.pi/workflows/workflows.sqlite3
-~/.pi/workflows/workflows.sqlite3-wal
-~/.pi/workflows/workflows.sqlite3-shm
+~/.pi/workflow-orchestrator/workflow-orchestrator.sqlite3
+~/.pi/workflow-orchestrator/workflow-orchestrator.sqlite3-wal
+~/.pi/workflow-orchestrator/workflow-orchestrator.sqlite3-shm
 ```
 
 The workflow home is tightened to mode `0700` and the database to `0600` on
 POSIX systems. The parent directory is the access boundary for temporary WAL
 and shared-memory files. Settings, the Workflow Model, project settings, and
-saved workflow definitions remain file-backed. The legacy `model-tiers.json`
-file is ignored and left untouched.
+saved workflow definitions remain file-backed. State under the former product
+root is never read, migrated, rewritten, or removed.
 
 ## Version 1 contract
 
-Schema v1 is identified by `PRAGMA application_id = 1346656070` and
+Schema v1 is identified by `PRAGMA application_id = 1347375683` and
 `PRAGMA user_version = 1`. It contains four `STRICT, WITHOUT ROWID` tables:
 
 | Table | Primary key | Contents |
@@ -68,7 +68,7 @@ Status, save, restart, and resume authorize a keyed summary before selecting one
 payload, then verify the immutable session identity again after decoding.
 
 Payloads can contain scripts, arguments, prompts, results, journals, errors,
-compact tool history, the run-owned default Workflow Model model/effort pair,
+compact tool history, the run-owned default Workflow Model and effort pair,
 additive admission-time model-scope provenance, each agent's concrete
 model/effort pair, and an optional canonical `executionPolicy`. The policy
 contains only explicit `agentTurnRetry` and `agentRunRetries` overrides. Host
@@ -78,8 +78,8 @@ changing Pi settings does not leave a stale default embedded in a run.
 
 ### Pi model scope and resume identity
 
-Pi 0.83.0 supplies the extension with the same resolved `scopedModels` allowlist
-used by `/scoped-models`. An empty list means that no session allowlist is
+The private Pi fork supplies the extension with the same resolved `scopedModels`
+allowlist used by `/scoped-models`. An empty list means that no session allowlist is
 configured, so the current `ModelRegistry.getAvailable()` snapshot is eligible.
 A non-empty list is intersected with that available snapshot; an empty
 intersection and a missing or malformed scope fail closed. The extension never
@@ -96,7 +96,7 @@ fails with `MODEL_SELECTION_ERROR` before journal replay or child creation; the
 lease is released and no confirmation can bypass Pi's active scope.
 
 Diagnostics avoid payload values and full user-specific database paths. A
-background completion message points to `/workflows status <runId>` instead of
+background completion message points to `/workflow status <runId>` instead of
 exposing a filesystem path.
 
 ## Renewable fenced leases

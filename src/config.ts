@@ -1,5 +1,5 @@
 /**
- * Configuration constants for pi-dynamic-workflows.
+ * Configuration constants for Pi Workflow Orchestrator.
  */
 
 /** Maximum number of agents allowed per workflow run. */
@@ -16,15 +16,6 @@ export const MAX_AGENT_RETRIES = 3;
 
 /** Default token budget if none specified. */
 export const DEFAULT_TOKEN_BUDGET = null;
-
-/** Legacy project-relative directory for saved workflow commands. New writes use workflowProjectPaths(). */
-export const WORKFLOW_SAVED_DIR = ".pi/workflows/saved";
-
-/** User-level saved workflows directory. */
-export const USER_WORKFLOW_SAVED_DIR = "~/.pi/workflows/saved";
-
-/** User-level workflow extension settings file, relative to the home directory. */
-export const WORKFLOW_SETTINGS_FILE = ".pi/workflows/settings.json";
 
 /** Default keyword that arms workflows mode from interactive input. */
 export const DEFAULT_KEYWORD_TRIGGER_WORD = "workflow";
