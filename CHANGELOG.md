@@ -4,8 +4,8 @@
 
 ### Added
 
-- Pi 0.83.0 session-scope filtering for Workflow Model selection, agent model
-  overrides, `/workflows-models`, prompt guidance, and resume admission.
+- Pi session-scope filtering for Workflow Model selection, agent model
+  overrides, `/workflow model`, prompt guidance, and resume admission.
 
 ### Changed
 

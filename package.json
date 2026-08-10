@@ -18,6 +18,7 @@
     "src/",
     "docs/architecture.md",
     "docs/storage.md",
+    "docs/media/",
     "README.md"
   ],
   "scripts": {
@@ -60,7 +61,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/QuintinShaw/pi-dynamic-workflows.git"
+    "url": "git+https://github.com/mizuikki/pi-dynamic-workflows.git"
   },
   "author": "QuintinShaw",
   "contributors": [
@@ -98,7 +99,7 @@
     "test": "tests"
   },
   "bugs": {
-    "url": "https://github.com/QuintinShaw/pi-dynamic-workflows/issues"
+    "url": "https://github.com/mizuikki/pi-dynamic-workflows/issues"
   },
-  "homepage": "https://github.com/QuintinShaw/pi-dynamic-workflows#readme"
+  "homepage": "https://github.com/mizuikki/pi-dynamic-workflows#readme"
 }

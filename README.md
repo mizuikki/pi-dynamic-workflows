@@ -7,9 +7,9 @@
 > **Claude Code–style dynamic workflows for [Pi](https://pi.dev).**
 > Turn one prompt into a fleet of subagents that fan out in parallel, cross-check each other, and hand back a single synthesized answer.
 
-**[Website](https://quintinshaw.github.io/pi-dynamic-workflows/) · [GitHub](https://github.com/QuintinShaw/pi-dynamic-workflows)**
+**[GitHub](https://github.com/mizuikki/pi-dynamic-workflows) · [Architecture](docs/architecture.md) · [Storage](docs/storage.md)**
 
-![Pi Workflow Orchestrator demo](https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/docs/media/demo.gif)
+![Pi Workflow Orchestrator demo](docs/media/demo.gif)
 
 Instead of one model grinding a task step by step, Pi writes a small JavaScript **orchestration script** that spawns many subagents at once, keeps the intermediate work in script variables (not your chat context), and returns only the result. It's the "code mode for subagents" from Claude Code — on any model Pi can reach.
 
@@ -24,10 +24,11 @@ Node.js 24 or newer is required. Workflow persistence uses Node's built-in
 pi install -l /absolute/path/to/pi-workflow-orchestrator
 ```
 
-Then `/reload` in Pi. This extension requires the sibling private Pi 0.83.0 fork with
+Then `/reload` in Pi. This extension requires the sibling private Pi fork with
 extension SDK API version `1`, model runtime API version `1`, and retry-policy
-snapshot API version `1`; upstream Pi is not a compatible host. Remove the
-project-local source with:
+snapshot API version `1`; upstream Pi is not a compatible host. The current local
+fixture reports product version `0.83.0-local.1`, but API versions, not product
+versions, define extension compatibility. Remove the project-local source with:
 
 ```bash
 pi remove /absolute/path/to/pi-workflow-orchestrator -l
@@ -65,7 +66,7 @@ Run a workflow to audit every route under src/routes/ for missing auth checks.
 
 Pi writes the script and runs it in the background — your turn ends immediately and a live panel tracks progress while you keep working. Or just type **workflow** or **workflows** in any message to force one. To force one explicitly — even with the keyword trigger off — run `/workflow run <prompt>`. If that causes false triggers, set a custom trigger such as `pi-workflow` with `/workflow trigger set pi-workflow` or by adding `{ "keywordTriggerWord": "pi-workflow" }` to `~/.pi/workflow-orchestrator/settings.json`. With that setting, only `pi-workflow` auto-arms workflows mode. If you only want to discuss workflows without triggering one, run `/workflow trigger off`; preferences are saved for new sessions. Check the current state with `/workflow trigger status`, and turn it back on with `/workflow trigger on`.
 
-![Workflows mode in the input box](https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/docs/media/workflow-mode.jpg)
+![Workflows mode in the input box](docs/media/workflows-mode.jpg)
 
 If another Pi extension has already installed a custom editor component, Pi Workflow Orchestrator leaves it in place and keeps the submit-time workflow trigger active. In that compatibility mode, the animated keyword highlight and Backspace one-shot disarm affordance are skipped because the existing editor remains responsible for rendering and input handling; use `/workflow trigger off` or `/workflow trigger set <word>` when you need to discuss workflow/workflows without auto-triggering, including in future sessions. Editor composition is load-order dependent: whichever extension installs a visual editor last owns the editor surface, while Pi Workflow Orchestrator still keeps its submit-time hook registered.
 
@@ -232,11 +233,9 @@ file. Run `/workflow prompt enable` to persist the explicit project-local
 setting. The opt-in is stored outside the repository at
 `~/.pi/workflow-orchestrator/projects/<project-key>/settings.json`; there is no global or
 parent-directory inheritance. `/workflow prompt disable` removes the project
-entry. Headless runs use the explicit per-run `--workflow-main-prompt` flag when
-needed.
-Use the explicit per-run `--workflow-main-prompt` flag for a headless run; it
-does not persist. Pi's `--approve` remains only Pi's trust gate and does not
-replace this opt-in.
+entry. Use the explicit per-run `--workflow-main-prompt` flag for a headless run;
+it does not persist.
+Pi's `--approve` remains only Pi's trust gate and does not replace this opt-in.
 The exported load/inspect helpers also fail closed unless the caller supplies
 the trust gate and either this persisted opt-in or the explicit per-run access
 option.
@@ -266,7 +265,9 @@ bind. Inline resource-loader paths are covered by the extension identity check.
 
 ## Reference
 
-The full guide — every global, agent option, `agentType` definitions, structured output, and determinism — lives on the **[website](https://quintinshaw.github.io/pi-dynamic-workflows/)**. The essentials:
+This README is the current user guide. The [architecture](docs/architecture.md)
+and [storage](docs/storage.md) references document the implementation contracts;
+the essentials are:
 
 | Global | What it does |
 | --- | --- |
@@ -465,9 +466,10 @@ trellis_subagent({
 
 ### Supported local pair
 
-The supported clean-slate pair is Trellis `1.0.4` plus workflow `2.14.0`.
-This fork is maintained for local use: install it from a local checkout as
-shown in [Install](#install). `2.14.0` is a compatibility identifier, not a
+The supported clean-slate integration is Trellis `1.0.4` plus workflow
+compatibility identifier `2.14.0`. Runtime compatibility is established by the
+three API-v1 checks above. This fork is maintained for local use: install it
+from a local checkout as shown in [Install](#install); `2.14.0` is not a
 published Git tag or remote package reference.
 
 Run `npm run smoke:trellis-context` after `npm run build` to emit the V01-V12

@@ -78,8 +78,8 @@ changing Pi settings does not leave a stale default embedded in a run.
 
 ### Pi model scope and resume identity
 
-Pi 0.83.0 supplies the extension with the same resolved `scopedModels` allowlist
-used by `/scoped-models`. An empty list means that no session allowlist is
+The private Pi fork supplies the extension with the same resolved `scopedModels`
+allowlist used by `/scoped-models`. An empty list means that no session allowlist is
 configured, so the current `ModelRegistry.getAvailable()` snapshot is eligible.
 A non-empty list is intersected with that available snapshot; an empty
 intersection and a missing or malformed scope fail closed. The extension never
