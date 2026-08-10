@@ -30,7 +30,7 @@ const forbidden = [
   ["legacy workflow subcommand", /\/workflow (?:models|effort)(?:\s|`|$)/g],
   [
     "legacy plural workflow command",
-    /\/workflows(?:-models|-progress|-trigger|-prompt|-progress-max)(?:\s|`|$|[.,;)])/g,
+    /(?<![\w/])\/workflows(?:-models|-progress|-trigger|-prompt|-progress-max)?(?:\s|`|$|[.,;)])/g,
   ],
   ["invalid workflow mode image", /workflow-mode\.jpg/g],
   [
