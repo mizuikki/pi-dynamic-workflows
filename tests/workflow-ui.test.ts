@@ -609,6 +609,20 @@ test("NavigatorModel.saved returns empty when storage is empty", () => {
   assert.deepEqual(model.saved(), []);
 });
 
+test("NavigatorModel.deleteSaved passes the selected storage location", () => {
+  const calls: Array<{ name: string; location?: string }> = [];
+  const model = new NavigatorModel(fakeManager(), {
+    list: () => [],
+    delete: (name, location) => {
+      calls.push({ name, location });
+      return true;
+    },
+  });
+
+  assert.equal(model.deleteSaved("deploy", "global"), true);
+  assert.deepEqual(calls, [{ name: "deploy", location: "global" }]);
+});
+
 test("renderNavigator shows saved workflows in runs view with separator", () => {
   const model = new NavigatorModel(fakeManager(), savedStorage());
   const state = new NavigatorState();

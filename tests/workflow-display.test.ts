@@ -709,7 +709,7 @@ describe("backgroundStartedText", () => {
   it("mentions /workflow status command for tracking", async () => {
     const { backgroundStartedText } = await loadTool();
     const text = backgroundStartedText("audit", "r-1");
-    assert.ok(text.includes("/workflow"), "should mention /workflow");
+    assert.ok(text.includes("/workflow status r-1"), "should mention the workflow status command");
   });
 });
 

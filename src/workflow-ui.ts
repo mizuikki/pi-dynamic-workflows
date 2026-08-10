@@ -141,9 +141,9 @@ export class NavigatorModel {
   }
 
   /** Delete a saved workflow by name. */
-  deleteSaved(name: string): boolean {
+  deleteSaved(name: string, location?: "project" | "global"): boolean {
     if (!this.storage) return false;
-    return this.storage.delete(name);
+    return this.storage.delete(name, location);
   }
 
   runName(runId: string): string {
@@ -1087,13 +1087,16 @@ export function openWorkflowNavigator(
               const runCount = model.runs().length;
               const item = saved[state.cursor - runCount];
               if (item) {
-                model.deleteSaved(item.name);
+                model.deleteSaved(item.name, item.location);
                 ui.notify(`Deleted @${item.name}`, "info");
               }
             } else if (state.kind === "savedDetail" && state.savedName) {
-              model.deleteSaved(state.savedName);
-              ui.notify(`Deleted @${state.savedName}`, "info");
-              state.back();
+              const item = model.saved().find((saved) => saved.name === state.savedName);
+              if (item) {
+                model.deleteSaved(item.name, item.location);
+                ui.notify(`Deleted @${item.name}`, "info");
+                state.back();
+              }
             }
             break;
           }

@@ -209,17 +209,18 @@ export default function extension(pi: ExtensionAPI) {
     // Inherit host project trust; ExtensionContext always exposes isProjectTrusted.
     hostProjectTrusted = ctx.isProjectTrusted();
     manager.setProjectTrusted(hostProjectTrusted);
+    const sessionManager = ctx.sessionManager;
     try {
-      const sessionManager = ctx.sessionManager;
       hostSessionId = sessionManager?.getSessionId?.call(sessionManager);
-      hostSessionFile = sessionManager?.getSessionFile?.call(sessionManager);
-      manager.setSessionId(hostSessionId);
     } catch {
-      // Some headless contexts do not expose a session manager.
       hostSessionId = undefined;
-      hostSessionFile = undefined;
-      manager.setSessionId(undefined);
     }
+    try {
+      hostSessionFile = sessionManager?.getSessionFile?.call(sessionManager);
+    } catch {
+      hostSessionFile = undefined;
+    }
+    manager.setSessionId(hostSessionId);
     workflowTool = createWorkflowTool({ cwd, manager, storage, modelRegistry: ctx.modelRegistry, modelScope });
     pi.registerTool(workflowTool);
     if (activateTool || wasActive) ensureWorkflowToolActive();

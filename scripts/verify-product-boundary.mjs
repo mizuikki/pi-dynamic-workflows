@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const scanRoots = ["src", "extensions", "README.md", "CONTRIBUTING.md", "docs", "package.json"];
+const scanRoots = ["src", "extensions", "scripts", "README.md", "CONTRIBUTING.md", "docs", "package.json"];
 
 const forbidden = [
   ["old package identity", /@quintinshaw\/pi-dynamic-workflows/g],
@@ -53,7 +53,7 @@ for (const [label, pattern] of [
   ["workflow intensity command", /\/workflow intensity/],
   ["Pi thinking capability lookup", /getSupportedThinkingLevels/],
   ["Pi thinking-level clamp", /clampThinkingLevel/],
-  ["Trellis 1.0.4", /1\.0\.4/],
+  ["Trellis 1.0.4", /SUPPORTED_TRELLIS_PROJECT_VERSION\s*=\s*["']1\.0\.4["']/],
   ["conditional Trellis tool", /trellis_subagent/],
   ["new Keel ABI", /pi-workflow-orchestrator-host\/v1/],
 ]) {
@@ -63,10 +63,14 @@ for (const [label, pattern] of [
 const packageDirectory = mkdtempSync(join(tmpdir(), "pi-workflow-package-boundary-"));
 try {
   const packPayload = JSON.parse(
-    execFileSync("npm", ["pack", "--json", "--pack-destination", packageDirectory], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-    }),
+    execFileSync(
+      "npm",
+      ["pack", "--json", "--ignore-scripts", "--loglevel=error", "--pack-destination", packageDirectory],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+      },
+    ),
   );
   const packResult = Array.isArray(packPayload) ? packPayload[0] : Object.values(packPayload)[0];
   if (!packResult || typeof packResult.filename !== "string") {

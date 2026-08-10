@@ -1173,7 +1173,7 @@ describe("handleWorkflowProgressCommand", () => {
     assert.match(sent.at(-1)?.content ?? "", /Usage:/);
   });
 
-  it("clamps and persists the per-phase agent cap, rejecting non-numbers", async () => {
+  it("clamps and persists the per-phase agent cap, rejecting non-whole numbers", async () => {
     const mod = await load();
     const { sent, settingsStore, getSettings, pi } = setup();
     await mod.handleWorkflowProgressCommand(pi, "max 5000", {} as never, settingsStore);
@@ -1182,6 +1182,14 @@ describe("handleWorkflowProgressCommand", () => {
     await mod.handleWorkflowProgressCommand(pi, "max abc", {} as never, settingsStore);
     assert.match(sent.at(-1)?.content ?? "", /Invalid value/);
     assert.deepEqual(getSettings(), { progressPanelMaxAgents: 1000 }, "invalid value does not overwrite");
+
+    await mod.handleWorkflowProgressCommand(pi, "max 12agents", {} as never, settingsStore);
+    assert.match(sent.at(-1)?.content ?? "", /Invalid value/);
+    assert.deepEqual(getSettings(), { progressPanelMaxAgents: 1000 }, "trailing characters do not overwrite");
+
+    await mod.handleWorkflowProgressCommand(pi, "max 2.5", {} as never, settingsStore);
+    assert.match(sent.at(-1)?.content ?? "", /Invalid value/);
+    assert.deepEqual(getSettings(), { progressPanelMaxAgents: 1000 }, "fractional values do not overwrite");
 
     await mod.handleWorkflowProgressCommand(pi, "max 0", {} as never, settingsStore);
     assert.match(sent.at(-1)?.content ?? "", /Invalid value/);

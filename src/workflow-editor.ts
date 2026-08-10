@@ -400,8 +400,8 @@ export async function handleWorkflowProgressCommand(
       );
       return;
     }
-    const n = Number.parseInt(value, 10);
-    if (!Number.isFinite(n) || n < 1) {
+    const n = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(n) || n < 1) {
       await say(`Invalid value "${value}". Usage: /workflow progress max <1-1000> (a whole number >= 1).`);
       return;
     }

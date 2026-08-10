@@ -74,7 +74,10 @@ npm install --ignore-scripts --legacy-peer-deps --prefix "$UPSTREAM_DIR" \
   "$TARBALL" >/dev/null
 cat > "$UPSTREAM_DIR/verify-upstream-host.mjs" <<'EOF'
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
-const extensionPath = new URL("./node_modules/@mizuikki/pi-workflow-orchestrator/extensions/workflow.ts", import.meta.url).pathname;
+import { fileURLToPath } from "node:url";
+const extensionPath = fileURLToPath(
+  new URL("./node_modules/@mizuikki/pi-workflow-orchestrator/extensions/workflow.ts", import.meta.url),
+);
 const result = await discoverAndLoadExtensions([extensionPath], process.cwd(), process.env.HOME);
 if (result.errors.length > 0) throw new Error(result.errors.map((entry) => entry.error).join("; "));
 throw new Error("upstream host unexpectedly loaded Pi Workflow Orchestrator");
