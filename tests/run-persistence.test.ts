@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -122,19 +123,41 @@ test("rejects a symlink database path", async () => {
   });
 });
 
-test("foreign identity and extra schema objects fail closed without WAL sidecars", async () => {
+test("foreign identity fails closed without mutating bytes, mode, or existing sidecars", async () => {
   await isolated((_home, _cwd, path) => {
     mkdirSync(workflowHomeDir(), { recursive: true });
     const foreign = new DatabaseSync(path);
     foreign.exec("CREATE TABLE foreign_data(value TEXT); PRAGMA application_id = 42; PRAGMA user_version = 7");
     foreign.close();
+    if (process.platform !== "win32") chmodSync(path, 0o640);
+    writeFileSync(`${path}-wal`, "existing-wal");
+    writeFileSync(`${path}-shm`, "existing-shm");
     const before = readFileSync(path);
+    const walBefore = readFileSync(`${path}-wal`);
+    const shmBefore = readFileSync(`${path}-shm`);
     const mtime = statSync(path).mtimeMs;
+    const mode = statSync(path).mode & 0o777;
     assert.throws(() => openWorkflowDatabase({ path }), /unsupported identity or version/);
     assert.deepEqual(readFileSync(path), before);
     assert.equal(statSync(path).mtimeMs, mtime);
-    assert.equal(existsSync(`${path}-wal`), false);
-    assert.equal(existsSync(`${path}-shm`), false);
+    assert.equal(statSync(path).mode & 0o777, mode);
+    assert.deepEqual(readFileSync(`${path}-wal`), walBefore);
+    assert.deepEqual(readFileSync(`${path}-shm`), shmBefore);
+  });
+});
+
+test("accepted existing databases are secured only after immutable validation", async () => {
+  if (process.platform === "win32") return;
+  await isolated((_home, _cwd, path) => {
+    openWorkflowDatabase({ path }).close();
+    chmodSync(workflowHomeDir(), 0o755);
+    chmodSync(path, 0o644);
+
+    const db = openWorkflowDatabase({ path });
+    db.close();
+
+    assert.equal(statSync(workflowHomeDir()).mode & 0o777, 0o700);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
   });
 });
 
@@ -189,7 +212,9 @@ test("corrupt database is preserved", async () => {
   await isolated((_home, _cwd, path) => {
     mkdirSync(workflowHomeDir(), { recursive: true });
     writeFileSync(path, "not a sqlite database");
+    if (process.platform !== "win32") chmodSync(path, 0o640);
     const before = readFileSync(path);
+    const mode = statSync(path).mode & 0o777;
     assert.throws(
       () => openWorkflowDatabase({ path }),
       (error) => {
@@ -200,6 +225,9 @@ test("corrupt database is preserved", async () => {
       },
     );
     assert.deepEqual(readFileSync(path), before);
+    assert.equal(statSync(path).mode & 0o777, mode);
+    assert.equal(existsSync(`${path}-wal`), false);
+    assert.equal(existsSync(`${path}-shm`), false);
   });
 });
 

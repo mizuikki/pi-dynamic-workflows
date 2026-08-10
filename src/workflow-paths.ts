@@ -1,33 +1,31 @@
 /**
- * Filesystem layout for pi-dynamic-workflows state.
+ * Filesystem layout for Pi Workflow Orchestrator state.
  *
  * New writes live under the user's workflow home so projects do not get
- * scattered `.pi/workflows` directories. Project-scoped state is still isolated
+ * scattered project-local state directories. Project-scoped state is still isolated
  * by a stable cwd-derived namespace.
  */
 
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { WORKFLOW_SAVED_DIR } from "./config.js";
 
-export const WORKFLOW_HOME_RELATIVE_DIR = ".pi/workflows";
+export const WORKFLOW_HOME_RELATIVE_DIR = ".pi/workflow-orchestrator";
 export const WORKFLOW_PROJECTS_SUBDIR = "projects";
-export const WORKFLOW_DATABASE_FILENAME = "workflows.sqlite3";
+export const WORKFLOW_DATABASE_FILENAME = "workflow-orchestrator.sqlite3";
 
 export interface WorkflowProjectPaths {
   key: string;
   rootDir: string;
   savedDir: string;
   settingsPath: string;
-  legacySavedDir: string;
 }
 
 export function workflowHomeDir(): string {
   return join(homedir(), WORKFLOW_HOME_RELATIVE_DIR);
 }
 
-export function workflowUserSavedDir(): string {
+export function workflowGlobalSavedDir(): string {
   return join(workflowHomeDir(), "saved");
 }
 
@@ -54,7 +52,6 @@ export function workflowProjectPaths(cwd: string): WorkflowProjectPaths {
     rootDir,
     savedDir: join(rootDir, "saved"),
     settingsPath: join(rootDir, "settings.json"),
-    legacySavedDir: resolve(cwd, WORKFLOW_SAVED_DIR),
   };
 }
 

@@ -156,7 +156,7 @@ test("workflow extension injects the live host prompt only for trusted host turn
       const injected = await handler(baseEvent, harness.ctx);
       assert.equal(
         (injected as { systemPrompt?: string } | undefined)?.systemPrompt,
-        "earlier prompt\n\n<!-- pi-dynamic-workflows:workflow-main -->\nhost-only instructions",
+        "earlier prompt\n\n<!-- pi-workflow-orchestrator:workflow-main -->\nhost-only instructions",
       );
 
       disableWorkflowMainPrompt(runCwd);
@@ -219,6 +219,7 @@ test("explicit workflow-main-prompt flag injects for one run without persistence
 function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefinition[]; activeTools?: string[] }) {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void> | void>();
   const registeredTools = options.registeredTools ?? [];
+  const registeredCommands: string[] = [];
   let activeTools = options.activeTools ?? ["read"];
   let workflowMainPromptFlag = false;
   const pi = {
@@ -228,7 +229,7 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
     registerTool: (tool: ToolDefinition) => {
       registeredTools.push(tool);
     },
-    registerCommand: () => {},
+    registerCommand: (name: string) => registeredCommands.push(name),
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) => {
       handlers.set(event, handler);
     },
@@ -274,6 +275,7 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
     pi,
     handlers,
     registeredTools,
+    registeredCommands,
     getActiveTools: () => activeTools,
     setActiveTools: (value: string[]) => {
       activeTools = [...value];
@@ -284,6 +286,27 @@ function makeExtensionHarness(options: { cwd: string; registeredTools?: ToolDefi
     ctx,
   };
 }
+
+test("workflow extension registers only the singular workflow command root", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-wo-command-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-wo-command-cwd-"));
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const harness = makeExtensionHarness({ cwd });
+      const originalCwd = process.cwd();
+      process.chdir(cwd);
+      try {
+        extension(harness.pi);
+      } finally {
+        process.chdir(originalCwd);
+      }
+      assert.deepEqual(harness.registeredCommands, ["workflow"]);
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("workflow extension rejects an incompatible host before registering tools", () => {
   let registrations = 0;
@@ -353,7 +376,7 @@ test("workflow extension warns once and ignores stale defaultAgentRetries", asyn
   try {
     await withFakeHomeAsync(home, async () => {
       const { mkdirSync } = await import("node:fs");
-      const settingsDir = join(home, ".pi", "workflows");
+      const settingsDir = join(home, ".pi", "workflow-orchestrator");
       mkdirSync(settingsDir, { recursive: true });
       writeFileSync(join(settingsDir, "settings.json"), JSON.stringify({ defaultAgentRetries: 3 }));
       console.warn = (message?: unknown) => warnings.push(String(message));
@@ -368,7 +391,7 @@ test("workflow extension warns once and ignores stale defaultAgentRetries", asyn
     });
     assert.deepEqual(
       warnings.filter((message) => message.includes("defaultAgentRetries")),
-      ["[workflow] defaultAgentRetries is deprecated and ignored; use explicit agentRunRetries per run"],
+      ["[workflow-orchestrator] defaultAgentRetries is deprecated and ignored; use explicit agentRunRetries per run"],
     );
   } finally {
     console.warn = originalWarn;
@@ -411,7 +434,7 @@ test("registers trellis_subagent on model_select when native extension is absent
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.4\n", "utf-8");
     const harness = makeExtensionHarness({ cwd });
     await withFakeHomeAsync(home, async () => {
       const originalCwd = process.cwd();
@@ -456,7 +479,7 @@ test("disables the Trellis adapter for an unsupported project version", async ()
       }
       await harness.handlers.get("model_select")?.({ type: "model_select" }, harness.ctx);
     });
-    assert.ok(warnings.includes("[trellis-adapter] disabled: requires Trellis project version 1.0.3"));
+    assert.ok(warnings.includes("[workflow-orchestrator] Trellis adapter disabled: requires project version 1.0.4"));
     assert.equal(
       harness.registeredTools.some((tool) => tool.name === "trellis_subagent"),
       false,
@@ -474,7 +497,7 @@ test("trellis_subagent remains inactive after explicit deactivation", async () =
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.4\n", "utf-8");
     const harness = makeExtensionHarness({ cwd });
     await withFakeHomeAsync(home, async () => {
       const originalCwd = process.cwd();
@@ -506,7 +529,7 @@ test("skips trellis_subagent registration when tool already registered", async (
   try {
     const { mkdirSync } = await import("node:fs");
     mkdirSync(join(cwd, ".trellis"), { recursive: true });
-    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.3\n", "utf-8");
+    writeFileSync(join(cwd, ".trellis", ".version"), "1.0.4\n", "utf-8");
     const harness = makeExtensionHarness({
       cwd,
       registeredTools: [{ name: "trellis_subagent" } as ToolDefinition],

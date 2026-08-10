@@ -1,17 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { createPinnedPiFixture } from "./pinned-pi-checkout.mjs";
 
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const piForkDirectory = resolve(process.env.PI_FORK_DIR ?? join(projectDirectory, "../pi"));
 const piForkRef = process.env.PI_FORK_REF ?? "HEAD";
 const keepTemp = process.env.KEEP_TEMP === "1";
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const { createLocalForkFixture, installManifestSdk } = await import(
-  pathToFileURL(join(piForkDirectory, "scripts/local-fork-fixture.mjs")).href
-);
-
 function run(command, args, options = {}) {
   console.log(`$ ${[command, ...args].join(" ")}`);
   execFileSync(command, args, { stdio: "inherit", ...options });
@@ -38,18 +35,14 @@ if (!existsSync(join(piForkDirectory, ".git"))) {
   throw new Error(`PI_FORK_DIR is not a git checkout: ${piForkDirectory}`);
 }
 
-const fixture = createLocalForkFixture({
-  ref: piForkRef,
-  piDirectory: piForkDirectory,
-  prefix: "pi-local-fork-",
-});
+const fixture = await createPinnedPiFixture(piForkDirectory, piForkRef, "pi-local-fork-");
 let passed = false;
 
 try {
   copyProject(fixture.projectDirectory);
   // The helper creates <temp>/pi before npm resolves file:../pi development dependencies.
   run(npm, ["ci", "--ignore-scripts", "--prefix", fixture.projectDirectory]);
-  installManifestSdk(fixture.projectDirectory, fixture.manifest);
+  fixture.installManifestSdk(fixture.projectDirectory, fixture.manifest);
   run(npm, ["run", "check", "--prefix", fixture.projectDirectory]);
   run(npm, ["run", "build", "--prefix", fixture.projectDirectory]);
   run(npm, ["run", "test:unit", "--prefix", fixture.projectDirectory]);
@@ -96,4 +89,5 @@ try {
   } else {
     console.error(`Pi fork verification failed; temporary directory retained at ${fixture.root}`);
   }
+  fixture.cleanupPinned();
 }

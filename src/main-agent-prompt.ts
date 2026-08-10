@@ -7,7 +7,7 @@ import { isKnownTrellisChild } from "./agent.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 
 export const WORKFLOW_MAIN_RELATIVE_PATH = ".pi/WORKFLOW_MAIN.md";
-export const WORKFLOW_MAIN_MARKER = "<!-- pi-dynamic-workflows:workflow-main -->";
+export const WORKFLOW_MAIN_MARKER = "<!-- pi-workflow-orchestrator:workflow-main -->";
 export const MAX_WORKFLOW_MAIN_BYTES = 64 * 1024;
 
 const EMPTY_HASH = "-";
@@ -348,11 +348,11 @@ function isWorkflowMainPromptAuthorized(
 }
 
 function notifyCommandUsage(ctx: ExtensionCommandContext): void {
-  ctx.ui.notify("Usage: /workflows-prompt enable|disable|status", "warning");
+  ctx.ui.notify("Usage: /workflow prompt enable|disable|status", "warning");
 }
 
 function notifyMutationUnavailable(ctx: ExtensionCommandContext): void {
-  ctx.ui.notify("/workflows-prompt enable|disable requires interactive UI", "warning");
+  ctx.ui.notify("/workflow prompt enable|disable requires interactive UI", "warning");
 }
 
 /** Register the explicit per-run headless opt-in flag. */
@@ -369,86 +369,67 @@ export function registerWorkflowMainPromptFlag(pi: ExtensionAPI): void {
   }
 }
 
-/** Register the project prompt opt-in and metadata command. */
-export function registerWorkflowMainPromptCommand(pi: ExtensionAPI): void {
-  try {
-    if ((pi.getCommands?.() ?? []).some((command) => command.name === "workflows-prompt")) return;
-  } catch {
-    // Hosts without command discovery can still register the command.
+/** Handle the project prompt opt-in and metadata subcommand. */
+export async function handleWorkflowMainPromptCommand(
+  pi: ExtensionAPI,
+  args: string,
+  ctx: ExtensionCommandContext,
+): Promise<void> {
+  const action = args.trim();
+  if (action !== "enable" && action !== "disable" && action !== "status") {
+    notifyCommandUsage(ctx);
+    return;
   }
 
-  pi.registerCommand("workflows-prompt", {
-    description: "Enable, disable, or inspect the project workflow main prompt",
-    async handler(args: string, ctx: ExtensionCommandContext) {
-      const action = args.trim();
-      if (action !== "enable" && action !== "disable" && action !== "status") {
-        notifyCommandUsage(ctx);
-        return;
-      }
+  const childProcess = isKnownTrellisChild(process.env);
+  if (childProcess && action !== "status") {
+    ctx.ui.notify("Workflow main prompt is disabled in child sessions", "info");
+    return;
+  }
 
-      const childProcess = isKnownTrellisChild(process.env);
-      if (childProcess && action !== "status") {
-        ctx.ui.notify("Workflow main prompt is disabled in child sessions", "info");
-        return;
-      }
+  if (action === "enable") {
+    if (!isProjectTrusted(ctx)) {
+      ctx.ui.notify("Workflow main prompt requires a trusted project", "warning");
+      return;
+    }
+    try {
+      enableWorkflowMainPrompt(ctx.cwd);
+      ctx.ui.notify("Workflow main prompt enabled for this project", "info");
+    } catch {
+      ctx.ui.notify("Could not save the project workflow prompt setting", "error");
+    }
+    return;
+  }
 
-      if (action === "enable") {
-        if (!isProjectTrusted(ctx)) {
-          ctx.ui.notify("Workflow main prompt requires a trusted project", "warning");
-          return;
-        }
-        if (!ctx.hasUI) {
-          notifyMutationUnavailable(ctx);
-          return;
-        }
-        const confirmed = await ctx.ui.confirm(
-          "Enable workflow main prompt?",
-          "Allow this exact project to load .pi/WORKFLOW_MAIN.md into the main Pi agent?",
-        );
-        if (!confirmed) {
-          ctx.ui.notify("Workflow main prompt remains disabled", "info");
-          return;
-        }
-        try {
-          enableWorkflowMainPrompt(ctx.cwd);
-          ctx.ui.notify("Workflow main prompt enabled for this project", "info");
-        } catch {
-          ctx.ui.notify("Could not save the project workflow prompt setting", "error");
-        }
-        return;
-      }
+  if (action === "disable") {
+    if (!ctx.hasUI) {
+      notifyMutationUnavailable(ctx);
+      return;
+    }
+    try {
+      disableWorkflowMainPrompt(ctx.cwd);
+      ctx.ui.notify("Workflow main prompt disabled for this project", "info");
+    } catch {
+      ctx.ui.notify("Could not update the project workflow prompt setting", "error");
+    }
+    return;
+  }
 
-      if (action === "disable") {
-        if (!ctx.hasUI) {
-          notifyMutationUnavailable(ctx);
-          return;
-        }
-        try {
-          disableWorkflowMainPrompt(ctx.cwd);
-          ctx.ui.notify("Workflow main prompt disabled for this project", "info");
-        } catch {
-          ctx.ui.notify("Could not update the project workflow prompt setting", "error");
-        }
-        return;
-      }
-
-      let info: WorkflowMainPromptDiagnostic;
-      if (childProcess) {
-        info = statusForBlockedPrompt("skipped", "child-process");
-      } else {
-        const authorization = isWorkflowMainPromptAuthorized(pi, ctx);
-        if (!authorization.authorized) {
-          info = statusForBlockedPrompt("skipped", authorization.reason ?? "unauthorized");
-        } else {
-          // Inspection is deliberately independent of getSystemPrompt(): a
-          // marker in the current prompt must not hide current file metadata.
-          info = await inspectWorkflowMainPrompt(ctx.cwd, {
-            projectTrusted: true,
-            allowHeadless: pi.getFlag?.("workflow-main-prompt") === true,
-          });
-        }
-      }
-      ctx.ui.notify(formatWorkflowMainPromptDiagnostic(info), info.state === "unavailable" ? "warning" : "info");
-    },
-  });
+  let info: WorkflowMainPromptDiagnostic;
+  if (childProcess) {
+    info = statusForBlockedPrompt("skipped", "child-process");
+  } else {
+    const authorization = isWorkflowMainPromptAuthorized(pi, ctx);
+    if (!authorization.authorized) {
+      info = statusForBlockedPrompt("skipped", authorization.reason ?? "unauthorized");
+    } else {
+      // Inspection is deliberately independent of getSystemPrompt(): a
+      // marker in the current prompt must not hide current file metadata.
+      info = await inspectWorkflowMainPrompt(ctx.cwd, {
+        projectTrusted: true,
+        allowHeadless: pi.getFlag?.("workflow-main-prompt") === true,
+      });
+    }
+  }
+  ctx.ui.notify(formatWorkflowMainPromptDiagnostic(info), info.state === "unavailable" ? "warning" : "info");
 }

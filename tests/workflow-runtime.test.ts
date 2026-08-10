@@ -1529,6 +1529,17 @@ const noopAgent = {
   },
 };
 
+test("runtime does not expose human checkpoint or confirmation gates", async () => {
+  const script = `export const meta = { name: 'no-gates', description: 'no human gates' }
+return { checkpoint: typeof checkpoint, confirm: typeof confirm }`;
+  const result = await runWorkflow<{ checkpoint: string; confirm: string }>(script, {
+    agent: noopAgent,
+    persistLogs: false,
+  });
+  assert.equal(result.result.checkpoint, "undefined");
+  assert.equal(result.result.confirm, "undefined");
+});
+
 function probe(expr: string): Promise<{ result: { err: string | null; val: unknown } }> {
   const script = `export const meta = { name: 'det', description: 'determinism' }
 let err = null, val = null

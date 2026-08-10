@@ -1,5 +1,5 @@
 /**
- * User-level settings for pi-dynamic-workflows.
+ * User-level settings for Pi Workflow Orchestrator.
  *
  * Stored separately from Pi's own settings.json so extension preferences remain
  * stable without depending on host-internal config shape.
@@ -64,7 +64,7 @@ export interface WorkflowSettingsStore {
   save(settings: WorkflowSettings): void;
 }
 
-export const WORKFLOW_STRUCTURED_OUTPUT_SETTINGS_PATH = "~/.pi/workflows/settings.json";
+export const WORKFLOW_STRUCTURED_OUTPUT_SETTINGS_PATH = "~/.pi/workflow-orchestrator/settings.json";
 export const WORKFLOW_STRUCTURED_OUTPUT_OPT_IN = '"structuredOutputEnabled": true';
 
 export interface WorkflowSettingsOptions {
@@ -78,7 +78,7 @@ export interface WorkflowSettingsOptions {
   scope?: "global" | "project";
 }
 
-/** Path to the user-level workflow settings JSON file (~/.pi/workflows/settings.json). */
+/** Path to the user-level workflow settings JSON file. */
 export function getWorkflowSettingsPath(): string {
   return join(workflowHomeDir(), "settings.json");
 }

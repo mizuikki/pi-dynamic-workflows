@@ -162,7 +162,7 @@ describe("installResultDelivery", () => {
 
   // ── Status pointer + configurable threshold ──
 
-  it("appends a session-safe /workflows status pointer", () => {
+  it("appends a session-safe /workflow status pointer", () => {
     const pi = createMockPi();
     const manager = createMockManager(makeRun());
 
@@ -170,7 +170,7 @@ describe("installResultDelivery", () => {
     manager.emit("complete", { runId: "test-run-1" });
 
     const content = (pi as unknown as { _calls: { content: string }[] })._calls[0].content;
-    assert.ok(content.includes("Run details: /workflows status test-run-1"), "should include the status command");
+    assert.ok(content.includes("Run details: /workflow status test-run-1"), "should include the status command");
     assert.ok(!content.includes("/runs/"), "should not expose a local path");
     // The verdict summary itself is unchanged apart from the appended pointer.
     assert.ok(content.includes("All tests passed"), "verdict text preserved");
@@ -186,7 +186,7 @@ describe("installResultDelivery", () => {
     const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
     assert.equal(calls.length, 1, "the result is still delivered");
     assert.ok(calls[0].content.includes("All tests passed"), "verdict body still intact");
-    assert.ok(calls[0].content.includes("Run details: /workflows status test-run-1"));
+    assert.ok(calls[0].content.includes("Run details: /workflow status test-run-1"));
   });
 
   it("honors deliveredResultMaxChars from loadSettings for the JSON-dump branch", () => {
@@ -204,7 +204,7 @@ describe("installResultDelivery", () => {
     const content = (pi as unknown as { _calls: { content: string }[] })._calls[0].content;
     assert.ok(/…\(truncated [\d.]+ (B|KB|MB)\)/.test(content), "the 50-char setting truncates a sub-400 dump");
     assert.ok(!content.includes("z".repeat(200)), "the body is cut at the configured threshold");
-    assert.ok(content.includes("Run details: /workflows status test-run-1"), "pointer still appended");
+    assert.ok(content.includes("Run details: /workflow status test-run-1"), "pointer still appended");
   });
 
   // ── installResultDelivery: guard / stale ctx ──
@@ -299,7 +299,7 @@ describe("installResultDelivery", () => {
     const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("paused"), "should say paused");
-    assert.ok(calls[0].content.includes("/workflows resume test-run-1"), "should name the resume command");
+    assert.ok(calls[0].content.includes("/workflow resume test-run-1"), "should name the resume command");
     assert.ok(calls[0].content.includes("Resets in ~3h"), "should include the reset hint");
     assert.ok(!calls[0].content.includes("failed"), "should not say failed");
   });
@@ -448,7 +448,7 @@ describe("renderPanel", () => {
     assert.equal(calls, preparedCalls);
   });
 
-  it("hints that finished runs are kept in /workflows history", async () => {
+  it("hints that finished runs are kept in /workflow history", async () => {
     const { createWorkflowPanelSnapshot, renderPanel } = await import("../src/task-panel.js");
     const manager = {
       listRuns: () => [
@@ -464,8 +464,8 @@ describe("renderPanel", () => {
       "hint should report the finished-run count",
     );
     assert.ok(
-      lines.some((l) => l.includes("/workflows")),
-      "hint should point at /workflows",
+      lines.some((l) => l.includes("/workflow")),
+      "hint should point at /workflow",
     );
   });
 
@@ -823,7 +823,7 @@ describe("deliverText", () => {
     const verdict = "V".repeat(600);
     const text = deliverText(makeResult({ verdict }) as never);
     assert.ok(text.includes(verdict), "long verdict passed through in full");
-    assert.ok(text.includes("Run details: /workflows status x"), "pointer appended");
+    assert.ok(text.includes("Run details: /workflow status x"), "pointer appended");
     assert.ok(!/truncated/.test(text), "verdict branch bypasses truncation");
   });
 
@@ -831,7 +831,7 @@ describe("deliverText", () => {
     const { deliverText } = await import("../src/task-panel.js");
     const text = deliverText(makeResult("plain string") as never);
     assert.ok(text.includes("plain string"), "string result passed through");
-    assert.ok(text.includes("Run details: /workflows status x"));
+    assert.ok(text.includes("Run details: /workflow status x"));
   });
 
   it("leaves a small JSON dump untouched (no truncation marker)", async () => {
@@ -839,7 +839,7 @@ describe("deliverText", () => {
     const text = deliverText(makeResult({ ok: true, changed: 2 }) as never);
     assert.ok(text.includes('"ok": true'), "full JSON shown");
     assert.ok(!/truncated/.test(text), "no truncation under the threshold");
-    assert.ok(text.includes("Run details: /workflows status x"), "pointer still appended");
+    assert.ok(text.includes("Run details: /workflow status x"), "pointer still appended");
   });
 
   it("truncates the JSON dump at maxChars and reports the dropped size", async () => {
@@ -848,7 +848,7 @@ describe("deliverText", () => {
       maxChars: 100,
     });
     assert.ok(/…\(truncated [\d.]+ (B|KB|MB)\)/.test(text), "size hint present");
-    assert.ok(text.includes("Run details: /workflows status x"), "pointer still appended");
+    assert.ok(text.includes("Run details: /workflow status x"), "pointer still appended");
     // Body is capped near maxChars, so the 500-char tail is not delivered in full.
     assert.ok(!text.includes("x".repeat(500)), "the full tail is not inlined");
   });

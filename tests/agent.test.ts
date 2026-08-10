@@ -176,7 +176,7 @@ test("WorkflowAgent with persistAgentSessions=false explicitly stays in-memory",
 });
 
 test("WorkflowAgent with persistAgentSessions=true creates a file-backed manager keyed by the project cwd", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-persist-agent-"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-persist-agent-"));
   const projectCwd = join(dir, "project");
   const fakeHome = join(dir, "home");
   try {
@@ -196,7 +196,7 @@ test("WorkflowAgent with persistAgentSessions=true creates a file-backed manager
 });
 
 test("WorkflowAgent degrades to in-memory when the session directory can't be created", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-persist-agent-fail-"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-persist-agent-fail-"));
   const projectCwd = join(dir, "project");
   const fakeHome = join(dir, "home");
   try {

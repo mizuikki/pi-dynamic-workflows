@@ -1,12 +1,14 @@
 # Contributing
 
-Thanks for contributing to pi-dynamic-workflows. This project values small, well-tested changes that keep the workflow runtime predictable. A few conventions keep review fast.
+Thanks for contributing to Pi Workflow Orchestrator. This project values small,
+well-tested changes that keep the workflow runtime predictable. A few conventions
+keep review fast.
 
 ## Before you open a PR
 
 ```bash
 npm install
-npm test     # biome check + tsc build + unit tests — must pass
+npm test     # biome check + tsc build + unit tests; must pass
 ```
 
 `npm test` runs exactly what CI runs. If it's green locally it should be green in CI. CI runs on every PR to `main`; for fork PRs a maintainer approves the first run.
@@ -19,13 +21,32 @@ npm test     # biome check + tsc build + unit tests — must pass
 
 ## When you add user-facing config
 
-If you add a `workflow` tool parameter or a `~/.pi/workflows/settings.json` setting, document it in `README.md` in the same place the existing ones live (the agent-options table and the settings paragraph). Undocumented config is treated as incomplete.
+If you add a `workflow` tool parameter or a
+`~/.pi/workflow-orchestrator/settings.json` setting, document it in `README.md`
+in the same place the existing ones live. Undocumented config is treated as
+incomplete.
 
 ## When you change runtime behavior
 
 Fake-agent unit tests are necessary but not sufficient. Any change to how agents actually run — retries, timeouts, model routing, token accounting, concurrency, resume — must also be verified **end-to-end against a real Pi subagent session** (real `createAgentSession` → real model), because the real SDK path behaves differently than a mock. If you don't have a real-provider environment, say so in the PR and a maintainer will run it before merge.
 
-A throwaway harness for this should live in the repo root (not `/tmp`, whose symlink breaks relative imports), import from `./src`, and be deleted before commit — don't commit harnesses.
+Use the checked-in pinned fork and package smoke harnesses for this verification.
+Do not commit one-off harnesses or replace the archived SDK fixture with a
+mutable branch checkout.
+
+## Local installation
+
+This package is private and is supported only as a local Pi extension. From a
+checkout, use:
+
+```bash
+pi install -l <absolute-source-path>
+pi remove <absolute-source-path> -l
+```
+
+Do not add registry publication, registry-install instructions, or Pi product
+version ranges as extension compatibility claims. Compatibility is established
+by the three extension API versions and the pinned fork fixture.
 
 ## Style
 

@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { createCodingTools } from "@earendil-works/pi-coding-agent";
+import { createCodingTools, defineTool } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { createWorkflowModelScopeSnapshot } from "../src/model-selection.js";
-import { createWebTools } from "../src/web-tools.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { saveWorkflowSettings } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
@@ -33,7 +33,7 @@ const selectedModelScript = `export const meta = { name: 'selected_model', descr
 const a = await agent('report the selected model', { label: 'a' })
 return { a }`;
 
-const resumeWithWebToolsScript = `export const meta = { name: 'resume_with_web_tools', description: 'resume with web tools' }
+const resumeWithCustomToolsScript = `export const meta = { name: 'resume_with_custom_tools', description: 'resume with custom tools' }
 const a = await agent('first', { label: 'first' })
 const b = await agent('second', { label: 'second' })
 return { a, b }`;
@@ -197,65 +197,63 @@ test(
   withTempCwd(async (cwd) => {
     const faux = createExplicitFauxModels({
       provider: "deepseek",
-      models: [{ id: "workflow-web", name: "Workflow Web Model" }],
+      models: [{ id: "workflow-custom", name: "Workflow Custom Model" }],
     });
     try {
       const { modelRuntime, modelRegistry } = await createFauxRuntimeBundle(faux);
-      const selectedModel = faux.getModel("workflow-web");
+      const selectedModel = faux.getModel("workflow-custom");
 
       if (!selectedModel) {
-        throw new Error("workflow web model should exist");
+        throw new Error("workflow custom model should exist");
       }
 
-      let fetchCalls = 0;
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async () => {
-        fetchCalls += 1;
-        return new Response(
-          '<html><body><h2><a href="https://example.com/result">Result</a></h2><p>Example body</p></body></html>',
-          { status: 200 },
-        );
-      };
+      let customToolCalls = 0;
+      const preservedTool = defineTool({
+        name: "preserved_context",
+        label: "Preserved Context",
+        description: "A custom tool retained across resume.",
+        parameters: Type.Object({}),
+        async execute() {
+          customToolCalls += 1;
+          return { content: [{ type: "text", text: "custom tool result" }], details: {} };
+        },
+      });
 
-      try {
-        faux.setResponses([
-          fauxAssistantMessage("first-result"),
-          fauxAssistantMessage("", {
-            stopReason: "error",
-            errorMessage: "Codex usage limit reached. Resets in ~3h.",
-          }),
-        ]);
+      faux.setResponses([
+        fauxAssistantMessage("first-result"),
+        fauxAssistantMessage("", {
+          stopReason: "error",
+          errorMessage: "Codex usage limit reached. Resets in ~3h.",
+        }),
+      ]);
 
-        const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
-        manager.setModelRegistry(modelRegistry);
-        manager.setModelRuntime(modelRuntime);
-        manager.setSessionOptions({ model: selectedModel });
+      const manager = new WorkflowManager({ cwd, mainModel: `${faux.provider}/${selectedModel.id}` });
+      manager.setModelRegistry(modelRegistry);
+      manager.setModelRuntime(modelRuntime);
+      manager.setSessionOptions({ model: selectedModel });
 
-        const { runId, promise } = manager.startInBackground(resumeWithWebToolsScript, undefined, {
-          tools: [...createCodingTools(cwd), ...createWebTools()],
-        });
-        await promise.catch(() => {});
+      const { runId, promise } = manager.startInBackground(resumeWithCustomToolsScript, undefined, {
+        tools: [...createCodingTools(cwd), preservedTool],
+      });
+      await promise.catch(() => {});
 
-        assert.equal(manager.getRun(runId)?.status, "paused", "run should pause on provider usage limit");
+      assert.equal(manager.getRun(runId)?.status, "paused", "run should pause on provider usage limit");
 
-        faux.setResponses([
-          fauxAssistantMessage(
-            [fauxToolCall("web_search", { query: "pi workflow" }), { type: "text", text: "Used web_search" }],
-            { stopReason: "toolUse" },
-          ),
-          fauxAssistantMessage("second-result"),
-        ]);
+      faux.setResponses([
+        fauxAssistantMessage(
+          [fauxToolCall("preserved_context", {}), { type: "text", text: "Used preserved_context" }],
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage("second-result"),
+      ]);
 
-        assert.equal(await manager.resume(runId), true, "resumed run should restart with its original tools");
-        await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(await manager.resume(runId), true, "resumed run should restart with its original tools");
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
-        assert.equal(fetchCalls, 1, "web_search should execute after resume");
-        assert.equal(manager.getRun(runId)?.status, "completed");
-        assert.equal((manager.getRun(runId)?.result?.result as { a: string; b: string }).a, "first-result");
-        assert.equal((manager.getRun(runId)?.result?.result as { a: string; b: string }).b, "second-result");
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
+      assert.equal(customToolCalls, 1, "the custom tool should execute after resume");
+      assert.equal(manager.getRun(runId)?.status, "completed");
+      assert.equal((manager.getRun(runId)?.result?.result as { a: string; b: string }).a, "first-result");
+      assert.equal((manager.getRun(runId)?.result?.result as { a: string; b: string }).b, "second-result");
     } finally {
       faux.dispose();
     }

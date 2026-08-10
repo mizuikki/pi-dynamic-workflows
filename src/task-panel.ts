@@ -1,7 +1,7 @@
 /**
  * Background-run UX, mirroring Claude Code:
  *  - A live task panel below the input lists in-progress runs while you keep working.
- *    It is informational; run /workflows to open the full navigator.
+ *    It is informational; run /workflow to open the full navigator.
  *  - When a background run finishes, its result is delivered back into the
  *    conversation so the paused task continues with the outcome.
  */
@@ -38,14 +38,14 @@ export interface TaskPanelOptions {
   cwd?: string;
   /**
    * Live settings loader. When provided, the panel reads it fresh (with a short
-   * TTL cache) on each render so `/workflows-progress` takes effect without a
+   * TTL cache) on each render so `/workflow progress` takes effect without a
    * restart. Omitted in tests / minimal hosts → always compact.
    */
   loadSettings?: () => WorkflowSettings;
 }
 
 /** Default cap on the JSON-dump fallback in a delivered result summary. Overridable
- *  via the `deliveredResultMaxChars` setting in ~/.pi/workflows/settings.json. */
+ *  via the `deliveredResultMaxChars` setting in ~/.pi/workflow-orchestrator/settings.json. */
 const DEFAULT_DELIVERED_MAX_CHARS = 400;
 
 /** Human-readable byte size for the dropped-tail hint: 512 B, 3.2 KB, 1.4 MB. */
@@ -101,7 +101,7 @@ export function deliverText(run: ManagedRun, opts: { maxChars?: number } = {}): 
     "",
     summary,
   ];
-  lines.push("", `Run details: /workflows status ${run.runId}`);
+  lines.push("", `Run details: /workflow status ${run.runId}`);
   return lines.join("\n");
 }
 
@@ -150,10 +150,10 @@ export function installResultDelivery(
       );
       // sendMessage may return a promise; a sync try/catch can't catch its
       // rejection, so swallow the async path too. A stale ctx after /reload is
-      // the expected failure — the result is still visible via /workflows.
+      // the expected failure — the result is still visible via /workflow.
       void Promise.resolve(ret).catch(() => {});
     } catch {
-      // Synchronous failure (e.g. stale ctx) — result still visible via /workflows.
+      // Synchronous failure (e.g. stale ctx) — result still visible via /workflow.
     }
   };
 
@@ -192,7 +192,7 @@ export function installResultDelivery(
       const cause = error?.message ?? "provider usage limit reached";
       deliver(
         `⏸ Background workflow ${runId} paused: ${cause}${when}. ` +
-          `Completed steps are saved — run /workflows resume ${runId} once your usage limit resets.`,
+          `Completed steps are saved — run /workflow resume ${runId} once your usage limit resets.`,
       );
     },
   );
@@ -273,8 +273,8 @@ export function renderPanel(snapshot: WorkflowPanelSnapshot, theme: Theme, width
   const hint = theme.fg(
     "dim",
     snapshot.finishedCount > 0
-      ? `  /workflows — open navigator (${snapshot.finishedCount} finished kept in history)`
-      : "  /workflows — open navigator",
+      ? `  /workflow — open navigator (${snapshot.finishedCount} finished kept in history)`
+      : "  /workflow — open navigator",
   );
   return [theme.bold(`Workflows running (${active.length}):`), ...rows, hint].map((line) => fitLine(line, width));
 }
@@ -441,8 +441,8 @@ export function renderPanelDetailed(
   out.push(
     dim(
       snapshot.finishedCount > 0
-        ? `  /workflows — open navigator (${snapshot.finishedCount} finished kept in history)`
-        : "  /workflows — open navigator",
+        ? `  /workflow — open navigator (${snapshot.finishedCount} finished kept in history)`
+        : "  /workflow — open navigator",
     ),
   );
   return out.map((line) => fitLine(line, width));
@@ -451,7 +451,7 @@ export function renderPanelDetailed(
 /**
  * Install the live "workflows running" panel below the editor. Re-rendered on
  * every manager event. Informational only — the user opens the navigator with
- * /workflows. (`_pi` is kept for signature stability.)
+ * /workflow. (`_pi` is kept for signature stability.)
  */
 export function installTaskPanel(
   _pi: ExtensionAPI,
@@ -461,7 +461,7 @@ export function installTaskPanel(
 ): void {
   // Live-read settings with a ~1s TTL: a render-path disk read every frame would
   // be wasteful, but re-reading at most once a second still makes
-  // /workflows-progress take effect "immediately" (no restart).
+  // /workflow progress take effect "immediately" (no restart).
   let cached: WorkflowSettings = {};
   let panelSnapshot = createWorkflowPanelSnapshot(manager);
   const refreshSettings = () => {
@@ -492,7 +492,7 @@ export function installTaskPanel(
       }, 2000);
       (timer as { unref?: () => void }).unref?.();
       // Purely informational: it lists running runs and re-renders on events. To
-      // open the navigator, the user runs /workflows (the panel takes no input).
+      // open the navigator, the user runs /workflow (the panel takes no input).
       const comp: Component & { dispose?(): void } = {
         render: (width: number) => {
           if (cached.progressPanelMode === "detailed") {

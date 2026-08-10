@@ -1,5 +1,5 @@
 /**
- * Optional Trellis context adapter for pi-dynamic-workflows.
+ * Optional Trellis context adapter for Pi Workflow Orchestrator.
  *
  * Read-only: discovers an active task, includes bounded task artifacts, and
  * exposes jsonl files as a read-on-demand manifest. Never creates/starts/
@@ -11,7 +11,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { SubagentContextLoader } from "../subagent-context.js";
@@ -39,6 +40,10 @@ export interface TrellisContextLoaderOptions extends TrellisAdapterSettings {
    * path such as `.trellis/tasks/04-17-foo`, or null/undefined when none.
    */
   resolveTaskPyCurrent?: (cwd: string) => string | null | undefined;
+  /** Live host transcript getter used only when the native session id is unavailable. */
+  getSessionFile?: () => string | undefined;
+  /** Controlled child forwarding only; ambient main-session env is ignored by default. */
+  allowEnvContextKey?: boolean;
   /** Optional warning sink (defaults to console.warn). */
   warn?: (message: string) => void;
 }
@@ -52,7 +57,7 @@ const TRELLIS_AGENT_JSONL: Record<string, string> = {
 
 const ACTIVE_TASK_LINE = /^Active task:\s*(.+?)\s*$/m;
 
-export const SUPPORTED_TRELLIS_PROJECT_VERSION = "1.0.3";
+export const SUPPORTED_TRELLIS_PROJECT_VERSION = "1.0.4";
 
 /** Hard ceiling for the complete Trellis prefix sent on the first agent turn. */
 export const MAX_TRELLIS_TASK_CONTEXT_BYTES = 128 * 1024;
@@ -142,33 +147,31 @@ export function parseActiveTaskLine(prompt: string): string | undefined {
 }
 
 /**
- * Resolve a stable Trellis context key for this host session (mirrors native
- * `contextKey` + `adoptKey` semantics closely enough for nested bash env and
- * session-map lookups). Returns undefined when no stable key can be formed.
+ * Resolve the native Trellis 1.0.4 context key. Native session identity always
+ * wins; ambient TRELLIS_CONTEXT_ID is accepted only for an explicitly
+ * controlled child path. There is deliberately no singleton-session adoption.
  */
 export function resolveTrellisContextKey(
   cwd: string,
   sessionId?: string,
   options: {
-    /** Prefer an existing env key when set (native child / nested host). */
+    /** Accept a controlled child context key when native identity is absent. */
     preferEnv?: boolean;
+    /** Native transcript path fallback when no session id is available. */
+    sessionFile?: string;
   } = {},
 ): string | undefined {
-  const preferEnv = options.preferEnv !== false;
-  if (preferEnv) {
+  void cwd;
+  const nativeSessionId = sessionId?.trim();
+  if (nativeSessionId) return nativeSessionContextKey(nativeSessionId);
+
+  const sessionFile = options.sessionFile?.trim();
+  if (sessionFile) return `pi_transcript_${hashContextIdentity(sessionFile)}`;
+
+  if (options.preferEnv === true) {
     const envKey = process.env.TRELLIS_CONTEXT_ID?.trim();
-    if (envKey) return sanitizeContextKey(envKey);
+    if (envKey) return normalizeForwardedContextKey(envKey);
   }
-
-  if (sessionId?.trim()) {
-    const sanitized = sanitizeContextKey(sessionId);
-    // Prefer the canonical pi_ prefix used by native Trellis.
-    return `pi_${sanitized}`;
-  }
-
-  // Fall back to a single-session adopt key when exactly one session file has a task.
-  const adopted = adoptSingleSessionKey(cwd);
-  if (adopted) return adopted;
 
   return undefined;
 }
@@ -184,14 +187,24 @@ export function createTrellisContextLoader(options: TrellisContextLoaderOptions 
     if (hasNativeTrellisExtension(cwd) && !warnedNative) {
       // Context injection still runs under the native extension. Tool registration
       // is handled separately and skips when native is present.
-      warn("[trellis-adapter] native Trellis extension detected; using read-only context injection only");
+      warn("[workflow-orchestrator] Native Trellis extension detected; using read-only context injection only");
       warnedNative = true;
     }
 
-    const contextKey = resolveTrellisContextKey(cwd, sessionId);
+    const sessionFile = safeGetSessionFile(options.getSessionFile);
+    const contextKey = resolveTrellisContextKey(cwd, sessionId, {
+      sessionFile,
+      preferEnv: options.allowEnvContextKey === true,
+    });
     const env = contextKey ? { TRELLIS_CONTEXT_ID: contextKey } : undefined;
 
-    const resolved = resolveActiveTaskPath(cwd, prompt, sessionId, options, warn);
+    const resolved = resolveActiveTaskPath(
+      cwd,
+      prompt,
+      sessionId,
+      { ...options, getSessionFile: () => sessionFile },
+      warn,
+    );
     if (!resolved) {
       // Even without a task dir, propagate the context key so nested bash and
       // other Trellis tooling can write/read the session map under a stable id.
@@ -216,28 +229,26 @@ export function resolveActiveTaskPath(
   prompt: string,
   sessionId: string | undefined,
   options: TrellisContextLoaderOptions = {},
-  warn: (message: string) => void = (message) => console.warn(message),
+  _warn: (message: string) => void = (message) => console.warn(message),
 ): string | undefined {
   const fromPrompt = parseActiveTaskLine(prompt);
   if (fromPrompt) return resolveTaskDirectory(cwd, fromPrompt);
 
-  // TRELLIS_CONTEXT_ID is already a full context key (e.g. pi_<id>, claude_<id>).
-  const envKey = process.env.TRELLIS_CONTEXT_ID?.trim();
-  if (envKey) {
-    const fromEnv = readTaskDirFromSessionKey(cwd, sanitizeContextKey(envKey));
-    if (fromEnv) return fromEnv;
+  const nativeKey = resolveTrellisContextKey(cwd, sessionId, {
+    sessionFile: safeGetSessionFile(options.getSessionFile),
+  });
+  if (nativeKey) {
+    const fromNative = readTaskDirFromSessionKey(cwd, nativeKey);
+    if (fromNative) return fromNative;
   }
 
-  if (sessionId?.trim()) {
-    // Match Trellis `_context_key("pi", "session", id)` => `pi_<sanitized>`.
-    // Also try the raw sanitized session id for hosts that store bare keys.
-    const sanitized = sanitizeContextKey(sessionId);
-    const fromSession = readTaskDirFromSessionKey(cwd, `pi_${sanitized}`) ?? readTaskDirFromSessionKey(cwd, sanitized);
-    if (fromSession) return fromSession;
+  if (options.allowEnvContextKey === true) {
+    const envKey = process.env.TRELLIS_CONTEXT_ID?.trim();
+    if (envKey) {
+      const fromEnv = readTaskDirFromSessionKey(cwd, normalizeForwardedContextKey(envKey));
+      if (fromEnv) return fromEnv;
+    }
   }
-
-  const adopted = adoptSingleSessionTask(cwd, warn);
-  if (adopted !== undefined) return adopted ?? undefined;
 
   const fromTaskPy = (options.resolveTaskPyCurrent ?? defaultResolveTaskPyCurrent)(cwd);
   if (fromTaskPy) return resolveTaskDirectory(cwd, fromTaskPy);
@@ -501,46 +512,6 @@ function defaultResolveTaskPyCurrent(cwd: string): string | undefined {
   }
 }
 
-/**
- * Returns:
- * - string when exactly one session has a task (adopt)
- * - null when multiple sessions have tasks (fail closed)
- * - undefined when no session has a task
- */
-function adoptSingleSessionTask(cwd: string, warn: (message: string) => void): string | null | undefined {
-  const key = adoptSingleSessionKey(cwd, warn);
-  if (key === null) return null;
-  if (key === undefined) return undefined;
-  return readTaskDirFromSessionKey(cwd, key);
-}
-
-/**
- * Adopt a single session *key* (not task dir) when exactly one session file has a task.
- * Returns null on multi-session ambiguity (fail closed), undefined when none.
- */
-function adoptSingleSessionKey(cwd: string, warn: (message: string) => void = () => {}): string | null | undefined {
-  const sessionsDir = join(cwd, ".trellis", ".runtime", "sessions");
-  if (!existsSync(sessionsDir)) return undefined;
-  let files: string[];
-  try {
-    files = readdirSync(sessionsDir).filter((name) => name.endsWith(".json"));
-  } catch {
-    return undefined;
-  }
-
-  const withTasks: string[] = [];
-  for (const file of files) {
-    const key = file.slice(0, -5);
-    const taskDir = readTaskDirFromSessionKey(cwd, key);
-    if (taskDir) withTasks.push(key);
-  }
-
-  if (withTasks.length === 0) return undefined;
-  if (withTasks.length === 1) return withTasks[0];
-  warn("[trellis-adapter] multiple sessions have active tasks; refusing to guess (fail closed)");
-  return null;
-}
-
 function readTaskDirFromSessionKey(cwd: string, key: string): string | undefined {
   try {
     const raw = readSafeProjectText(cwd, join(cwd, ".trellis", ".runtime", "sessions", `${key}.json`));
@@ -612,8 +583,28 @@ function toRepoRelativeTaskPath(cwd: string, taskDir: string): string {
   return toRepoRelativePath(cwd, taskDir) ?? taskDir.replace(/\\/g, "/");
 }
 
-function sanitizeContextKey(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 160) || "session";
+function hashContextIdentity(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 24);
+}
+
+function nativeSessionContextKey(sessionId: string): string {
+  const normalized = sessionId.replace(/[^A-Za-z0-9._-]+/g, "_");
+  if (!normalized) return `pi_${hashContextIdentity(sessionId)}`;
+  return `pi_${normalized}${normalized === sessionId ? "" : `_${hashContextIdentity(sessionId)}`}`;
+}
+
+function normalizeForwardedContextKey(value: string): string {
+  const normalized = value.replace(/[^A-Za-z0-9._-]+/g, "_");
+  if (!normalized) return hashContextIdentity(value);
+  return normalized === value ? normalized : `${normalized}_${hashContextIdentity(value)}`;
+}
+
+function safeGetSessionFile(getter: (() => string | undefined) | undefined): string | undefined {
+  try {
+    return getter?.();
+  } catch {
+    return undefined;
+  }
 }
 
 function readSafeProjectText(cwd: string, path: string): string {

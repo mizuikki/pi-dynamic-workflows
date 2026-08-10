@@ -106,7 +106,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   structuredOutputEnabled?: boolean;
   args?: unknown;
   agent?: Pick<WorkflowAgent, "run">;
-  /** The session's main model (provider/id), shown in /workflows for default agents. */
+  /** The session's main model (provider/id), shown in /workflow for default agents. */
   mainModel?: string;
   /** The session's current Pi reasoning effort. */
   currentThinkingLevel?: string;
@@ -167,12 +167,6 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   sharedStore?: SharedStore;
   /** Resolve a saved-workflow name to its script, enabling `workflow('name', args)`. */
   loadSavedWorkflow?: (name: string) => string | undefined;
-  /**
-   * Ask the human a checkpoint() question and resolve to their reply. Threaded from
-   * a UI-bearing tool context. Absent => headless: checkpoint() takes its declared
-   * default (and journals it), so a detached/background run never hangs.
-   */
-  confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: {
@@ -269,20 +263,6 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   retries?: number;
   /** Per-agent partial override for Pi child agent-turn retry. */
   agentTurnRetry?: AgentTurnRetryOverride;
-}
-
-/** Options for a human checkpoint() — a deterministic, journaled, replayable gate. */
-export interface CheckpointOptions {
-  /** Reply used when no UI is available (headless/background) and headless != "abort". */
-  default?: unknown;
-  /** Headless behavior: "default" (take `default`/true) or "abort" (throw). Default "default". */
-  headless?: "default" | "abort";
-  /** Confirm | free-text input | pick-one. Affects the hash and the UI widget. */
-  kind?: "confirm" | "input" | "select";
-  /** For kind "select". */
-  choices?: string[];
-  /** Per-checkpoint timeout in ms for the interactive prompt. */
-  timeoutMs?: number;
 }
 
 interface RuntimeState {
@@ -1244,50 +1224,6 @@ export async function runWorkflow<T = unknown>(
     return { ok: false, value: last, attempts };
   };
 
-  // Deterministic, journaled, replayable human checkpoint. Spends no tokens, so it
-  // is gated on the agent counter + abort (not budget). On resume the human's reply
-  // replays by callIndex exactly like a cached agent() — the genuine edge over CC,
-  // whose steering is in-session only. Headless (no UI threaded in): takes the
-  // declared default and journals THAT, so a detached/background run never hangs.
-  const checkpoint = async (promptText: string, checkpointOptions: CheckpointOptions = {}) => {
-    throwIfAborted();
-    if (typeof promptText !== "string") throw new TypeError("checkpoint(promptText, options?) needs a prompt string");
-    if (shared.agentCount >= maxAgents) {
-      throw new WorkflowError(
-        `Agent limit exceeded (${maxAgents}). Use maxAgents option to increase the limit.`,
-        WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
-        { recoverable: false },
-      );
-    }
-    const callIndex = state.callSeq++;
-    const callHash = hashCheckpoint(promptText, checkpointOptions);
-    const journalKey = `${runId}:${callIndex}`;
-    const cached =
-      options.resumeJournal?.get(journalKey) ?? (isTopLevelRun ? options.resumeJournal?.get(callIndex) : undefined);
-    if (cached != null && cached.hash === callHash && callIndex < state.firstMiss) {
-      shared.agentCount++;
-      return cached.result; // replay the journaled human reply
-    }
-    if (cached == null || cached.hash !== callHash) state.firstMiss = Math.min(state.firstMiss, callIndex);
-    shared.agentCount++;
-
-    let reply: unknown;
-    if (options.confirm) {
-      reply = await options.confirm(promptText, checkpointOptions);
-    } else if (checkpointOptions.headless === "abort") {
-      throw new WorkflowError(
-        `checkpoint "${promptText}" needs human input but none is available (headless run)`,
-        WorkflowErrorCode.WORKFLOW_ABORTED,
-        { recoverable: false },
-      );
-    } else {
-      reply = checkpointOptions.default ?? true;
-    }
-    throwIfAborted();
-    options.onAgentJournal?.({ index: callIndex, runId, hash: callHash, result: reply });
-    return reply;
-  };
-
   const context = vm.createContext({
     agent,
     parallel,
@@ -1300,7 +1236,6 @@ export async function runWorkflow<T = unknown>(
     completenessCheck,
     retry,
     gate,
-    checkpoint,
     log,
     phase,
     args: options.args,
@@ -1515,16 +1450,6 @@ function createLimiter(limit: number) {
 
 function defaultAgentLabel(phase: string | undefined, index: number): string {
   return phase ? `${phase} agent ${index}` : `agent ${index}`;
-}
-
-/** Stable identity hash for an agent() call — a cache miss on resume when anything changes. */
-function hashCheckpoint(promptText: string, options: CheckpointOptions): string {
-  const identity = JSON.stringify({
-    promptText,
-    kind: options.kind ?? "confirm",
-    choices: options.choices ?? null,
-  });
-  return createHash("sha256").update(identity).digest("hex");
 }
 
 function isTrellisSharedCwdAgent(agentType: string | undefined): boolean {

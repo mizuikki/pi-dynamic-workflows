@@ -108,7 +108,7 @@ function withTempCwd(fn: (cwd: string) => Promise<void>) {
 }
 
 test(
-  "runSync registers the run so /workflows (listRuns) can see it",
+  "runSync registers the run so /workflow (listRuns) can see it",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent({ input: 100, output: 40, total: 140 }) });
     const events: string[] = [];
@@ -135,7 +135,7 @@ test(
 );
 
 test(
-  "manager progress retains disabled-schema diagnostics for /workflows",
+  "manager progress retains disabled-schema diagnostics for /workflow",
   withTempCwd(async (cwd) => {
     const seen: Array<{ schema?: unknown; structuredOutputEnabled?: boolean }> = [];
     const manager = new WorkflowManager({
@@ -360,7 +360,7 @@ test(
 );
 
 test(
-  "each agent's concrete model and effort are recorded for /workflows",
+  "each agent's concrete model and effort are recorded for /workflow",
   withTempCwd(async (cwd) => {
     const mainModel = { provider: "anthropic", id: "claude-opus-4-8", name: "opus", reasoning: false } as any;
     const selectedModel = { provider: "openai", id: "gpt-5-mini", name: "mini", reasoning: false } as any;
@@ -389,7 +389,7 @@ return { a, b }`;
 );
 
 test(
-  "runSync persists recoverable agent error details for /workflows",
+  "runSync persists recoverable agent error details for /workflow",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({
       cwd,
@@ -413,7 +413,7 @@ test(
 );
 
 test(
-  "runSync stores compact subagent history for /workflows detail",
+  "runSync stores compact subagent history for /workflow detail",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({
       cwd,

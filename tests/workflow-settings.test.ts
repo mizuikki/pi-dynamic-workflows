@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { describe, it } from "node:test";
-import { WORKFLOW_SETTINGS_FILE } from "../src/config.js";
 import {
   clearWorkflowModelSetting,
   getWorkflowProjectSettingsPath,
@@ -15,7 +14,7 @@ import {
 import { withFakeHome, withFakeHomeAsync } from "./helpers/fake-home.js";
 
 function withSettingsPath(fn: (settingsPath: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-settings-"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-settings-"));
   try {
     fn(join(dir, "nested", "settings.json"));
   } finally {
@@ -25,7 +24,25 @@ function withSettingsPath(fn: (settingsPath: string) => void): void {
 
 describe("workflow settings", () => {
   it("resolves the user-level settings path", () => {
-    assert.ok(getWorkflowSettingsPath().endsWith(normalize(WORKFLOW_SETTINGS_FILE)));
+    assert.ok(getWorkflowSettingsPath().endsWith(normalize(".pi/workflow-orchestrator/settings.json")));
+  });
+
+  it("never reads or overwrites settings from the old state root", async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "workflow-orchestrator-old-settings-home-"));
+    try {
+      await withFakeHomeAsync(fakeHome, async () => {
+        const oldPath = join(fakeHome, ".pi", "workflows", "settings.json");
+        mkdirSync(dirname(oldPath), { recursive: true });
+        writeFileSync(oldPath, '{"keywordTriggerEnabled":false}\n', "utf-8");
+
+        assert.deepEqual(loadWorkflowSettings(), {});
+        saveWorkflowSettings({ keywordTriggerEnabled: true });
+        assert.deepEqual(loadWorkflowSettings(), { keywordTriggerEnabled: true });
+        assert.equal(readFileSync(oldPath, "utf-8"), '{"keywordTriggerEnabled":false}\n');
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 
   it("returns empty settings when the file is missing", () => {
@@ -104,7 +121,7 @@ describe("workflow settings", () => {
   });
 
   it("merges project settings over global settings when cwd is provided", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
+    const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-project-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {
@@ -129,7 +146,7 @@ describe("workflow settings", () => {
   });
 
   it("preserves a single Workflow Model with project precedence and explicit inheritance", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-model-settings-"));
+    const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-model-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {
@@ -181,7 +198,7 @@ describe("workflow settings", () => {
   });
 
   it("saves cwd preferences globally without creating a project override", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
+    const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-project-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {
@@ -197,7 +214,7 @@ describe("workflow settings", () => {
   });
 
   it("saves cwd preferences into an existing project override", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
+    const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-project-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {
@@ -314,7 +331,7 @@ describe("workflow settings", () => {
   });
 
   it("project persistAgentSessions overrides the global setting", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-persist-settings-"));
+    const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-persist-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {
@@ -336,7 +353,7 @@ describe("workflow settings", () => {
   });
 
   it("supports both structured output project overrides and ignores an invalid project value", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-structured-settings-"));
+    const dir = mkdtempSync(join(tmpdir(), "pi-workflow-orchestrator-structured-settings-"));
     const cwd = join(dir, "project");
     const fakeHome = join(dir, "home");
     try {

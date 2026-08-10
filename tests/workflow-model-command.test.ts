@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
+import { editWorkflowModel } from "../src/workflow-model-command.js";
 import { loadWorkflowSettings, saveWorkflowSettings } from "../src/workflow-settings.js";
-import { editWorkflowModel, registerWorkflowModelsCommand } from "../src/workflows-models-command.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 function model(provider: string, id: string, reasoning = false) {
@@ -47,18 +47,6 @@ function context(
     ui: { select: mock.fn(select), notify: mock.fn() },
   } as any;
 }
-
-test("registerWorkflowModelsCommand registers a single Workflow Model command", () => {
-  let description = "";
-  const pi = {
-    registerCommand: (_name: string, options: { description?: string }) => {
-      description = options.description ?? "";
-    },
-  };
-  registerWorkflowModelsCommand(pi as never);
-  assert.match(description, /Workflow Model/);
-  assert.doesNotMatch(description, /small|medium|big|tier/i);
-});
 
 test("editWorkflowModel reports an empty Pi availability snapshot", async () => {
   const ctx = context(async () => undefined, []);
@@ -183,7 +171,7 @@ test("openWorkflowModelEditor does not mutate settings when the picker is cancel
         }),
         cwd,
       };
-      const { openWorkflowModelEditor } = await import("../src/workflows-models-command.js");
+      const { openWorkflowModelEditor } = await import("../src/workflow-model-command.js");
       await openWorkflowModelEditor(ctx as never);
       assert.deepEqual(loadWorkflowSettings().workflowModel, before);
     });
@@ -209,7 +197,7 @@ test("openWorkflowModelEditor labels unset project settings separately from effe
         }),
         cwd,
       };
-      const { openWorkflowModelEditor } = await import("../src/workflows-models-command.js");
+      const { openWorkflowModelEditor } = await import("../src/workflow-model-command.js");
       await openWorkflowModelEditor(ctx as never);
     });
     assert.match(titles[0] ?? "", /effective: provider\/global @ high/);

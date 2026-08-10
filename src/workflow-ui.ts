@@ -1,5 +1,5 @@
 /**
- * Interactive `/workflows` navigator, modeled on Claude Code's view:
+ * Interactive `/workflow` navigator, modeled on Claude Code's view:
  *
  *   runs ──enter──▶ phases ──enter──▶ agents ──enter──▶ agent detail
  *        ◀──esc───        ◀──esc────         ◀──esc────
@@ -19,7 +19,6 @@ import { parseKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@eare
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
 import type { ImmutableHostRetryPolicySnapshot } from "./retry-policy.js";
 import type { PersistedRunState, WorkflowRunSummary } from "./run-persistence.js";
-import { registerSavedWorkflow } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 import { isWorkflowStructuredOutputEnabled } from "./workflow-settings.js";
@@ -810,7 +809,7 @@ export function renderNavigator(
       const sepOffset = runs.length;
       if (runs.length > 0) lines.push(dim("  ── saved ──"));
       saved.forEach((w, i) => {
-        const loc = w.location === "user" ? "~" : ".";
+        const loc = w.location === "global" ? "~" : ".";
         const desc = w.description ? dim(`  ${w.description}`) : "";
         lines.push(sel(sepOffset + i, `${w.name}${desc}  ${dim(loc)}`));
       });
@@ -859,7 +858,7 @@ export function renderNavigator(
     if (w) {
       const body: string[] = [];
       if (w.description) body.push(dim("Description: ") + w.description);
-      body.push(dim("Location: ") + (w.location === "user" ? "user (~/.pi)" : "project (.pi)"));
+      body.push(dim("Location: ") + (w.location === "global" ? "global" : "project"));
       body.push(dim("Saved at: ") + w.savedAt);
       if (w.parameters) body.push(dim("Parameters: ") + JSON.stringify(w.parameters));
       body.push("", dim("Script:"));
@@ -1028,11 +1027,11 @@ export interface NavigatorOptions {
 }
 
 /**
- * Open the interactive `/workflows` navigator as a focused overlay. Resolves when
+ * Open the interactive `/workflow` navigator as a focused overlay. Resolves when
  * the user closes it (esc at the top level, or `q`).
  */
 export function openWorkflowNavigator(
-  pi: ExtensionAPI,
+  _pi: ExtensionAPI,
   manager: WorkflowManager,
   ui: ExtensionUIContext,
   opts: NavigatorOptions = {},
@@ -1089,11 +1088,11 @@ export function openWorkflowNavigator(
               const item = saved[state.cursor - runCount];
               if (item) {
                 model.deleteSaved(item.name);
-                ui.notify(`Deleted /${item.name}`, "info");
+                ui.notify(`Deleted @${item.name}`, "info");
               }
             } else if (state.kind === "savedDetail" && state.savedName) {
               model.deleteSaved(state.savedName);
-              ui.notify(`Deleted /${state.savedName}`, "info");
+              ui.notify(`Deleted @${state.savedName}`, "info");
               state.back();
             }
             break;
@@ -1150,10 +1149,7 @@ export function openWorkflowNavigator(
                 ui.notify(error instanceof Error ? error.message : String(error), "error");
                 break;
               }
-              registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
-                storage.list().some((w) => w.name === saved.name),
-              );
-              ui.notify(`Saved /${name}`, "info");
+              ui.notify(`Saved @${saved.name} [${saved.location}]`, "info");
             }
             break;
           }

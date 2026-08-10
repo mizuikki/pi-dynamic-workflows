@@ -165,7 +165,7 @@ function savedStorage(): { list(): SavedWorkflow[]; delete(name: string, locatio
       {
         name: "analyze",
         description: "Analyze deps",
-        location: "user",
+        location: "global",
         path: "/y",
         savedAt: "2025-01-02",
         script: "export const meta = { name: 'analyze', description: 'Analyze deps' }",
@@ -173,7 +173,7 @@ function savedStorage(): { list(): SavedWorkflow[]; delete(name: string, locatio
       {
         name: "backup",
         description: "Full backup",
-        location: "user",
+        location: "global",
         path: "/z",
         savedAt: "2025-01-03",
         script: "export const meta = { name: 'backup', description: 'Full backup' };",
@@ -621,7 +621,7 @@ test("renderNavigator shows saved workflows in runs view with separator", () => 
   assert.match(text, /analyze/); // saved item
   assert.match(text, /backup/);
   assert.match(text, /deploy/);
-  assert.match(text, /~/); // user location
+  assert.match(text, /~/); // global location
   assert.match(text, /\./); // project location
 });
 

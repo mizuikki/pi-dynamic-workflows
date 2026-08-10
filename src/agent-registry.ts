@@ -169,7 +169,7 @@ export function loadAgentRegistry(
         registry.set(def.name, def);
         if (!warnedLegacy) {
           console.warn(
-            `[agent-registry] Loaded agent definition(s) from the deprecated location "${legacyUserDir}". ` +
+            `[workflow-orchestrator] Loaded agent definition(s) from the deprecated location "${legacyUserDir}". ` +
               `Move them to "${userDir}" — the old location may stop being read in a future release.`,
           );
           warnedLegacy = true;

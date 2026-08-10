@@ -62,7 +62,7 @@ export function copyRegisteredProviders(
         target.registerProvider(providerId, config);
       } catch (error) {
         console.warn(
-          `[workflow] failed to copy registered provider "${providerId}" into child runtime: ${
+          `[workflow-orchestrator] failed to copy registered provider "${providerId}" into child runtime: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -81,7 +81,7 @@ export function copyRegisteredProviders(
       target.registerNativeProvider(provider);
     } catch (error) {
       console.warn(
-        `[workflow] failed to copy registered provider "${providerId}" into child runtime: ${
+        `[workflow-orchestrator] failed to copy registered provider "${providerId}" into child runtime: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

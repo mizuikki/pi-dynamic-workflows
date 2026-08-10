@@ -54,7 +54,7 @@ async function heartbeatScenario(
 async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "pi-dw-persistence-benchmark-"));
   const cwd = join(root, "project");
-  const path = join(root, "workflows.sqlite3");
+  const path = join(root, "workflow-orchestrator.sqlite3");
   const repository = createRunPersistence(cwd, { path });
   try {
     const privateResult = "x".repeat(PAYLOAD_BYTES);

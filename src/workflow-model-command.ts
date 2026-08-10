@@ -1,5 +1,5 @@
 /**
- * `/workflows-models` command.
+ * `/workflow model` command handler.
  *
  * The command edits one persisted Workflow Model (model plus optional Pi-owned
  * reasoning effort). A null value explicitly makes the scope inherit the live
@@ -7,7 +7,7 @@
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   canonicalModelSpec,
   createWorkflowModelScopeSnapshot,
@@ -24,17 +24,6 @@ import {
 } from "./workflow-settings.js";
 
 const INHERIT_EFFORT = "Inherit current Pi session effort";
-
-/** Register the `/workflows-models` command with Pi. */
-export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
-  pi.registerCommand("workflows-models", {
-    description: "View and edit the global or project Workflow Model",
-    handler: async (_args, ctx) => {
-      await ctx.waitForIdle();
-      await openWorkflowModelEditor(ctx);
-    },
-  });
-}
 
 /** Interactive editor, exported for focused command tests. */
 export async function openWorkflowModelEditor(ctx: ExtensionCommandContext): Promise<void> {

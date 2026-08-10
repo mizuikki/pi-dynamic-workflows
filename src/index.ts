@@ -38,8 +38,6 @@ export {
   MAX_TRELLIS_PARALLEL_PROMPTS,
   TRELLIS_SUBAGENT_TOOL_NAME,
 } from "./adapters/trellis-subagent-tool.js";
-export type { AdversarialReviewConfig } from "./adversarial-review.js";
-export { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
 export type {
   AgentRunOptions,
   AgentRunResult,
@@ -61,11 +59,7 @@ export type { AgentHistoryEntry, AgentHistoryKind, AgentHistoryRole } from "./ag
 export { compactAgentHistory } from "./agent-history.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
-export { registerBuiltinWorkflows } from "./builtin-commands.js";
-export { generateCodeReviewWorkflow, MAX_DIFF_CHARS } from "./code-review.js";
 export * from "./config.js";
-export type { DeepResearchConfig } from "./deep-research.js";
-export { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
 export type {
   WorkflowAgentSnapshot,
   WorkflowAgentStatus,
@@ -83,14 +77,6 @@ export {
   renderWorkflowText,
 } from "./display.js";
 export {
-  createEffortState,
-  type EffortLevel,
-  type EffortState,
-  effortDirective,
-  isSubstantive,
-  registerEffortCommand,
-} from "./effort-command.js";
-export {
   isAbortError,
   isTimeoutError,
   isWorkflowError,
@@ -98,6 +84,14 @@ export {
   WorkflowErrorCode,
   wrapError,
 } from "./errors.js";
+export {
+  createIntensityState,
+  handleWorkflowIntensityCommand,
+  type IntensityLevel,
+  type IntensityState,
+  intensityDirective,
+  isSubstantive,
+} from "./intensity-command.js";
 export type {
   KeelAgentRole,
   KeelContextToolBinding,
@@ -131,11 +125,11 @@ export {
   enableWorkflowMainPrompt,
   formatWorkflowMainPromptDiagnostic,
   getWorkflowMainPromptSettingsPath,
+  handleWorkflowMainPromptCommand,
   inspectWorkflowMainPrompt,
   isWorkflowMainPromptEnabled,
   loadWorkflowMainPrompt,
   MAX_WORKFLOW_MAIN_BYTES,
-  registerWorkflowMainPromptCommand,
   registerWorkflowMainPromptFlag,
   WORKFLOW_MAIN_MARKER,
   WORKFLOW_MAIN_RELATIVE_PATH,
@@ -193,11 +187,7 @@ export {
 } from "./retry-policy.js";
 export type { DeleteRunResult, PersistedRunState, RunStatus, WorkflowRunSummary } from "./run-persistence.js";
 export { generateRunId, RUN_LEASE_HEARTBEAT_INTERVAL_MS, RUN_LEASE_STALE_AFTER_MS } from "./run-persistence.js";
-export {
-  parseCommandArgs,
-  registerAllSavedWorkflows,
-  registerSavedWorkflow,
-} from "./saved-commands.js";
+export { parseCommandArgs } from "./saved-commands.js";
 export { createSharedStoreTools, SharedStore } from "./shared-store.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
@@ -220,7 +210,6 @@ export {
   type WorkflowPanelRunSnapshot,
   type WorkflowPanelSnapshot,
 } from "./task-panel.js";
-export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-tools.js";
 export type {
   AgentOptions,
   JournalEntry,
@@ -233,7 +222,7 @@ export type {
   WorkflowRunResult,
 } from "./workflow.js";
 export { assertStructuredOutputEnabled, parseWorkflowScript, runWorkflow } from "./workflow.js";
-export { registerWorkflowCommands } from "./workflow-commands.js";
+export { registerWorkflowCommand } from "./workflow-commands.js";
 export {
   assertSupportedNodeRuntime,
   WORKFLOW_DATABASE_APPLICATION_ID,
@@ -246,18 +235,19 @@ export {
   buildForcedWorkflowPrompt,
   colorizeWorkflow,
   endsWithTrigger,
+  handleWorkflowProgressCommand,
+  handleWorkflowTriggerCommand,
   hasTrigger,
   type InstallWorkflowEditorOptions,
   installWorkflowEditor,
   RAINBOW,
-  registerWorkflowProgressCommands,
-  registerWorkflowTriggerCommand,
   tokenizeAnsi,
   WorkflowEditor,
   type WorkflowModeState,
 } from "./workflow-editor.js";
 export type { ManagedRun, WorkflowManagerOptions } from "./workflow-manager.js";
 export { WorkflowManager } from "./workflow-manager.js";
+export { editWorkflowModel, openWorkflowModelEditor } from "./workflow-model-command.js";
 export type { WorkflowProjectPaths } from "./workflow-paths.js";
 export {
   WORKFLOW_DATABASE_FILENAME,
@@ -265,10 +255,10 @@ export {
   WORKFLOW_PROJECTS_SUBDIR,
   workflowCanonicalProjectPath,
   workflowDatabasePath,
+  workflowGlobalSavedDir,
   workflowHomeDir,
   workflowProjectKey,
   workflowProjectPaths,
-  workflowUserSavedDir,
 } from "./workflow-paths.js";
 export type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 export { assertSafeSavedWorkflowName, createWorkflowStorage, isSafeSavedWorkflowName } from "./workflow-saved.js";
@@ -301,6 +291,5 @@ export {
   renderNavigator,
   type ViewKind,
 } from "./workflow-ui.js";
-export { registerWorkflowModelsCommand } from "./workflows-models-command.js";
 export type { Worktree } from "./worktree.js";
 export { createWorktree, removeWorktree } from "./worktree.js";

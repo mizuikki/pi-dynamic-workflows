@@ -7,7 +7,7 @@ export const KEEL_PI_HOST_BRIDGE_SCHEMA_VERSION = "keel.pi-host-bridge/v1" as co
 export const KEEL_PI_INVOCATION_SCHEMA_VERSION = "keel.pi-invocation/v1" as const;
 export const KEEL_PI_LIFECYCLE_OBSERVATION_SCHEMA_VERSION = "keel.pi-lifecycle-observation/v1" as const;
 
-export const KEEL_PI_HOST_ABI = Object.freeze({ id: "pi-dynamic-workflows-host", version: 1 });
+export const KEEL_PI_HOST_ABI = Object.freeze({ id: "pi-workflow-orchestrator-host", version: 1 });
 export const KEEL_REQUIRED_HOST_CAPABILITIES = Object.freeze([
   Object.freeze({ id: "context-snapshot-identity", version: 1 }),
   Object.freeze({ id: "logical-invocation-identity", version: 1 }),

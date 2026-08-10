@@ -82,7 +82,7 @@ test("descriptor factory advertises the versioned Keel capabilities with caller 
     distribution: "maintained-fork-checkout",
   });
   assert.equal(descriptor.schemaVersion, "keel.pi-host-descriptor/v1");
-  assert.equal(descriptor.abi.id, "pi-dynamic-workflows-host");
+  assert.equal(descriptor.abi.id, "pi-workflow-orchestrator-host");
   assert.deepEqual(
     descriptor.capabilities.map((capability) => capability.id),
     ["context-snapshot-identity", "logical-invocation-identity", "controlled-context-tools", "lifecycle-observation"],
@@ -136,6 +136,30 @@ test("configured malformed bridge fails before child execution", async () => {
     () =>
       runWorkflow(SCRIPT, {
         keelHost: malformed as KeelHostBridgeV1,
+        agent: {
+          async run() {
+            calls++;
+            return "unexpected";
+          },
+        },
+        persistLogs: false,
+      }),
+    (error) => error instanceof WorkflowError && error.code === WorkflowErrorCode.KEEL_HOST_CONTRACT_ERROR,
+  );
+  assert.equal(calls, 0);
+});
+
+test("configured bridge rejects every non-orchestrator host ABI before child execution", async () => {
+  let calls = 0;
+  const { bridge } = recordingBridge();
+  const incompatible = {
+    ...bridge,
+    descriptor: { ...bridge.descriptor, abi: { id: "legacy-workflow-host", version: 1 } },
+  };
+  await assert.rejects(
+    () =>
+      runWorkflow(SCRIPT, {
+        keelHost: incompatible as KeelHostBridgeV1,
         agent: {
           async run() {
             calls++;

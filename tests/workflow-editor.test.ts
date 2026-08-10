@@ -619,16 +619,13 @@ describe("installWorkflowEditor", () => {
     assert.equal(setActiveToolsCalls, 1, "workflow trigger should still add the workflow tool");
   });
 
-  it("registers /workflows-trigger and toggles the keyword trigger", async () => {
+  it("handles /workflow trigger toggles", async () => {
     const mod = await load();
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     const sent: Array<{ content?: string }> = [];
     const store = memorySettingsOptions();
     const pi = {
       on: () => {},
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
+      registerCommand: () => {},
       sendMessage: (message: { content?: string }) => {
         sent.push(message);
       },
@@ -644,33 +641,27 @@ describe("installWorkflowEditor", () => {
     assert.equal(state.keywordTriggerEnabled, true, "keyword trigger should default on");
     assert.equal(state.keywordTriggerWord, "workflow", "keyword trigger word should default to workflow");
 
-    const command = commands.get("workflows-trigger");
-    assert.ok(command, "should register /workflows-trigger");
-
-    await command.handler("off", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "off", {} as never, store.options.settingsStore);
     assert.equal(state.keywordTriggerEnabled, false);
     assert.equal(state.active, false);
     assert.deepEqual(store.settings, { keywordTriggerEnabled: false });
     assert.match(sent.at(-1)?.content ?? "", /keyword trigger off/i);
     assert.match(sent.at(-1)?.content ?? "", /saved for new sessions/i);
 
-    await command.handler("on", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "on", {} as never, store.options.settingsStore);
     assert.equal(state.keywordTriggerEnabled, true);
     assert.deepEqual(store.settings, { keywordTriggerEnabled: true });
     assert.match(sent.at(-1)?.content ?? "", /keyword trigger on/i);
     assert.match(sent.at(-1)?.content ?? "", /saved for new sessions/i);
   });
 
-  it("/workflows-trigger sets and reports the keyword trigger word", async () => {
+  it("/workflow trigger sets and reports the keyword trigger word", async () => {
     const mod = await load();
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     const sent: Array<{ content?: string }> = [];
     const store = memorySettingsOptions();
     const pi = {
       on: () => {},
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
+      registerCommand: () => {},
       sendMessage: (message: { content?: string }) => {
         sent.push(message);
       },
@@ -683,48 +674,38 @@ describe("installWorkflowEditor", () => {
     } as unknown as ExtensionUIContext;
 
     const state = mod.installWorkflowEditor(pi, ui, undefined, store.options);
-    const command = commands.get("workflows-trigger");
-    assert.ok(command, "should register /workflows-trigger");
-
-    await command.handler("set pi-workflow", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "set pi-workflow", {} as never, store.options.settingsStore);
     assert.equal(state.keywordTriggerWord, "pi-workflow");
     assert.deepEqual(store.settings, { keywordTriggerEnabled: true, keywordTriggerWord: "pi-workflow" });
     assert.match(sent.at(-1)?.content ?? "", /pi-workflow/);
 
-    await command.handler("status", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "status", {} as never, store.options.settingsStore);
     assert.match(sent.at(-1)?.content ?? "", /pi-workflow/);
 
-    await command.handler("reset", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "reset", {} as never, store.options.settingsStore);
     assert.equal(state.keywordTriggerWord, "workflow");
     assert.deepEqual(store.settings, { keywordTriggerEnabled: true, keywordTriggerWord: "workflow" });
   });
 
   it("supports legacy WorkflowModeState objects without keywordTriggerWord", async () => {
     const mod = await load();
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     const sent: Array<{ content?: string }> = [];
     const state = { active: false, keywordTriggerEnabled: true };
     const pi = {
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
       sendMessage: (message: { content?: string }) => {
         sent.push(message);
       },
     } as unknown as ExtensionAPI;
 
-    mod.registerWorkflowTriggerCommand(pi, state, {
+    const settingsStore = {
       load: () => ({}),
       save: () => {},
-    });
+    };
 
-    const command = commands.get("workflows-trigger");
-    assert.ok(command, "should register /workflows-trigger");
-
-    await command.handler("status", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "status", {} as never, settingsStore);
     assert.match(sent.at(-1)?.content ?? "", /trigger word is "workflow"/);
 
-    await command.handler("on", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "on", {} as never, settingsStore);
     assert.match(sent.at(-1)?.content ?? "", /workflow\/workflows/);
   });
 
@@ -799,13 +780,10 @@ describe("installWorkflowEditor", () => {
 
   it("keeps session trigger state when saving the preference fails", async () => {
     const mod = await load();
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     const sent: Array<{ content?: string }> = [];
     const pi = {
       on: () => {},
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
+      registerCommand: () => {},
       sendMessage: (message: { content?: string }) => {
         sent.push(message);
       },
@@ -817,24 +795,21 @@ describe("installWorkflowEditor", () => {
       setEditorComponent: () => {},
     } as unknown as ExtensionUIContext;
 
-    const state = mod.installWorkflowEditor(pi, ui, undefined, {
-      settingsStore: {
-        load: () => ({ keywordTriggerEnabled: true }),
-        save: () => {
-          throw new Error("write failed");
-        },
+    const settingsStore = {
+      load: () => ({ keywordTriggerEnabled: true }),
+      save: () => {
+        throw new Error("write failed");
       },
-    });
-    const command = commands.get("workflows-trigger");
-    assert.ok(command, "should register /workflows-trigger");
+    };
+    const state = mod.installWorkflowEditor(pi, ui, undefined, { settingsStore });
 
-    await command.handler("off", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "off", {} as never, settingsStore);
 
     assert.equal(state.keywordTriggerEnabled, false);
     assert.equal(state.active, false);
     assert.match(sent.at(-1)?.content ?? "", /could not be saved/i);
 
-    await command.handler("on", {});
+    await mod.handleWorkflowTriggerCommand(pi, state, "on", {} as never, settingsStore);
 
     assert.equal(state.keywordTriggerEnabled, true);
     assert.match(sent.at(-1)?.content ?? "", /could not be saved/i);
@@ -901,18 +876,15 @@ describe("installWorkflowEditor", () => {
     assert.ok(savedTools.includes("workflow"), `saved tools (${savedTools.join(", ")}) should include "workflow"`);
   });
 
-  it("does not transform keyword-triggered input when /workflows-trigger is off", async () => {
+  it("does not transform keyword-triggered input when /workflow trigger is off", async () => {
     const mod = await load();
     const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     let setActiveToolsCalls = 0;
     const pi = {
       on: (event: string, handler: (...args: unknown[]) => unknown) => {
         captured.push({ event, handler });
       },
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
+      registerCommand: () => {},
       sendMessage: () => {},
       getActiveTools: () => ["bash", "read"],
       setActiveTools: () => {
@@ -924,8 +896,9 @@ describe("installWorkflowEditor", () => {
       setEditorComponent: () => {},
     } as unknown as ExtensionUIContext;
 
-    mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
-    await commands.get("workflows-trigger")?.handler("off", {});
+    const options = testSettingsOptions();
+    const state = mod.installWorkflowEditor(pi, ui, undefined, options);
+    await mod.handleWorkflowTriggerCommand(pi, state, "off", {} as never, options.settingsStore);
 
     const inputHandler = captured.find((h) => h.event === "input")?.handler;
     assert.ok(inputHandler, "input handler should be registered");
@@ -1003,21 +976,18 @@ describe("installWorkflowEditor", () => {
     });
   });
 
-  it("still transforms effort-armed input when the keyword trigger is off", async () => {
+  it("still transforms intensity-armed input when the keyword trigger is off", async () => {
     const mod = await load();
-    const { createEffortState, effortDirective } = await import("../src/effort-command.js");
+    const { createIntensityState, intensityDirective } = await import("../src/intensity-command.js");
     const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
-    const effort = createEffortState();
-    effort.level = "high";
+    const intensity = createIntensityState();
+    intensity.level = "high";
     let tools: string[] = [];
     const pi = {
       on: (event: string, handler: (...args: unknown[]) => unknown) => {
         captured.push({ event, handler });
       },
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
+      registerCommand: () => {},
       sendMessage: () => {},
       getActiveTools: () => ["bash", "read"],
       setActiveTools: (next: string[]) => {
@@ -1029,8 +999,9 @@ describe("installWorkflowEditor", () => {
       setEditorComponent: () => {},
     } as unknown as ExtensionUIContext;
 
-    mod.installWorkflowEditor(pi, ui, effort, testSettingsOptions());
-    await commands.get("workflows-trigger")?.handler("off", {});
+    const options = testSettingsOptions();
+    const state = mod.installWorkflowEditor(pi, ui, intensity, options);
+    await mod.handleWorkflowTriggerCommand(pi, state, "off", {} as never, options.settingsStore);
 
     const text = "Please discuss workflows as a normal topic.";
     const inputHandler = captured.find((h) => h.event === "input")?.handler;
@@ -1039,17 +1010,17 @@ describe("installWorkflowEditor", () => {
 
     assert.deepEqual(result, {
       action: "transform",
-      text: mod.buildForcedWorkflowPrompt(text, effortDirective("high", false)),
+      text: mod.buildForcedWorkflowPrompt(text, intensityDirective("high", false)),
     });
-    assert.ok(tools.includes(mod.WORKFLOW_TOOL_NAME), "effort mode should still add the workflow tool");
+    assert.ok(tools.includes(mod.WORKFLOW_TOOL_NAME), "intensity mode should still add the workflow tool");
   });
 
   it("retains structured quality guidance when the setting is explicitly enabled", async () => {
     const mod = await load();
-    const { createEffortState, effortDirective } = await import("../src/effort-command.js");
+    const { createIntensityState, intensityDirective } = await import("../src/intensity-command.js");
     const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-    const effort = createEffortState();
-    effort.level = "high";
+    const intensity = createIntensityState();
+    intensity.level = "high";
     const pi = {
       on: (event: string, handler: (...args: unknown[]) => unknown) => captured.push({ event, handler }),
       registerCommand: () => {},
@@ -1059,14 +1030,14 @@ describe("installWorkflowEditor", () => {
     } as unknown as ExtensionAPI;
     const ui = { setEditorComponent: () => {} } as unknown as ExtensionUIContext;
 
-    mod.installWorkflowEditor(pi, ui, effort, testSettingsOptions(true, undefined, true));
+    mod.installWorkflowEditor(pi, ui, intensity, testSettingsOptions(true, undefined, true));
     const inputHandler = captured.find((h) => h.event === "input")?.handler;
     assert.ok(inputHandler, "input handler should be registered");
     const text = "Please inspect this request carefully.";
     const result = inputHandler({ source: "interactive", text });
     assert.deepEqual(result, {
       action: "transform",
-      text: mod.buildForcedWorkflowPrompt(text, effortDirective("high", true)),
+      text: mod.buildForcedWorkflowPrompt(text, intensityDirective("high", true)),
     });
   });
 
@@ -1165,15 +1136,11 @@ describe("installWorkflowEditor", () => {
   });
 });
 
-describe("registerWorkflowProgressCommands", () => {
+describe("handleWorkflowProgressCommand", () => {
   function setup() {
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     const sent: Array<{ content?: string }> = [];
     let settings: Record<string, unknown> = {};
     const pi = {
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
       sendMessage: (message: { content?: string }) => {
         sent.push(message);
       },
@@ -1184,51 +1151,39 @@ describe("registerWorkflowProgressCommands", () => {
         settings = { ...settings, ...next };
       },
     };
-    return { commands, sent, settingsStore, getSettings: () => settings, pi };
+    return { sent, settingsStore, getSettings: () => settings, pi };
   }
 
   it("persists a valid mode and reports the current one on status", async () => {
     const mod = await load();
-    const { commands, sent, settingsStore, getSettings, pi } = setup();
-    mod.registerWorkflowProgressCommands(pi, settingsStore);
-
-    const cmd = commands.get("workflows-progress");
-    assert.ok(cmd, "registers /workflows-progress");
-
-    await cmd.handler("detailed", {});
+    const { sent, settingsStore, getSettings, pi } = setup();
+    await mod.handleWorkflowProgressCommand(pi, "detailed", {} as never, settingsStore);
     assert.deepEqual(getSettings(), { progressPanelMode: "detailed" });
     assert.match(sent.at(-1)?.content ?? "", /detailed/i);
 
-    await cmd.handler("status", {});
+    await mod.handleWorkflowProgressCommand(pi, "status", {} as never, settingsStore);
     assert.match(sent.at(-1)?.content ?? "", /panel is detailed/i);
   });
 
   it("ignores an invalid mode without persisting", async () => {
     const mod = await load();
-    const { commands, sent, settingsStore, getSettings, pi } = setup();
-    mod.registerWorkflowProgressCommands(pi, settingsStore);
-
-    await commands.get("workflows-progress")?.handler("verbose", {});
+    const { sent, settingsStore, getSettings, pi } = setup();
+    await mod.handleWorkflowProgressCommand(pi, "verbose", {} as never, settingsStore);
     assert.deepEqual(getSettings(), {}, "invalid mode is not saved");
     assert.match(sent.at(-1)?.content ?? "", /Usage:/);
   });
 
   it("clamps and persists the per-phase agent cap, rejecting non-numbers", async () => {
     const mod = await load();
-    const { commands, sent, settingsStore, getSettings, pi } = setup();
-    mod.registerWorkflowProgressCommands(pi, settingsStore);
-
-    const cmd = commands.get("workflows-progress-max");
-    assert.ok(cmd, "registers /workflows-progress-max");
-
-    await cmd.handler("5000", {});
+    const { sent, settingsStore, getSettings, pi } = setup();
+    await mod.handleWorkflowProgressCommand(pi, "max 5000", {} as never, settingsStore);
     assert.deepEqual(getSettings(), { progressPanelMaxAgents: 1000 }, "clamps to 1000");
 
-    await cmd.handler("abc", {});
+    await mod.handleWorkflowProgressCommand(pi, "max abc", {} as never, settingsStore);
     assert.match(sent.at(-1)?.content ?? "", /Invalid value/);
     assert.deepEqual(getSettings(), { progressPanelMaxAgents: 1000 }, "invalid value does not overwrite");
 
-    await cmd.handler("0", {});
+    await mod.handleWorkflowProgressCommand(pi, "max 0", {} as never, settingsStore);
     assert.match(sent.at(-1)?.content ?? "", /Invalid value/);
   });
 });

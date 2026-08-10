@@ -12,7 +12,7 @@ if [[ ! -e "$PI_FORK_DIR/.git" ]]; then
   exit 2
 fi
 
-node "$PI_FORK_DIR/scripts/pack-local-sdk.mjs" --out "$TEMP_ROOT" --ref "$PI_FORK_REF"
+node "$PROJECT_DIR/scripts/prepare-pinned-pi-fixture.mjs" "$TEMP_ROOT" "$PI_FORK_DIR" "$PI_FORK_REF"
 npm run build --prefix "$PROJECT_DIR"
 npm pack --ignore-scripts --pack-destination "$TEMP_ROOT" --prefix "$PROJECT_DIR" >/dev/null
 TARBALL=$(find "$TEMP_ROOT" -maxdepth 1 -name '*.tgz' -print -quit)
@@ -54,11 +54,11 @@ node "$PROJECT_DIR/scripts/create-package-smoke-consumer.mjs" \
 (
   cd "$SMOKE_DIR"
   node --input-type=module -e '
-    const pkg = await import("@quintinshaw/pi-dynamic-workflows");
+    const pkg = await import("@mizuikki/pi-workflow-orchestrator");
     if (typeof pkg.runWorkflow !== "function" || typeof pkg.WorkflowManager !== "function") throw new Error("public ESM import is incomplete");
   '
   cp "$PROJECT_DIR/tests/fixtures/package-consumer.ts" "$SMOKE_DIR/consumer.ts"
-  npx tsc --noEmit --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext consumer.ts
+  npx tsc --ignoreConfig --noEmit --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext consumer.ts
 )
 
 printf '%s\n' 'Package smoke passed.'
@@ -74,10 +74,10 @@ npm install --ignore-scripts --legacy-peer-deps --prefix "$UPSTREAM_DIR" \
   "$TARBALL" >/dev/null
 cat > "$UPSTREAM_DIR/verify-upstream-host.mjs" <<'EOF'
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
-const extensionPath = new URL("./node_modules/@quintinshaw/pi-dynamic-workflows/extensions/workflow.ts", import.meta.url).pathname;
+const extensionPath = new URL("./node_modules/@mizuikki/pi-workflow-orchestrator/extensions/workflow.ts", import.meta.url).pathname;
 const result = await discoverAndLoadExtensions([extensionPath], process.cwd(), process.env.HOME);
 if (result.errors.length > 0) throw new Error(result.errors.map((entry) => entry.error).join("; "));
-throw new Error("upstream host unexpectedly loaded pi-dynamic-workflows");
+throw new Error("upstream host unexpectedly loaded Pi Workflow Orchestrator");
 EOF
 if HOME="$UPSTREAM_DIR/home" node "$UPSTREAM_DIR/verify-upstream-host.mjs" 2>"$UPSTREAM_DIR/upstream-error.log"; then
   printf '%s\n' 'upstream Pi host unexpectedly loaded the extension' >&2

@@ -108,8 +108,8 @@ test("copyRegisteredProviders isolates provider accessor and registration failur
 
   assert.deepEqual(calls, ["legacy:legacy-success", "native:native-success"]);
   assert.deepEqual(warnings, [
-    '[workflow] failed to copy registered provider "legacy-register-failure" into child runtime: legacy registration failed',
-    '[workflow] failed to copy registered provider "native-register-failure" into child runtime: native registration failed',
+    '[workflow-orchestrator] failed to copy registered provider "legacy-register-failure" into child runtime: legacy registration failed',
+    '[workflow-orchestrator] failed to copy registered provider "native-register-failure" into child runtime: native registration failed',
   ]);
 });
 
@@ -121,8 +121,11 @@ test("createPluginModelRuntime enables model network refresh by default and pres
     return {} as ModelRuntime;
   };
   try {
-    await createPluginModelRuntime({ agentDir: "/tmp/pi-dynamic-workflows-network-policy" });
-    await createPluginModelRuntime({ agentDir: "/tmp/pi-dynamic-workflows-network-policy", allowModelNetwork: false });
+    await createPluginModelRuntime({ agentDir: "/tmp/pi-workflow-orchestrator-network-policy" });
+    await createPluginModelRuntime({
+      agentDir: "/tmp/pi-workflow-orchestrator-network-policy",
+      allowModelNetwork: false,
+    });
   } finally {
     ModelRuntime.create = originalCreate;
   }
